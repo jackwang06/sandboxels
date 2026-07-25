@@ -33,7 +33,7 @@ node --test \
   tests/engine_overlap_speed.test.js
 ```
 
-The documented baseline is 97 passing tests. Run one test file with:
+The documented baseline is 101 passing tests. Run one test file with:
 
 ```bash
 node --test tests/human_society_core.test.js

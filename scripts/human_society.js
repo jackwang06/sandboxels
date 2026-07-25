@@ -5165,6 +5165,7 @@ function harvestApproach(actor, resource) {
     let commandHover = null;
     let commandLastResult = null;
     let commandInputInstalled = false;
+    let bannerInputInstalled = false;
 
     function isChineseUi() {
         if (typeof langCode !== "undefined" && (langCode === "zh_cn" || langCode === "zh_hant" || String(langCode).indexOf("zh") === 0)) return true;
@@ -6579,6 +6580,44 @@ function setMapOverlay(name, value) {
         }, true);
     }
 
+    // A civ_banner is one logical core pixel drawn as a 3x3 sprite, and civilized humans are
+    // nonBlocking overlay pixels that sit on top of it in getPixelsAt() order. Routing banner
+    // clicks through the engine's mouse1Action() therefore fails two ways: only the single core
+    // cell carries a real pixel (the other 8 sprite cells do nothing), and when a human overlaps
+    // the core it masks the banner's onClicked. The held-mouse retry in the engine tick then makes
+    // a long press eventually open the panel once a masking human walks away. This capture-phase
+    // handler resolves the full 3x3 sprite via buildingVisualAt() and opens the panel exactly once,
+    // before the engine sees the event, so a single click is reliable and a long press cannot retrigger.
+    function handleCivilizationBannerMouse(event) {
+        // Touch taps carry no button; the engine binds touchstart to the same placement path
+        // (index.html), so cover both. For mouse events only the left button is the panel gesture.
+        const isTouch = !!(event && event.touches);
+        if (!isTouch && event.button !== 0) return;
+        // Person-command mode owns clicks; let handleCommandMouse handle them.
+        if (commandPersonId !== null) return;
+        const canvas = document.getElementById("game");
+        if (!canvas) return;
+        const position = typeof getMousePos === "function" ? getMousePos(canvas, event) : mousePos;
+        if (!position) return;
+        const x = Math.round(Number(position.x));
+        const y = Math.round(Number(position.y));
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        const building = buildingVisualAt(x, y);
+        if (!building || building.element !== "civ_banner" || building.buildingState === "destroyed") return;
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        event.stopImmediatePropagation();
+        openCivilizationPanel(building.factionId);
+    }
+
+    function installCivilizationBannerInput() {
+        if (bannerInputInstalled || typeof document === "undefined") return;
+        const canvas = document.getElementById("game");
+        if (!canvas) return;
+        bannerInputInstalled = true;
+        canvas.addEventListener("mousedown", handleCivilizationBannerMouse, true);
+        canvas.addEventListener("touchstart", handleCivilizationBannerMouse, {capture: true, passive: false});
+    }
+
     function renderPersonCommand(ctx) {
         if (commandPersonId === null) return;
         const actor = findLivingActor(commandPersonId);
@@ -6907,11 +6946,13 @@ function setMapOverlay(name, value) {
             root.addEventListener("load", installCivilizationUi);
             root.addEventListener("load", installPeopleObserverUi);
             root.addEventListener("load", installPersonCommandInput);
+            root.addEventListener("load", installCivilizationBannerInput);
         }
         else {
             installCivilizationUi();
             installPeopleObserverUi();
             installPersonCommandInput();
+            installCivilizationBannerInput();
         }
     }
 }(typeof globalThis !== "undefined" ? globalThis : window));

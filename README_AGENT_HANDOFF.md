@@ -2,7 +2,7 @@
 
 > 更新日期：2026-07-24  
 > 工作目录：`/home/wangy/sandboxels`  
-> 当前状态：可在浏览器中试玩，自动化测试 97/97 通过，改动尚未提交到 Git。
+> 当前状态：可在浏览器中试玩，自动化测试 101/101 通过，改动尚未提交到 Git。
 
 ## 1. 文档用途
 
@@ -34,7 +34,7 @@ node --test \
   tests/engine_overlap_speed.test.js
 ```
 
-当前基线是 97 项测试全部通过。涉及 UI、渲染、存档或引擎重叠时，还应至少做一次桌面和移动端浏览器冒烟测试，并检查 `console` 和 `pageerror`。
+当前基线是 101 项测试全部通过。涉及 UI、渲染、存档或引擎重叠时，还应至少做一次桌面和移动端浏览器冒烟测试，并检查 `console` 和 `pageerror`。
 
 ## 3. Git 与工作区状态
 
@@ -127,6 +127,7 @@ human_society.js
 
 - 所有文明建筑只有一个 1x1 逻辑核心，画面贴图是阵营色 3x3 纯色方格。
 - 逻辑核心位于 3x3 贴图的第三行第二列，即下边中间。默认贴图显示在普通像素之上。
+- 点击城镇中心 `civ_banner` 打开文明面板不能依赖引擎的 `onClicked` 派发：引擎只对逻辑核心那一格、且被叠加的文明人类（`nonBlocking`）遮挡时不派发，导致单击常常无反应、长按却因引擎每 tick 重放 `mouseAction` 而误弹面板。改由 `human_society.js` 在 `#game` 捕获阶段监听 `mousedown` 和 `touchstart`（`handleCivilizationBannerMouse`），用 `buildingVisualAt()` 命中整个 3x3 贴图，命中横幅时 `stopImmediatePropagation()` 一次性打开面板；指挥模式（`commandPersonId !== null`）下让位给人物指挥处理。`elements.civ_banner.onClicked` 仅作无害回退保留。
 - 擦除贴图覆盖区域不会删除建筑；必须擦除逻辑核心。删除核心后贴图永久消失，不会被重建。
 - 建筑核心默认可与非建筑像素重叠，但两个新建筑核心不能占据同一位置。
 - 建筑之间至少需要在一个轴向留出两个空格。

@@ -186,6 +186,61 @@ function createHarness(options) {
         return pixel && pixel.element === elementName ? pixel : null;
     }
 
+    let domCanvasListeners = null;
+    let domDocument = null;
+    if (opts.dom) {
+        domCanvasListeners = {mousedown: [], mousemove: [], touchstart: []};
+        // Permissive DOM element stub. Reads of common structural properties return
+        // usable objects; method calls are no-ops; everything else is writable. This lets
+        // installCivilizationUi()/refreshCivilizationUi() run without a real DOM.
+        function makeElement(id) {
+            const store = {id: id || "", value: "", textContent: "", className: "", type: "", title: "", disabled: false};
+            const seeds = {style: {}, classList: {add() {}, remove() {}, toggle() {}, contains() { return false; }}, dataset: {}};
+            const proxy = new Proxy(store, {
+                get(target, prop) {
+                    if (prop in target) return target[prop];
+                    if (prop in seeds) return seeds[prop];
+                    if (prop === "appendChild" || prop === "insertBefore" || prop === "removeChild") return (node) => node;
+                    if (prop === "addEventListener" || prop === "removeEventListener" || prop === "setAttribute" || prop === "focus" || prop === "blur" || prop === "click" || prop === "remove") return () => {};
+                    if (prop === "getAttribute") return () => null;
+                    if (prop === "querySelector" || prop === "closest") return () => null;
+                    if (prop === "querySelectorAll" || prop === "children") return [];
+                    if (prop === Symbol.toPrimitive) return () => "";
+                    return undefined;
+                },
+                set(target, prop, val) { target[prop] = val; return true; }
+            });
+            return proxy;
+        }
+        const registry = new Map();
+        const canvas = makeElement("game");
+        canvas.addEventListener = function (type, handler) {
+            if (domCanvasListeners[type]) domCanvasListeners[type].push(handler);
+        };
+        registry.set("game", canvas);
+        domDocument = {
+            readyState: "complete",
+            head: makeElement("head"),
+            body: makeElement("body"),
+            createElement(tag) { return makeElement(""); },
+            getElementById(id) {
+                if (registry.has(id)) return registry.get(id);
+                // Elements the adapter looks up before creating: report absent so it builds them.
+                if (id === "civilizationParent" || id === "toolControls" || id === "settingsButton" || id === "civilizationButton") {
+                    if (id === "civilizationParent" && registry.has("__civParentBuilt")) {
+                        return registry.get("__civParentBuilt");
+                    }
+                    return null;
+                }
+                const el = makeElement(id);
+                registry.set(id, el);
+                return el;
+            }
+        };
+        // openCivilizationPanel() needs a persistent parent whose style.display we can assert.
+        registry.set("__civParentBuilt", makeElement("civilizationParent"));
+    }
+
     const sandbox = {
         HumanSocietyCore: Core,
         HumanSocietyWorld: World,
@@ -241,6 +296,16 @@ function createHarness(options) {
         }
     };
 
+    if (opts.dom) {
+        sandbox.document = domDocument;
+        sandbox.getMousePos = function (canvas, event) {
+            const source = event.touches ? event.touches[0] : event;
+            return {x: source.clientX, y: source.clientY};
+        };
+        sandbox.addEventListener = function () {};
+        sandbox.removeEventListener = function () {};
+    }
+
     sandbox.globalThis = sandbox;
     sandbox.window = sandbox;
     vm.createContext(sandbox);
@@ -259,7 +324,9 @@ function createHarness(options) {
         wallBehavior,
         getPixel,
         createPixel,
-        changePixel
+        changePixel,
+        domCanvasListeners,
+        domDocument
     };
 }
 
@@ -1434,5 +1501,122 @@ test("person commands select adults, move them, and preserve exact carry snapsho
     assert.equal(snapshot.playerOrder.type, "move");
     api.cancelPersonCommand();
     assert.equal(api.getPersonCommandState().active, false);
+});
+
+test("buildingVisualAt resolves the whole 3x3 banner sprite and is not masked by overlapping humans", () => {
+    const harness = createHarness();
+    const banner = harness.createPixel("civ_banner", 40, 8, {factionId: 7, settlementId: 17, factionColor: "#336699"});
+    // A civilized human overlaps a non-core sprite cell; in the live engine it sits on top of the
+    // banner in getPixelsAt() order, which used to mask the banner's onClicked. buildingVisualAt()
+    // resolves the sprite from the manager index instead, so the overlap must not hide the banner.
+    harness.createPixel("civ_body", 39, 7, {humanId: 9001, factionId: 7});
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    // Every cell of the 3x3 sprite (core at 40,8; rect x 39..41, y 6..8) must resolve to the banner.
+    for (let x = 39; x <= 41; x++) {
+        for (let y = 6; y <= 8; y++) {
+            const found = api.buildingVisualAt(x, y);
+            assert.ok(found, `expected a banner at sprite cell (${x}, ${y})`);
+            assert.equal(found.element, "civ_banner");
+            assert.equal(found.factionId, 7);
+        }
+    }
+    // Cells outside the sprite return nothing.
+    assert.equal(api.buildingVisualAt(38, 8), null);
+    assert.equal(api.buildingVisualAt(40, 9), null);
+    assert.equal(api.buildingVisualAt(40, 5), null);
+});
+
+function dispatchCanvasMouseDown(harness, button, clientX, clientY) {
+    const event = {
+        button,
+        clientX,
+        clientY,
+        defaultPrevented: false,
+        propagationStopped: false,
+        preventDefault() { this.defaultPrevented = true; },
+        stopImmediatePropagation() { this.propagationStopped = true; }
+    };
+    const listeners = harness.domCanvasListeners.mousedown;
+    for (let i = 0; i < listeners.length; i++) {
+        listeners[i](event);
+        if (event.propagationStopped) break;
+    }
+    return event;
+}
+
+function dispatchCanvasTouchStart(harness, clientX, clientY) {
+    const event = {
+        touches: [{clientX, clientY}],
+        defaultPrevented: false,
+        propagationStopped: false,
+        preventDefault() { this.defaultPrevented = true; },
+        stopImmediatePropagation() { this.propagationStopped = true; }
+    };
+    const listeners = harness.domCanvasListeners.touchstart;
+    for (let i = 0; i < listeners.length; i++) {
+        listeners[i](event);
+        if (event.propagationStopped) break;
+    }
+    return event;
+}
+
+test("a single left click anywhere on the banner sprite opens the civilization panel once", () => {
+    const harness = createHarness({dom: true, techData: true});
+    harness.createPixel("civ_banner", 40, 8, {factionId: 7, settlementId: 17, factionColor: "#336699"});
+    harness.createPixel("civ_body", 39, 7, {humanId: 9001, factionId: 7});
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    const parent = harness.domDocument.getElementById("civilizationParent");
+    parent.style.display = "none";
+    // Click a non-core sprite cell (top-left of the 3x3), the case that used to do nothing.
+    const event = dispatchCanvasMouseDown(harness, 0, 39, 6);
+    assert.equal(event.defaultPrevented, true, "the banner handler consumes the event");
+    assert.equal(event.propagationStopped, true, "the engine mouse chain is blocked");
+    assert.equal(parent.style.display, "block", "the civilization panel is shown");
+});
+
+test("a touch tap on the banner sprite opens the civilization panel (mobile path)", () => {
+    const harness = createHarness({dom: true, techData: true});
+    harness.createPixel("civ_banner", 40, 8, {factionId: 7, settlementId: 17, factionColor: "#336699"});
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    const parent = harness.domDocument.getElementById("civilizationParent");
+    parent.style.display = "none";
+    const event = dispatchCanvasTouchStart(harness, 41, 6);
+    assert.equal(event.propagationStopped, true, "the engine touch placement chain is blocked");
+    assert.equal(parent.style.display, "block", "the civilization panel opens on tap");
+    // A tap off any banner is left for the engine.
+    parent.style.display = "none";
+    const miss = dispatchCanvasTouchStart(harness, 5, 5);
+    assert.equal(miss.propagationStopped, false);
+    assert.equal(parent.style.display, "none");
+});
+
+test("banner clicks are ignored in person-command mode and for non-left buttons", () => {
+    const harness = createHarness({dom: true, techData: true});
+    harness.createPixel("civ_banner", 40, 8, {factionId: 7, settlementId: 17, factionColor: "#336699"});
+    harness.createPixel("civilized_human", 8, 8);
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    const parent = harness.domDocument.getElementById("civilizationParent");
+
+    // Right click on the banner is not the panel gesture.
+    parent.style.display = "none";
+    const right = dispatchCanvasMouseDown(harness, 2, 40, 8);
+    assert.equal(right.defaultPrevented, false);
+    assert.equal(parent.style.display, "none", "right click does not open the panel");
+
+    // In command mode the banner handler defers to person-command handling.
+    const actor = harness.currentPixels.find((pixel) => pixel.element === "civ_body");
+    api.setCommandPerson(actor.humanId);
+    parent.style.display = "none";
+    dispatchCanvasMouseDown(harness, 0, 40, 8);
+    assert.equal(parent.style.display, "none", "command mode clicks do not open the panel");
+
+    // Left click off any building leaves the event for the engine.
+    api.cancelPersonCommand();
+    const empty = dispatchCanvasMouseDown(harness, 0, 5, 5);
+    assert.equal(empty.defaultPrevented, false, "clicks off a banner are not consumed");
 });
 
