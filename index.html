@@ -20627,8 +20627,12 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 		function populateElementInteractionDatalist() {
 			const datalist = document.getElementById("elementInteractionDatalist");
 			if (!datalist) return;
-			if (datalist.children.length > 0) return; // Already populated
+			// Force repopulate if elements object is larger than datalist options
 			const editableElements = Object.keys(elements).filter(element => !isLockedOverlapElement(element)).sort();
+			if (datalist.children.length >= editableElements.length && datalist.children.length > 0) return; // Already populated correctly
+
+			// Clear and repopulate
+			datalist.innerHTML = "";
 			editableElements.forEach(elem => {
 				const option = document.createElement("option");
 				option.value = elem;
