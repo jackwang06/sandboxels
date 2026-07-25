@@ -20624,24 +20624,28 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			paused = true;
 			checkPause();
 		}
+		function populateElementInteractionDatalist() {
+			const datalist = document.getElementById("elementInteractionDatalist");
+			if (!datalist) return;
+			if (datalist.children.length > 0) return; // Already populated
+			const editableElements = Object.keys(elements).filter(element => !isLockedOverlapElement(element)).sort();
+			editableElements.forEach(elem => {
+				const option = document.createElement("option");
+				option.value = elem;
+				datalist.appendChild(option);
+			});
+		}
 		function refreshElementInteractionEditor() {
 			const input = document.getElementById("elementInteractionElement");
 			const container = document.getElementById("elementInteractionOverlapContainer");
 			const layer = document.getElementById("elementInteractionLayer");
-			const datalist = document.getElementById("elementInteractionDatalist");
 			if (!input || !container || !layer) return;
 
 			const previousElement = input.value.trim();
 			const editableElements = Object.keys(elements).filter(element => !isLockedOverlapElement(element)).sort();
 
-			// Populate datalist for all searchable inputs (do once)
-			if (datalist && datalist.children.length === 0) {
-				editableElements.forEach(elem => {
-					const option = document.createElement("option");
-					option.value = elem;
-					datalist.appendChild(option);
-				});
-			}
+			// Populate datalist for all searchable inputs
+			populateElementInteractionDatalist();
 
 			// Set default element if current is invalid
 			if (!elements[previousElement]) {
