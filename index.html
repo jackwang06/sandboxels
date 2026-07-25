@@ -14599,6 +14599,8 @@ function langKey(key,fallback,template) {
 		// overlapMap stores persistent auxiliary pixels such as creatures over
 		// vegetation and alwaysOverlay/nonBlocking logical objects.
 		overlapMap = [];
+		elementOverlapCatalog = null;
+		elementOverlapCatalogInitializing = false;
 		creatureElements = Object.create(null);
 		passableVegetationElements = Object.create(null);
 		currentlyTickingPixel = null;
@@ -14667,19 +14669,121 @@ function langKey(key,fallback,template) {
 			}
 			return result;
 		}
+		function isLockedOverlapElement(element) {
+			return element === "civ_tunnel";
+		}
+		function isCivilizedHumanElement(element) {
+			return element === "civ_body" || element === "civ_head" || element === "civ_child";
+		}
+		function defaultElementsCanOverlap(firstElement,secondElement) {
+			if (!firstElement || !secondElement || !elements[firstElement] || !elements[secondElement]) return false;
+			if (isLockedOverlapElement(firstElement) || isLockedOverlapElement(secondElement)) return true;
+			const firstBuilding = elementFlag(firstElement,"isBuildingCore");
+			const secondBuilding = elementFlag(secondElement,"isBuildingCore");
+			if (firstBuilding && secondBuilding) return false;
+			if (elementFlag(firstElement,"nonBlocking") || elementFlag(secondElement,"nonBlocking")) return true;
+			const firstHuman = isCivilizedHumanElement(firstElement);
+			const secondHuman = isCivilizedHumanElement(secondElement);
+			if (firstHuman && secondHuman) return true;
+			const firstCreature = looksLikeCreatureElement(firstElement,elements[firstElement]);
+			const secondCreature = looksLikeCreatureElement(secondElement,elements[secondElement]);
+			if ((firstHuman && secondCreature) || (secondHuman && firstCreature)) return true;
+			const firstVegetation = looksLikePassableVegetationElement(firstElement,elements[firstElement]);
+			const secondVegetation = looksLikePassableVegetationElement(secondElement,elements[secondElement]);
+			return (firstCreature && secondVegetation) || (secondCreature && firstVegetation);
+		}
+		function ensureElementOverlapEntry(element) {
+			if (!elementOverlapCatalog) elementOverlapCatalog = new Map();
+			if (!elementOverlapCatalog.has(element)) elementOverlapCatalog.set(element,new Set());
+			return elementOverlapCatalog.get(element);
+		}
+		function setCatalogPair(firstElement,secondElement,allowed) {
+			if (!firstElement || !secondElement) return false;
+			const first = ensureElementOverlapEntry(firstElement);
+			const second = ensureElementOverlapEntry(secondElement);
+			if (!allowed && elements[firstElement] && elements[secondElement] && (isLockedOverlapElement(firstElement) || isLockedOverlapElement(secondElement))) {
+				first.add(secondElement);
+				second.add(firstElement);
+				return true;
+			}
+			if (allowed) {
+				first.add(secondElement);
+				second.add(firstElement);
+			}
+			else {
+				first.delete(secondElement);
+				second.delete(firstElement);
+			}
+			return true;
+		}
+		function initializeElementOverlapCatalog(force=false) {
+			if (elementOverlapCatalog && !force) return elementOverlapCatalog;
+			if (elementOverlapCatalogInitializing) return elementOverlapCatalog || new Map();
+			elementOverlapCatalogInitializing = true;
+			try {
+				elementOverlapCatalog = new Map();
+				const names = Object.keys(elements);
+				for (let i = 0; i < names.length; i++) ensureElementOverlapEntry(names[i]);
+				for (let i = 0; i < names.length; i++) {
+					for (let j = i; j < names.length; j++) {
+						if (defaultElementsCanOverlap(names[i],names[j])) setCatalogPair(names[i],names[j],true);
+					}
+				}
+				if (!settings.elementInteractions || typeof settings.elementInteractions !== "object") settings.elementInteractions = {};
+				const configured = settings.elementInteractions;
+				if (settings.elementInteractionsVersion === 2) {
+					const overrides = Object.keys(configured).filter(element => configured[element] && Array.isArray(configured[element].overlapWith));
+					for (let i = 0; i < overrides.length; i++) {
+						const element = overrides[i];
+						Array.from(ensureElementOverlapEntry(element)).forEach(other => setCatalogPair(element,other,false));
+					}
+					for (let i = 0; i < overrides.length; i++) {
+						const element = overrides[i];
+						normalizeElementInteractionList(configured[element].overlapWith).forEach(other => setCatalogPair(element,other,true));
+					}
+				}
+				else {
+					Object.keys(configured).forEach(element => {
+						const legacy = configured[element] && typeof configured[element] === "object" ? configured[element] : {};
+						const directory = ensureElementOverlapEntry(element);
+						if (legacy.overlap === "block") Array.from(directory).forEach(other => setCatalogPair(element,other,false));
+						else if (legacy.overlap === "allow") names.forEach(other => setCatalogPair(element,other,true));
+						if (legacy.sameElement === "allow") setCatalogPair(element,element,true);
+						else if (legacy.sameElement === "block") setCatalogPair(element,element,false);
+						normalizeElementInteractionList(legacy.allowWith).forEach(other => setCatalogPair(element,other,true));
+						configured[element] = {
+							renderLayer: normalizeElementInteractionMode(legacy.renderLayer,["default","top","normal"]),
+							overlapWith: Array.from(ensureElementOverlapEntry(element)).sort()
+						};
+					});
+					settings.elementInteractionsVersion = 2;
+				}
+				return elementOverlapCatalog;
+			}
+			finally { elementOverlapCatalogInitializing = false; }
+		}
+		function getElementOverlapDirectory(element) {
+			initializeElementOverlapCatalog();
+			Object.keys(elements).forEach(other => {
+				if (isLockedOverlapElement(element) || isLockedOverlapElement(other)) setCatalogPair(element,other,true);
+			});
+			return Array.from(ensureElementOverlapEntry(element)).sort();
+		}
 		function getElementInteractionSettings(element) {
+			initializeElementOverlapCatalog();
 			const all = settings.elementInteractions && typeof settings.elementInteractions === "object" ? settings.elementInteractions : {};
 			const configured = all[element] && typeof all[element] === "object" ? all[element] : {};
+			const overlapWith = getElementOverlapDirectory(element);
 			return {
-				overlap: normalizeElementInteractionMode(configured.overlap,["default","allow","block"]),
 				renderLayer: normalizeElementInteractionMode(configured.renderLayer,["default","top","normal"]),
-				sameElement: normalizeElementInteractionMode(configured.sameElement,["default","allow","block"]),
-				allowWith: normalizeElementInteractionList(configured.allowWith)
+				overlapWith: overlapWith,
+				allowWith: overlapWith.filter(other => other !== element),
+				sameElement: overlapWith.indexOf(element) !== -1 ? "allow" : "block",
+				overlap: "catalog"
 			};
 		}
 		function interactionOverlapMode(pixelOrElement) {
-			const element = typeof pixelOrElement === "string" ? pixelOrElement : pixelOrElement && pixelOrElement.element;
-			return element ? getElementInteractionSettings(element).overlap : "default";
+			return "catalog";
 		}
 		function interactionRenderLayer(pixelOrElement) {
 			const element = typeof pixelOrElement === "string" ? pixelOrElement : pixelOrElement && pixelOrElement.element;
@@ -14691,7 +14795,7 @@ function langKey(key,fallback,template) {
 		}
 		function interactionAllowWith(pixelOrElement) {
 			const element = typeof pixelOrElement === "string" ? pixelOrElement : pixelOrElement && pixelOrElement.element;
-			return element ? getElementInteractionSettings(element).allowWith : [];
+			return element ? getElementOverlapDirectory(element) : [];
 		}
 function pixelFlag(pixel,flag) {
 			if (!pixel) return false;
@@ -14705,9 +14809,6 @@ function pixelFlag(pixel,flag) {
 			return pixelFlag(pixel,"alwaysOverlay");
 		}
 		function isNonBlockingPixel(pixel) {
-			const mode = interactionOverlapMode(pixel);
-			if (mode === "allow") return true;
-			if (mode === "block") return false;
 			return pixelFlag(pixel,"nonBlocking");
 		}
 		function isEraseProtectedPixel(pixel) {
@@ -14721,24 +14822,15 @@ function pixelFlag(pixel,flag) {
 		}
 		function pixelsCanOverlap(first,second) {
 			if (!first || !second || first === second) return true;
-			const firstSettings = getElementInteractionSettings(first.element);
-			const secondSettings = getElementInteractionSettings(second.element);
-			if (firstSettings.overlap === "block" || secondSettings.overlap === "block") return false;
-			if (first.element === second.element && (firstSettings.sameElement === "block" || secondSettings.sameElement === "block")) return false;
-			if (firstSettings.overlap === "allow" || secondSettings.overlap === "allow") return true;
-			if (first.element === second.element && (firstSettings.sameElement === "allow" || secondSettings.sameElement === "allow")) return true;
-			if (firstSettings.allowWith.indexOf(second.element) !== -1 || secondSettings.allowWith.indexOf(first.element) !== -1) return true;
-			if (pixelFlag(first,"nonBlocking") || pixelFlag(second,"nonBlocking")) return true;
-			if (civilizedHumansCanOverlap(first,second)) return true;
-			if (isCreaturePixel(first) && isPassableVegetationPixel(second)) return true;
-			if (isCreaturePixel(second) && isPassableVegetationPixel(first)) return true;
-			return false;
+			if (isLockedOverlapElement(first.element) || isLockedOverlapElement(second.element)) return true;
+			initializeElementOverlapCatalog();
+			return ensureElementOverlapEntry(first.element).has(second.element);
 		}
 		function requiresOverlayStorageElement(element) {
 			const configured = getElementInteractionSettings(element);
-			return configured.renderLayer === "top" || configured.overlap === "allow" ||
+			return configured.renderLayer === "top" ||
 				(configured.renderLayer !== "normal" && elementFlag(element,"alwaysOverlay")) ||
-				(configured.overlap !== "block" && elementFlag(element,"nonBlocking"));
+				elementFlag(element,"nonBlocking");
 		}
 		function requiresOverlayStoragePixel(pixel) {
 			return isAlwaysOverlayPixel(pixel) || isNonBlockingPixel(pixel);
@@ -14774,7 +14866,7 @@ function pixelFlag(pixel,flag) {
 			const pixels = getPixelsAt(x,y);
 			for (let i = 0; i < pixels.length; i++) {
 				const other = pixels[i];
-				if (other !== pixel && getOverlayExclusiveGroup(other) === group) return other;
+				if (other !== pixel && getOverlayExclusiveGroup(other) === group && !pixelsCanOverlap(pixel,other)) return other;
 			}
 			return null;
 		}
@@ -14854,7 +14946,7 @@ function pixelFlag(pixel,flag) {
 				if (!other || other === pixel || other.del) continue;
 				if (ignorePixels && ignorePixels.has(other)) continue;
 				if (!ignorePixels && ignoreRelation !== undefined && other._r === ignoreRelation) continue;
-				if (group && getOverlayExclusiveGroup(other) === group) return other;
+				if (group && getOverlayExclusiveGroup(other) === group && !pixelsCanOverlap(pixel,other)) return other;
 				if (!pixelsCanOverlap(pixel,other)) return other;
 			}
 			return null;
@@ -15048,24 +15140,54 @@ function pixelFlag(pixel,flag) {
 			}
 			return matching.length;
 		}
+		function setElementOverlapDirectory(element,list,skipSave=false) {
+			if (!element || isLockedOverlapElement(element)) return false;
+			initializeElementOverlapCatalog();
+			const desired = normalizeElementInteractionList(list);
+			Object.keys(elements).forEach(other => { if (isLockedOverlapElement(other) && desired.indexOf(other) === -1) desired.push(other); });
+			const old = new Set(getElementOverlapDirectory(element));
+			const next = new Set(desired);
+			const affected = new Set([element]);
+			old.forEach(other => { affected.add(other); if (!next.has(other)) setCatalogPair(element,other,false); });
+			next.forEach(other => { affected.add(other); setCatalogPair(element,other,true); });
+			if (!settings.elementInteractions || typeof settings.elementInteractions !== "object") settings.elementInteractions = {};
+			const current = settings.elementInteractions[element] && typeof settings.elementInteractions[element] === "object" ? settings.elementInteractions[element] : {};
+			settings.elementInteractions[element] = {renderLayer: normalizeElementInteractionMode(current.renderLayer,["default","top","normal"]), overlapWith: getElementOverlapDirectory(element)};
+			old.forEach(other => {
+				const peer = settings.elementInteractions[other];
+				if (!next.has(other) && peer && Array.isArray(peer.overlapWith)) peer.overlapWith = normalizeElementInteractionList(peer.overlapWith).filter(name => name !== element);
+			});
+			settings.elementInteractionsVersion = 2;
+			affected.forEach(reconcileElementInteractionSettings);
+			if (!skipSave && typeof saveSettings === "function") saveSettings();
+			return true;
+		}
 		function setElementInteractionSettings(element,patch) {
-			if (!element || !patch || typeof patch !== "object") return false;
+			if (!element || isLockedOverlapElement(element) || !patch || typeof patch !== "object") return false;
+			initializeElementOverlapCatalog();
 			if (!settings.elementInteractions || typeof settings.elementInteractions !== "object") settings.elementInteractions = {};
 			const current = getElementInteractionSettings(element);
-			const next = {
-				overlap: patch.overlap === undefined ? current.overlap : normalizeElementInteractionMode(patch.overlap,["default","allow","block"]),
-				renderLayer: patch.renderLayer === undefined ? current.renderLayer : normalizeElementInteractionMode(patch.renderLayer,["default","top","normal"]),
-				sameElement: patch.sameElement === undefined ? current.sameElement : normalizeElementInteractionMode(patch.sameElement,["default","allow","block"]),
-				allowWith: patch.allowWith === undefined ? current.allowWith : normalizeElementInteractionList(patch.allowWith)
-			};
-			if (next.overlap === "default" && next.renderLayer === "default" && next.sameElement === "default" && next.allowWith.length === 0) delete settings.elementInteractions[element];
-			else settings.elementInteractions[element] = next;
+			let directory = patch.overlapWith === undefined ? current.overlapWith.slice() : normalizeElementInteractionList(patch.overlapWith);
+			if (patch.overlapWith === undefined && patch.allowWith !== undefined) directory = normalizeElementInteractionList(patch.allowWith);
+			if (patch.overlap === "allow") directory = Object.keys(elements);
+			else if (patch.overlap === "block") directory = [];
+			if (patch.sameElement === "allow" && directory.indexOf(element) === -1) directory.push(element);
+			else if (patch.sameElement === "block") directory = directory.filter(other => other !== element);
+			setElementOverlapDirectory(element,directory,true);
+			const next = settings.elementInteractions[element] || {overlapWith:getElementOverlapDirectory(element)};
+			next.renderLayer = patch.renderLayer === undefined ? current.renderLayer : normalizeElementInteractionMode(patch.renderLayer,["default","top","normal"]);
+			settings.elementInteractions[element] = next;
 			reconcileElementInteractionSettings(element);
 			if (typeof saveSettings === "function") saveSettings();
 			return true;
 		}
 		function resetElementInteractionSettings(element) {
-			return setElementInteractionSettings(element,{overlap:"default",renderLayer:"default",sameElement:"default",allowWith:[]});
+			if (!element || !elements[element] || isLockedOverlapElement(element)) return false;
+			const defaults = Object.keys(elements).filter(other => defaultElementsCanOverlap(element,other));
+			setElementOverlapDirectory(element,defaults,true);
+			if (settings.elementInteractions) delete settings.elementInteractions[element];
+			if (typeof saveSettings === "function") saveSettings();
+			return true;
 		}
 		function isPixelStored(pixel) {
 			if (!pixel || pixel.del) return false;
@@ -17170,7 +17292,7 @@ behaviorRules = {
 		};
 		// version;codes;pixels;
 		basicProperties = ["x","y","color","start","origColor","temp"];
-		vitalSettings = ["abszero","airdensity","airtemp","bg","burn","clouds","events","stain","limitless","elementInteractions","humanSocietyPeaceMode"];
+		vitalSettings = ["abszero","airdensity","airtemp","bg","burn","clouds","events","stain","limitless","elementInteractions","elementInteractionsVersion","humanSocietyPeaceMode","humanSocietySpeech"];
 		function uuidv4() {
 			return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, c =>
 				(c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
@@ -17554,6 +17676,96 @@ behaviorRules = {
 			}
 			if (showingMenu) closeMenu();
 			return pixelarray;
+		}
+
+		worldTimeline = {entries:[],cursor:-1,totalBytes:0,maxBytes:128*1024*1024,maxEntries:256,restoring:false,lastPeriodicTick:-1};
+		function updateWorldTimelineButtons() {
+			const undo = document.getElementById("undoWorldButton");
+			const redo = document.getElementById("redoWorldButton");
+			if (undo) undo.disabled = worldTimeline.cursor <= 0;
+			if (redo) redo.disabled = worldTimeline.cursor < 0 || worldTimeline.cursor >= worldTimeline.entries.length-1;
+		}
+		function createWorldTimelineSnapshot(reason) {
+			if (worldTimeline.restoring || typeof generateSave !== "function" || !pixelMap) return null;
+			const data = generateSave(pixelMap,{settings:true,mods:false});
+			if (data.meta) { data.meta.uuid = "timeline"; data.meta.seriesId = "timeline"; data.meta.seriesIndex = 0; data.meta.created = 0; data.meta.updated = 0; }
+			const json = JSON.stringify(data);
+			return {json:json,bytes:json.length*2,tick:pixelTicks,reason:reason || "checkpoint"};
+		}
+		function trimWorldTimeline() {
+			while (worldTimeline.entries.length > 1 && (worldTimeline.entries.length > worldTimeline.maxEntries || worldTimeline.totalBytes > worldTimeline.maxBytes)) {
+				const removed = worldTimeline.entries.shift();
+				worldTimeline.totalBytes -= removed.bytes;
+				worldTimeline.cursor--;
+			}
+			if (worldTimeline.cursor < 0 && worldTimeline.entries.length) worldTimeline.cursor = 0;
+		}
+		function captureWorldTimelineSnapshot(reason) {
+			const snapshot = createWorldTimelineSnapshot(reason);
+			if (!snapshot) return false;
+			const current = worldTimeline.entries[worldTimeline.cursor];
+			if (current && current.json === snapshot.json) return false;
+			if (worldTimeline.cursor < worldTimeline.entries.length-1) {
+				const removed = worldTimeline.entries.splice(worldTimeline.cursor+1);
+				removed.forEach(entry => { worldTimeline.totalBytes -= entry.bytes; });
+			}
+			worldTimeline.entries.push(snapshot);
+			worldTimeline.totalBytes += snapshot.bytes;
+			worldTimeline.cursor = worldTimeline.entries.length-1;
+			trimWorldTimeline();
+			updateWorldTimelineButtons();
+			return true;
+		}
+		function resetWorldTimeline(reason="initial") {
+			if (worldTimeline.restoring) return false;
+			worldTimeline.entries = [];
+			worldTimeline.cursor = -1;
+			worldTimeline.totalBytes = 0;
+			worldTimeline.lastPeriodicTick = -1;
+			captureWorldTimelineSnapshot(reason);
+			return true;
+		}
+		function restoreWorldTimelineEntry(index) {
+			const entry = worldTimeline.entries[index];
+			if (!entry || worldTimeline.restoring) return false;
+			worldTimeline.restoring = true;
+			try {
+				loadSave(JSON.parse(entry.json),3,3);
+				initializeElementOverlapCatalog(true);
+				paused = true;
+				manualPaused = true;
+				if (typeof checkPause === "function") checkPause();
+				if (window.HumanSociety && typeof window.HumanSociety.forceReindex === "function") window.HumanSociety.forceReindex();
+				worldTimeline.cursor = index;
+				worldTimeline.lastPeriodicTick = pixelTicks;
+				updateWorldTimelineButtons();
+				return true;
+			}
+			finally { worldTimeline.restoring = false; }
+		}
+		function undoWorld() {
+			if (worldTimeline.restoring) return false;
+			captureWorldTimelineSnapshot("undo-current");
+			if (worldTimeline.cursor <= 0) return false;
+			return restoreWorldTimelineEntry(worldTimeline.cursor-1);
+		}
+		function redoWorld() {
+			if (worldTimeline.restoring || worldTimeline.cursor < 0 || worldTimeline.cursor >= worldTimeline.entries.length-1) return false;
+			return restoreWorldTimelineEntry(worldTimeline.cursor+1);
+		}
+		function getTimelineState() {
+			return {canUndo:worldTimeline.cursor>0,canRedo:worldTimeline.cursor>=0&&worldTimeline.cursor<worldTimeline.entries.length-1,count:worldTimeline.entries.length,cursor:worldTimeline.cursor,totalBytes:worldTimeline.totalBytes};
+		}
+		function markWorldTimelineBranch() {
+			if (worldTimeline.restoring || worldTimeline.cursor >= worldTimeline.entries.length-1) return;
+			const removed = worldTimeline.entries.splice(worldTimeline.cursor+1);
+			removed.forEach(entry => { worldTimeline.totalBytes -= entry.bytes; });
+			updateWorldTimelineButtons();
+		}
+		function capturePeriodicWorldTimeline() {
+			if (worldTimeline.restoring || pixelTicks <= 0 || pixelTicks % 30 !== 0 || worldTimeline.lastPeriodicTick === pixelTicks) return false;
+			worldTimeline.lastPeriodicTick = pixelTicks;
+			return captureWorldTimelineSnapshot("tick");
 		}
 
 		function explodeAt(x,y,radius,fire="fire") {
@@ -18187,6 +18399,7 @@ behaviorRules = {
 			}
 
 			if (paused === true || manualPaused === true) return;
+			markWorldTimelineBranch();
 
 			if (settings.events !== undefined && settings.events !== 0) {
 				doRandomEvents();
@@ -18202,6 +18415,7 @@ behaviorRules = {
 					runEveryTickList[i]();
 				}
 			}
+			capturePeriodicWorldTimeline();
 		}
 	
 		currentElement = "unknown";
@@ -18367,6 +18581,7 @@ behaviorRules = {
 			if (elements[currentElement] && elements[currentElement].onMouseUp) {
 				elements[currentElement].onMouseUp(e);
 			}
+			captureWorldTimelineSnapshot("player-operation");
 		}
 
 		function getMousePos(canvas, evt) {
@@ -20411,44 +20626,135 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 		}
 		function refreshElementInteractionEditor() {
 			const input = document.getElementById("elementInteractionElement");
-			const list = document.getElementById("elementInteractionElements");
-			const overlap = document.getElementById("elementInteractionOverlap");
-			const sameElement = document.getElementById("elementInteractionSame");
-			const allowWith = document.getElementById("elementInteractionAllowWith");
+			const container = document.getElementById("elementInteractionOverlapContainer");
 			const layer = document.getElementById("elementInteractionLayer");
-			if (!input || !list || !overlap || !sameElement || !allowWith || !layer) return;
-			if (!list.childElementCount) {
-				Object.keys(elements).sort().forEach(element => {
+			const datalist = document.getElementById("elementInteractionDatalist");
+			if (!input || !container || !layer) return;
+
+			const previousElement = input.value.trim();
+			const editableElements = Object.keys(elements).filter(element => !isLockedOverlapElement(element)).sort();
+
+			// Populate datalist for all searchable inputs (do once)
+			if (datalist && datalist.children.length === 0) {
+				editableElements.forEach(elem => {
 					const option = document.createElement("option");
-					option.value = element;
-					list.appendChild(option);
+					option.value = elem;
+					datalist.appendChild(option);
 				});
 			}
+
+			// Set default element if current is invalid
+			if (!elements[previousElement]) {
+				input.value = editableElements.indexOf("civ_body") !== -1 ? "civ_body" : editableElements[0] || "";
+			}
+
 			const element = input.value.trim();
 			if (!elements[element]) return;
+
 			const configured = getElementInteractionSettings(element);
-			overlap.value = configured.overlap;
-			if (sameElement.dataset.edited !== "true") sameElement.value = configured.sameElement;
-			if (allowWith.dataset.edited !== "true") allowWith.value = configured.allowWith.join(", ");
+
+			// Build the overlap list UI with searchable inputs
+			container.innerHTML = "";
+			const overlapList = configured.overlapWith.filter(other => !isLockedOverlapElement(other));
+			overlapList.forEach((other, index) => {
+				const row = document.createElement("div");
+				row.style.cssText = "display:flex;gap:0.3em;align-items:center;";
+				row.dataset.elementName = other;
+
+				const inputWrapper = document.createElement("span");
+				inputWrapper.style.cssText = "flex:1;position:relative;";
+
+				const searchInput = document.createElement("input");
+				searchInput.type = "text";
+				searchInput.value = other;
+				searchInput.list = "elementInteractionDatalist";
+				searchInput.style.cssText = "width:100%;box-sizing:border-box;";
+				searchInput.placeholder = "输入元素名搜索...";
+				searchInput.onchange = function() {
+					row.dataset.elementName = this.value.trim();
+				};
+
+				inputWrapper.appendChild(searchInput);
+				row.appendChild(inputWrapper);
+
+				const removeBtn = document.createElement("button");
+				removeBtn.textContent = "×";
+				removeBtn.type = "button";
+				removeBtn.style.cssText = "padding:0.2em 0.5em;cursor:pointer;";
+				removeBtn.title = "删除此项";
+				removeBtn.onclick = function() {
+					container.removeChild(row);
+				};
+				row.appendChild(removeBtn);
+
+				container.appendChild(row);
+			});
+
 			layer.value = configured.renderLayer;
+		}
+		function addElementInteractionEntry() {
+			const element = document.getElementById("elementInteractionElement").value;
+			const container = document.getElementById("elementInteractionOverlapContainer");
+			if (!elements[element] || !container || isLockedOverlapElement(element)) return false;
+
+			const row = document.createElement("div");
+			row.style.cssText = "display:flex;gap:0.3em;align-items:center;";
+			row.dataset.elementName = "";
+
+			const inputWrapper = document.createElement("span");
+			inputWrapper.style.cssText = "flex:1;position:relative;";
+
+			const searchInput = document.createElement("input");
+			searchInput.type = "text";
+			searchInput.value = "";
+			searchInput.list = "elementInteractionDatalist";
+			searchInput.style.cssText = "width:100%;box-sizing:border-box;";
+			searchInput.placeholder = "输入元素名搜索...";
+			searchInput.onchange = function() {
+				row.dataset.elementName = this.value.trim();
+			};
+
+			inputWrapper.appendChild(searchInput);
+			row.appendChild(inputWrapper);
+
+			const removeBtn = document.createElement("button");
+			removeBtn.textContent = "×";
+			removeBtn.type = "button";
+			removeBtn.style.cssText = "padding:0.2em 0.5em;cursor:pointer;";
+			removeBtn.title = "删除此项";
+			removeBtn.onclick = function() {
+				container.removeChild(row);
+			};
+			row.appendChild(removeBtn);
+
+			container.appendChild(row);
+			searchInput.focus();
+			return true;
+		}
+		function removeElementInteractionEntry() {
+			// This function is now handled by individual × buttons, kept for compatibility
+			return false;
 		}
 		function applyElementInteractionEditor(reset) {
 			const input = document.getElementById("elementInteractionElement");
-			const element = input && input.value.trim();
+			const element = input && input.value;
 			if (!element || !elements[element]) {
 				if (typeof logMessage === "function") logMessage("Unknown element: " + (element || "(empty)"));
 				return false;
 			}
+			captureWorldTimelineSnapshot("before-element-interaction");
 			if (reset) resetElementInteractionSettings(element);
-			else setElementInteractionSettings(element,{
-				overlap: document.getElementById("elementInteractionOverlap").value,
-				sameElement: document.getElementById("elementInteractionSame").value,
-				allowWith: document.getElementById("elementInteractionAllowWith").value.split(","),
-				renderLayer: document.getElementById("elementInteractionLayer").value
-			});
-			document.getElementById("elementInteractionSame").dataset.edited = "false";
-			document.getElementById("elementInteractionAllowWith").dataset.edited = "false";
+			else {
+				const container = document.getElementById("elementInteractionOverlapContainer");
+				const rows = container ? Array.from(container.children) : [];
+				const overlapWith = rows.map(row => row.dataset.elementName).filter(name => name && elements[name] && !isLockedOverlapElement(name));
+				setElementInteractionSettings(element,{
+					overlapWith: overlapWith,
+					renderLayer: document.getElementById("elementInteractionLayer").value
+				});
+			}
 			refreshElementInteractionEditor();
+			captureWorldTimelineSnapshot("after-element-interaction");
 			return true;
 		}
 		function setSetting(setting,value) {
@@ -21350,6 +21656,7 @@ window.onload = function() {
 	document.getElementById("canvasDiv").style.display = "block";
 
 	clearAll();
+	resetWorldTimeline("initial");
 	// randomChoices = the keys of "elements" with any element with the category "tools" or the property excludeRandom set to true removed
 	randomChoices = Object.keys(elements).filter(function(e) {
 		let info = elements[e];
@@ -21358,12 +21665,14 @@ window.onload = function() {
 		return info.category !== "tools" && info.category !== "edit" && !info.tool;
 	});
 	gameCanvas.addEventListener("mousedown", function(e){
+		captureWorldTimelineSnapshot("before-player-operation");
 		if (!showingMenu && elements[currentElement] && elements[currentElement].onMouseDown && e.button == 0) {
 			elements[currentElement].onMouseDown(e);
 		}
 	});
 	gameCanvas.addEventListener("mousedown", mouseClick);
 	gameCanvas.addEventListener("touchstart", function(e) {
+		captureWorldTimelineSnapshot("before-player-operation");
 		mousePos = getMousePos(canvas, e);
 		if (e.touches) e = e.touches[0];
 		if (!showingMenu && elements[currentElement] && elements[currentElement].onMouseDown) {
@@ -21492,7 +21801,16 @@ window.onload = function() {
 			}
 		}
 		if (e.ctrlKey || e.metaKey) {
-			if (e.keyCode == 83) { // Ctrl+S = Save
+			if (e.keyCode == 90) {
+				e.preventDefault();
+				if (e.shiftKey) redoWorld();
+				else undoWorld();
+			}
+			else if (e.keyCode == 89) {
+				e.preventDefault();
+				redoWorld();
+			}
+			else if (e.keyCode == 83) { // Ctrl+S = Save
 				e.preventDefault();
 				saveToFile();
 				if (e.shiftKey) confirmSave();
@@ -21754,7 +22072,7 @@ window.onload = function() {
 			<div id="stats"></div>
 			<div id="controls">
 				<div id="toolControls">
-					<button id="shiftButton" title="Toggle Shift key" class="controlButton" onclick='toggleShift();focusGame();' on="false" style="display:none">↑</button><button id="pauseButton" title="Pause/play the simulation" class="controlButton" onclick='paused=!paused;manualPaused=paused;checkPause();focusGame();' on="false">Pause</button><button id="frameButton" title="Pause and play one frame" class="controlButton" onclick='doFrame();focusGame();' on="false">&gt;</button><button id="speedButton" title="Simulation speed: 30 TPS" class="controlButton" onclick='cycleSimulationSpeed();'>1×</button><button id="sizeDownButton" title="Decrease the brush size" class="controlButton" onclick="mouseSize -= shiftDown?mouseSize-1:1;checkMouseSize(-1);centerMouse();focusGame();">-</button><button id="sizeUpButton" title="Increase the brush size" class="controlButton" onclick="mouseSize += shiftDown?14:1;checkMouseSize(1);centerMouse();focusGame();">+</button><button id="resetButton" title="Clear the entire scene" class="controlButton" onclick="resetPrompt();">Reset</button><button id="replaceButton" title="Override existing pixels when placing" class="controlButton" onclick='if (mode == "replace") {mode = null;this.setAttribute("on","false");}else {mode = "replace";this.setAttribute("on","true");};focusGame();' on="false">Replace</button><button id="elemSelectButton" title="Select an element by name" class="controlButton" onclick='chooseElementPrompt();'>Elem</button><button id="editModeButton" title="Switch to Edit Mode" class="controlButton" onclick='toggleEditMode();'>Edit</button><button id="infoButton" title="Brings up the element info screen" class="controlButton" onclick='if (showingMenu!="info"){closeMenu();showInfo("")}else{closeMenu()};' on="false">Info</button><button id="savesButton" title="Brings up the Save & Load menu" class="controlButton" onclick='if (showingMenu!="saves"){closeMenu();showSaves()}else{closeMenu()};' on="false">Saves</button><button id="modsButton" title="Brings up the Mod Manager" class="controlButton" onclick='if (showingMenu!="mods"){closeMenu();showModManager()}else{closeMenu()};' on="false">Mods</button><button id="settingsButton" title="Brings up the settings screen" class="controlButton" onclick='if (showingMenu!="settings"){closeMenu();showSettings()}else{closeMenu()};' on="false">Settings</button>
+					<span id="interactionModeSwitch" role="group" aria-label="交互模式"><button id="interactionModePlace" title="放置和擦除方块" class="controlButton" onclick='HumanSociety.setInteractionMode("place");focusGame();' on="true" aria-pressed="true">放置</button><button id="interactionModeControl" title="右键选择文明人类并下达命令" class="controlButton" onclick='HumanSociety.setInteractionMode("control");focusGame();' on="false" aria-pressed="false">控制</button></span><button id="shiftButton" title="Toggle Shift key" class="controlButton" onclick='toggleShift();focusGame();' on="false" style="display:none">↑</button><button id="pauseButton" title="Pause/play the simulation" class="controlButton" onclick='paused=!paused;manualPaused=paused;checkPause();focusGame();' on="false">Pause</button><button id="frameButton" title="Pause and play one frame" class="controlButton" onclick='doFrame();focusGame();' on="false">&gt;</button><button id="speedButton" title="Simulation speed: 30 TPS" class="controlButton" onclick='cycleSimulationSpeed();'>1×</button><button id="undoWorldButton" title="撤回世界状态 (Ctrl+Z)" class="controlButton" onclick='undoWorld();focusGame();' disabled>↶</button><button id="redoWorldButton" title="恢复世界状态 (Ctrl+Y)" class="controlButton" onclick='redoWorld();focusGame();' disabled>↷</button><button id="sizeDownButton" title="Decrease the brush size" class="controlButton" onclick="mouseSize -= shiftDown?mouseSize-1:1;checkMouseSize(-1);centerMouse();focusGame();">-</button><button id="sizeUpButton" title="Increase the brush size" class="controlButton" onclick="mouseSize += shiftDown?14:1;checkMouseSize(1);centerMouse();focusGame();">+</button><button id="resetButton" title="Clear the entire scene" class="controlButton" onclick="captureWorldTimelineSnapshot('before-reset');resetPrompt();">Reset</button><button id="replaceButton" title="Override existing pixels when placing" class="controlButton" onclick='if (mode == "replace") {mode = null;this.setAttribute("on","false");}else {mode = "replace";this.setAttribute("on","true");};focusGame();' on="false">Replace</button><button id="elemSelectButton" title="Select an element by name" class="controlButton" onclick='chooseElementPrompt();'>Elem</button><button id="editModeButton" title="Switch to Edit Mode" class="controlButton" onclick='toggleEditMode();'>Edit</button><button id="infoButton" title="Brings up the element info screen" class="controlButton" onclick='if (showingMenu!="info"){closeMenu();showInfo("")}else{closeMenu()};' on="false">Info</button><button id="savesButton" title="Brings up the Save & Load menu" class="controlButton" onclick='if (showingMenu!="saves"){closeMenu();showSaves()}else{closeMenu()};' on="false">Saves</button><button id="modsButton" title="Brings up the Mod Manager" class="controlButton" onclick='if (showingMenu!="mods"){closeMenu();showModManager()}else{closeMenu()};' on="false">Mods</button><button id="settingsButton" title="Brings up the Settings screen" class="controlButton" onclick='if (showingMenu!="settings"){closeMenu();showSettings()}else{closeMenu()};' on="false">Settings</button>
 				</div>
 				<script>
 					// if it is the 1st of April, add a rainbow-colored button
@@ -22063,21 +22381,14 @@ window.onload = function() {
 					<span setting="limitless" class="setting-span multisetting" title="Default: OFF">
 						<input type="button" value="Limitless" id="settingLabel-limitless" class="toggleInput" onclick="toggleInput(this,'limitless',false); refreshMaxPixels(); checkMouseSize(true);" state="0">
 					</span>
+					<span setting="humanSocietySpeech" class="setting-span multisetting" title="控制文明人类头顶语言气泡">
+						<input type="button" value="人类说话" id="settingLabel-humanSocietySpeech" class="toggleInput" onclick="toggleInput(this,'humanSocietySpeech',false)" state="1">
+					</span>
 					<span class="setting-span multisetting" id="elementInteractionSetting" title="Configure collision and render order for any element">
 						<span>元素重叠</span>
-						<input id="elementInteractionElement" list="elementInteractionElements" placeholder="输入元素名称" onchange="refreshElementInteractionEditor()">
-						<datalist id="elementInteractionElements"></datalist>
-						<select id="elementInteractionOverlap">
-							<option value="default">重叠：默认</option>
-							<option value="allow">重叠：允许</option>
-							<option value="block">重叠：禁止</option>
-						</select>
-						<select id="elementInteractionSame" onchange="this.dataset.edited='true'">
-							<option value="default">同类：默认</option>
-							<option value="allow">同类：允许</option>
-							<option value="block">同类：禁止</option>
-						</select>
-						<input id="elementInteractionAllowWith" list="elementInteractionElements" placeholder="允许元素，逗号分隔" oninput="this.dataset.edited='true'">
+						<input type="text" id="elementInteractionElement" list="elementInteractionDatalist" placeholder="输入元素名搜索..." style="width:200px;" onchange="refreshElementInteractionEditor()">
+						<div id="elementInteractionOverlapContainer" style="display:flex;flex-direction:column;gap:0.3em;margin:0.5em 0;"></div>
+						<input type="button" value="+ 添加可重叠元素" onclick="addElementInteractionEntry()">
 						<select id="elementInteractionLayer">
 							<option value="default">层级：默认</option>
 							<option value="top">层级：最上层</option>
@@ -22410,6 +22721,7 @@ if (document.referrer && document.referrer.indexOf("r74n.") === -1) {
 	gtag('js', new Date());
 	gtag('config', 'UA-93720349-9');
 </script>
+<datalist id="elementInteractionDatalist"></datalist>
 
 </body>
 
