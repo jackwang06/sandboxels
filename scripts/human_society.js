@@ -1,11 +1,12 @@
 (function (root) {
     "use strict";
 
-    if (!root || !root.HumanSocietyCore || typeof elements === "undefined") {
+    if (!root || !root.HumanSocietyCore || !root.HumanSocietyPathfinding || typeof elements === "undefined") {
         return;
     }
 
     const Core = root.HumanSocietyCore;
+    const Pathfinding = root.HumanSocietyPathfinding;
     const World = root.HumanSocietyWorld || {};
     const TechData = root.HumanSocietyTechData || {ERAS: [], TECHNOLOGIES: [], FUELS: {}, RECIPES: {}, RANGED_WEAPONS: {}, DEFAULT_VISION: []};
     const C = Object.assign({
@@ -16,11 +17,18 @@
         THINK_INTERVAL: 10,
         LOCOMOTION_INTERVAL_TICKS: 2,
         NAVIGATION_STALL_TICKS: 300,
+        PATH_SEARCH_MARGIN_MIN: 12,
+        PATH_SEARCH_MARGIN_MAX: 32,
+        PATH_SEARCH_NODES_PER_TICK: 96,
+        PATH_SEARCH_PLAYER_NODES_PER_TICK: 256,
+        PATH_SEARCH_MAX_NODES: 4096,
         CIVILIZATION_INTERVAL: 30,
         FULL_REBUILD_INTERVAL: 300,
         MAX_RESOURCE_CHECKS: 256,
         RESOURCE_RADIUS: 12,
         EXTENDED_RESOURCE_RADIUS: 20,
+        FIRE_RESPONSE_RADIUS: 32,
+        FIRE_SCAN_INTERVAL: 10,
         ADULT_HP: 100,
         CHILD_HP: 50,
         BIRTH_COOLDOWN: 0,
@@ -59,7 +67,6 @@
         TREE_PLANT_SPACING: 4,
         TREE_PLANT_SEARCH_RADIUS: 20,
         TREE_SEED_GUARANTEE: 5,
-        TREE_SAPLING_CHANCE: 0.2,
         WOOD_FOOD_BONUS_CHANCE: 0.5,
         RANGED_PROJECTILE_STEP_TICKS: 2,
         PERSON_ACTIVITY_SCHEMA_VERSION: 1,
@@ -99,6 +106,8 @@
     const MATERIAL_KEYS = ["tree_branch", "bamboo", "wood", "stone", "charcoal", "copper", "tin", "bronze", "raw_iron", "iron", "steel"];
     const STOCK_KEYS = ["food", "wood", "stone", "charcoal", "copper", "tin", "bronze", "raw_iron", "iron", "steel"];
     const NONRENEWABLE_KINDS = new Set(["stone", "copper", "tin", "raw_iron"]);
+    const DIRECT_FIRE_ELEMENTS = new Set(["fire", "plasma", "ember", "fw_ember", "torch"]);
+    const EXTINGUISHED_FIRE_ELEMENTS = {fire: "smoke", plasma: "smoke", ember: "ash", fw_ember: "smoke", torch: "wood"};
     const TREE_SEEDS = {
         tree_branch: "sapling",
         wood: "sapling",
@@ -106,9 +115,24 @@
         bamboo: "bamboo_plant"
     };
     const TREE_SAPLING_ELEMENTS = new Set(["sapling", "pinecone", "bamboo_plant"]);
+    const TREE_SAPLING_PREFIX = "tree_sapling:";
+    const NAVIGATION_SCHEMA_VERSION = 4;
+    const RESOURCE_FAILURE_COOLDOWN = 300;
+    const ROTTEN_MEAT_FAILURE_COOLDOWN = 600;
     const WOOD_BEARING_TREE_ELEMENTS = new Set(["wood", "tree_branch", "evergreen", "bamboo"]);
+    const TREE_COMPONENT_ELEMENTS = new Set(["wood", "tree_branch", "evergreen", "bamboo", "plant", "leaves", "pine_needles", "sapling", "pinecone", "bamboo_plant", "dead_plant", "frozen_plant"]);
+    const LEGACY_TREE_LEAF_ELEMENTS = new Set(["plant", "leaves", "pine_needles", "dead_plant", "frozen_plant"]);
     const PLANTED_TREE_SEEDS = new Set(["sapling", "pinecone", "bamboo_plant"]);
+    const CARRIED_RESOURCE_KINDS = {
+        civ_food_resource: "food", civ_stone_resource: "stone", civ_copper_resource: "copper",
+        civ_tin_resource: "tin", civ_raw_iron_resource: "raw_iron", civ_charcoal_resource: "charcoal"
+    };
+    const FALLING_RESOURCE_ELEMENTS = {
+        wood: "civ_wood_resource", food: "civ_food_resource", stone: "civ_stone_resource",
+        copper: "civ_copper_resource", tin: "civ_tin_resource", raw_iron: "civ_raw_iron_resource", charcoal: "civ_charcoal_resource"
+    };
     const OBSCURING_ELEMENTS = new Set(["smoke", "steam", "fog", "cloud", "rain_cloud", "dust", "sandstorm", "ash", "acid_gas"]);
+    if (typeof settings !== "undefined" && settings.humanSocietySpeech === undefined) settings.humanSocietySpeech = true;
 
     const manager = {
         actors: new Set(),
@@ -125,10 +149,16 @@
         relationRecords: new Map(),
         foundingSince: new Map(),
         buckets: new Map(),
+        actorBucketByPixel: new Map(),
         resourceIndex: new Map(),
+        resourceNodeByPixel: new Map(),
+        fireTargets: [],
+        lastFireScanTick: -Infinity,
         resourceReservations: World.ResourceReservations ? new World.ResourceReservations() : null,
         territory: null,
         treeById: new Map(),
+        treePixelsByLineage: new Map(),
+        dirtyTreeLineages: new Set(),
         archivedChronicles: [],
         pendingResourceDrops: [],
         overlaySettings: {territory: false, resources: true, resourceFilters: {food: true, tree: true, stone: true, metals: true, drops: true}},
@@ -147,8 +177,20 @@
         nextBuildingId: 1,
         nextTreeId: 1,
         nextTerritoryClaimOrder: 1,
+        navigationRevision: 1,
+        routeSearches: new Map(),
+        routeRejectedEdges: new Map(),
         lastFullRebuild: -1,
         lastIndexTick: -1,
+        lastDerivedRefreshTick: -1,
+        lastAuditStartedTick: -1,
+        lastAuditCompletedTick: -1,
+        auditCursor: 0,
+        auditLimit: 0,
+        auditRunning: false,
+        derivedIndexesDirty: false,
+        lifecycleEvents: 0,
+        auditPixels: 0,
         lastDiplomacyTick: -1,
         perfTotal: 0,
         perfSamples: 0,
@@ -495,6 +537,13 @@
         if (!stock.materials || typeof stock.materials !== "object") stock.materials = {};
         if (!stock.seeds || typeof stock.seeds !== "object") stock.seeds = {};
         if (!stock.treeSaplings || typeof stock.treeSaplings !== "object") stock.treeSaplings = {};
+        const legacyTreeSaplings = {apling: "sapling", inecone: "pinecone", amboo_plant: "bamboo_plant"};
+        Object.keys(legacyTreeSaplings).forEach((legacyKey) => {
+            if (!Object.prototype.hasOwnProperty.call(stock.treeSaplings, legacyKey)) return;
+            const seed = legacyTreeSaplings[legacyKey];
+            stock.treeSaplings[seed] = Math.max(0, safeNumber(stock.treeSaplings[seed], 0)) + Math.max(0, safeNumber(stock.treeSaplings[legacyKey], 0));
+            delete stock.treeSaplings[legacyKey];
+        });
         TREE_SAPLING_ELEMENTS.forEach((seed) => {
             const legacy = Math.max(0, safeNumber(stock.seeds[seed], 0));
             stock.treeSaplings[seed] = Math.max(0, safeNumber(stock.treeSaplings[seed], 0)) + legacy;
@@ -577,6 +626,8 @@
         const research = banner.research;
         research.schemaVersion = 2;
         research.knowledge = Math.max(0, safeNumber(research.knowledge, 0));
+        research.lastKnowledgeGain = Math.max(0, safeNumber(research.lastKnowledgeGain, 0));
+        research.totalKnowledgeGenerated = Math.max(research.knowledge, safeNumber(research.totalKnowledgeGenerated, research.knowledge));
         if (!research.domainExperience || typeof research.domainExperience !== "object") research.domainExperience = {};
         ["production", "construction", "society", "military"].forEach((domain) => {
             research.domainExperience[domain] = Math.max(0, safeNumber(research.domainExperience[domain], 0));
@@ -615,7 +666,6 @@
             roleWorkSpeed: 1,
             farmYield: 1,
             farmPlots: 0,
-            seedDropBonus: 0,
             birthFoodCost: C.BIRTH_FOOD_COST,
             constructionSlots: 1,
             wartimeWarriorRatio: C.WARTIME_WARRIOR_RATIO,
@@ -633,7 +683,6 @@
         if (hasTech(faction, "polished_axes")) mods.woodHarvestSpeed *= 0.8;
         if (hasTech(faction, "quarrying")) mods.stoneHarvestSpeed *= 0.75;
         if (hasTech(faction, "craft_specialization")) mods.roleWorkSpeed *= 1.15;
-        if (hasTech(faction, "managed_forestry")) mods.seedDropBonus += 0.25;
         if (hasTech(faction, "granary")) mods.birthFoodCost = C.BIRTH_FOOD_COST;
         if (hasTech(faction, "irrigation")) { mods.farmYield *= 1.25; mods.farmPlots += 2; }
         if (hasTech(faction, "militia")) { mods.peacetimeWarriors = 1; mods.wartimeWarriorRatio = 0.5; }
@@ -830,6 +879,109 @@
         return (exact || domain || candidates[0]).tech;
     }
 
+    function researchBlockerForTech(tech, faction, banner, visited) {
+        if (!tech) return null;
+        const research = ensureResearchState(banner);
+        const seen = visited || new Set();
+        if (seen.has(tech.id)) return null;
+        seen.add(tech.id);
+        const prerequisites = tech.prerequisites || [];
+        for (let i = 0; i < prerequisites.length; i++) {
+            const prerequisiteId = prerequisites[i];
+            if (research.unlocked[prerequisiteId]) continue;
+            const prerequisite = manager.technologies.get(prerequisiteId);
+            const nested = researchBlockerForTech(prerequisite, faction, banner, seen);
+            return nested || {type:"prerequisite", id:prerequisiteId, techId:tech.id};
+        }
+        const availability = techAvailability(tech, faction, banner);
+        const unmet = (availability.conditionStates || []).find(state => !state.met);
+        if (unmet) return {type:unmet.condition.type, resource:unmet.condition.resource || null, milestone:unmet.condition.id || null, current:unmet.current, required:unmet.required, hard:!!unmet.condition.hard, techId:tech.id};
+        if (!availability.eraAvailable) return {type:"era", techId:tech.id, required:techEraId(tech)};
+        return null;
+    }
+
+    function currentResearchBlocker(faction, banner) {
+        const currentIndex = eraIndexFor(banner);
+        const candidates = allTechnologies().filter(tech => !banner.research.unlocked[tech.id] && safeNumber(tech.eraIndex, 0) <= currentIndex)
+            .sort((a, b) => Math.abs(currentIndex-safeNumber(a.eraIndex,0))-Math.abs(currentIndex-safeNumber(b.eraIndex,0)) || safeNumber(a.eraIndex,0)-safeNumber(b.eraIndex,0));
+        let fallback = null;
+        for (let i = 0; i < candidates.length; i++) {
+            const blocker = researchBlockerForTech(candidates[i], faction, banner, new Set());
+            if (!blocker) continue;
+            if (!fallback) fallback = blocker;
+            if (rawBreakthroughResource(blocker.resource)) return blocker;
+        }
+        return fallback;
+    }
+
+    function rawBreakthroughResource(resource) {
+        if (resource === "stone" || resource === "copper" || resource === "tin" || resource === "raw_iron") return resource;
+        if (resource === "iron" || resource === "steel") return "raw_iron";
+        if (resource === "bronze") return "copper";
+        return null;
+    }
+
+    function breakthroughElement(resource) {
+        if (resource === "stone") return elements.rock ? "rock" : "stone";
+        if (resource === "raw_iron") return elements.iron_ore ? "iron_ore" : "iron";
+        return elements[resource] ? resource : null;
+    }
+
+    function resourceExistsForBreakthrough(resource) {
+        const nodes = manager.resourceIndex.get(resource) || [];
+        return nodes.some(node => node && node.pixel && !node.pixel.del);
+    }
+
+    function createTerritoryMineralDeposit(faction, banner, blocker) {
+        const resource = rawBreakthroughResource(blocker && blocker.resource);
+        const element = breakthroughElement(resource);
+        if (!resource || !element || resourceExistsForBreakthrough(resource)) return 0;
+        const deficit = Math.max(1, Math.ceil(safeNumber(blocker.required, 1)-safeNumber(blocker.current, 0)));
+        const multiplier = blocker.resource === "iron" ? 2 : (blocker.resource === "steel" ? 4 : (blocker.resource === "bronze" ? 3 : 1));
+        const amount = Math.max(3, Math.min(12, deficit*multiplier+1));
+        const candidates = currentPixels.filter(pixel => pixel && !pixel.del && (pixel.element === "rock" || pixel.element === "dirt") &&
+            manager.territory && manager.territory.ownerAt(pixel.x) === faction.id && !pixel.eraseProtected && !getActorFromPixel(pixel) && !isBuildingCorePixel(pixel));
+        candidates.sort((a, b) => (b.y-a.y) || Core.distance(a.x,a.y,banner.x,banner.y)-Core.distance(b.x,b.y,banner.x,banner.y));
+        let changed = 0;
+        for (let i = 0; i < candidates.length && changed < amount; i++) {
+            const pixel = candidates[i];
+            if (pixelsAt(pixel.x,pixel.y).some(other => other !== pixel && (getActorFromPixel(other) || isBuildingCorePixel(other)))) continue;
+            changePixel(pixel, element);
+            pixel.discoveredByFactionId = faction.id;
+            changed++;
+        }
+        if (changed) {
+            rebuildResourceAndTreeIndex();
+            logSettlementEvent(banner, "mineral_breakthrough", "领地内发现矿脉：" + resource, {resource, amount:changed, blockedTechnologyId:blocker.techId});
+        }
+        return changed;
+    }
+
+    function updateResearchBlocker(faction, banner, tech) {
+        const research = ensureResearchState(banner);
+        if (tech) {
+            delete research.blockedTechId;
+            delete research.blockedReason;
+            delete research.blockedResource;
+            delete research.blockedSinceTick;
+            return;
+        }
+        const blocker = currentResearchBlocker(faction, banner);
+        if (!blocker) return;
+        const key = [blocker.type, blocker.resource || blocker.milestone || blocker.id || "", blocker.techId || ""].join(":");
+        if (research.blockedReason !== key) research.blockedSinceTick = pixelTicks;
+        research.blockedReason = key;
+        research.blockedTechId = blocker.techId || null;
+        research.blockedResource = blocker.resource || null;
+        research.blockedCurrent = safeNumber(blocker.current, 0);
+        research.blockedRequired = safeNumber(blocker.required, 0);
+        if (!Number.isFinite(research.blockedSinceTick)) research.blockedSinceTick = pixelTicks;
+        if (pixelTicks-research.blockedSinceTick >= 900 && createTerritoryMineralDeposit(faction,banner,blocker) > 0) {
+            research.lastBreakthroughTick = pixelTicks;
+            research.blockedSinceTick = pixelTicks;
+        }
+    }
+
     function unlockTechnology(faction, banner, tech) {
         const research = ensureResearchState(banner);
         if (!tech || research.unlocked[tech.id]) return false;
@@ -881,7 +1033,10 @@
         const merchants = faction.adults.filter((actor) => (actor.role === "merchant" || actor.role === "artisan_trade") && faction.markets.some((market) => Core.distance(actor.x, actor.y, market.x, market.y) <= 2.5)).length;
         const baseGain = 0.4 + faction.adultPopulation * C.KNOWLEDGE_PER_ADULT_STEP + scholars * 0.65 + merchants * 0.25;
         const peaceBonus = factionIsAtWar(faction.id) ? 0.85 : 1;
-        research.knowledge += baseGain * safeNumber(faction.techModifiers && faction.techModifiers.knowledgeRate, 1) * peaceBonus;
+        const gain = baseGain * safeNumber(faction.techModifiers && faction.techModifiers.knowledgeRate, 1) * peaceBonus;
+        research.lastKnowledgeGain = gain;
+        research.totalKnowledgeGenerated += gain;
+        research.knowledge += gain;
         const tech = selectResearch(faction, banner);
         if (tech) {
             const cost = effectiveResearchCost(tech, faction, banner);
@@ -893,6 +1048,7 @@
             if (research.progress[tech.id] >= cost) unlockTechnology(faction, banner, tech);
         }
         else delete research.activeTechId;
+        updateResearchBlocker(faction, banner, tech);
         maybeAdvanceEra(faction, banner);
         research.lastStepTick = pixelTicks;
     }
@@ -1014,6 +1170,31 @@
         return Math.floor(x / C.BUCKET_SIZE) + "," + Math.floor(y / C.BUCKET_SIZE);
     }
 
+    function removeActorFromBucket(pixel) {
+        const previousKey = manager.actorBucketByPixel.get(pixel);
+        if (!previousKey) return false;
+        const bucket = manager.buckets.get(previousKey);
+        if (bucket) {
+            const index = bucket.indexOf(pixel);
+            if (index !== -1) bucket.splice(index, 1);
+            if (bucket.length === 0) manager.buckets.delete(previousKey);
+        }
+        manager.actorBucketByPixel.delete(pixel);
+        return true;
+    }
+
+    function updateActorBucket(pixel) {
+        if (!pixel || pixel.del || (pixel.element !== "civ_body" && pixel.element !== "civ_child")) return false;
+        const nextKey = bucketKey(pixel.x, pixel.y);
+        const previousKey = manager.actorBucketByPixel.get(pixel);
+        if (previousKey === nextKey) return false;
+        removeActorFromBucket(pixel);
+        if (!manager.buckets.has(nextKey)) manager.buckets.set(nextKey, []);
+        manager.buckets.get(nextKey).push(pixel);
+        manager.actorBucketByPixel.set(pixel, nextKey);
+        return true;
+    }
+
     function getBodyHead(body) {
         if (!body || body.del) return null;
         const above = pixelByElementAt(body.x, body.y - 1, "civ_head");
@@ -1055,31 +1236,45 @@
 
     function registerPixel(pixel) {
         if (!pixel || pixel.del) return;
-        if (pixel.element === "civ_body") manager.actors.add(pixel);
-        else if (pixel.element === "civ_head") manager.heads.add(pixel);
+        let changed = false;
+        if (pixel.element === "civ_body") {
+            changed = !manager.actors.has(pixel);
+            manager.actors.add(pixel);
+            updateActorBucket(pixel);
+        }
+        else if (pixel.element === "civ_head") {
+            changed = !manager.heads.has(pixel);
+            manager.heads.add(pixel);
+        }
         else if (pixel.element === "civ_child") {
+            changed = !manager.actors.has(pixel) || !manager.children.has(pixel);
             manager.actors.add(pixel);
             manager.children.add(pixel);
+            updateActorBucket(pixel);
         }
-        else if (pixel.element === "civ_banner") manager.settlements.add(pixel);
-        else if (pixel.element === "civ_construction") manager.constructionSites.add(pixel);
-        else if (STRUCTURE_CORES.has(pixel.element) || STRUCTURE_PARTS.has(pixel.element)) manager.structures.add(pixel);
+        else if (pixel.element === "civ_banner") { changed = !manager.settlements.has(pixel); manager.settlements.add(pixel); }
+        else if (pixel.element === "civ_construction") { changed = !manager.constructionSites.has(pixel); manager.constructionSites.add(pixel); }
+        else if (STRUCTURE_CORES.has(pixel.element) || STRUCTURE_PARTS.has(pixel.element)) { changed = !manager.structures.has(pixel); manager.structures.add(pixel); }
         if ((pixel.element === "civ_banner" || pixel.element === "civ_construction" || STRUCTURE_CORES.has(pixel.element)) && Number.isFinite(pixel.buildingId)) {
             manager.structuresById.set(pixel.buildingId, pixel);
         }
+        if (changed) manager.derivedIndexesDirty = true;
     }
 
     function unregisterPixel(pixel) {
-        manager.actors.delete(pixel);
-        manager.heads.delete(pixel);
-        manager.children.delete(pixel);
-        manager.settlements.delete(pixel);
-        manager.constructionSites.delete(pixel);
-        manager.structures.delete(pixel);
+        let changed = false;
+        changed = manager.actors.delete(pixel) || changed;
+        changed = manager.heads.delete(pixel) || changed;
+        changed = manager.children.delete(pixel) || changed;
+        changed = manager.settlements.delete(pixel) || changed;
+        changed = manager.constructionSites.delete(pixel) || changed;
+        changed = manager.structures.delete(pixel) || changed;
+        removeActorFromBucket(pixel);
         if (pixel && Number.isFinite(pixel.buildingId) && manager.structuresById.get(pixel.buildingId) === pixel) manager.structuresById.delete(pixel.buildingId);
         if (pixel && pixel.humanId !== undefined && manager.actorById.get(pixel.humanId) === pixel) {
             manager.actorById.delete(pixel.humanId);
         }
+        if (changed) manager.derivedIndexesDirty = true;
     }
 
     function cleanupCivilizedFields(pixel) {
@@ -1088,11 +1283,11 @@
             "humanId", "factionId", "settlementId", "role", "task", "targetX", "targetY", "targetId", "targetKey",
             "targetKind", "hp", "maxHp", "hunger", "weapon", "carryKind", "carryElement", "carryAmount",
             "attackReadyTick", "lastThinkTick", "lastPlanTick", "lastHungerTick", "lastDamageTick", "resourceScanPhase", "harvestProgress", "stuckCount", "noProgressCount", "bestTaskDistance", "progressTargetX", "progressTargetY", "lastX", "lastY", "underAttackUntil",
-            "birthTick", "ageTicks", "lifespanYears", "naturalDeathTick", "deathCause", "factionColor", "buildingId", "structureHp", "structureMaxHp", "harvestX", "harvestY", "blockedResourceKey", "blockedResourceUntil",
+            "birthTick", "ageTicks", "lifespanYears", "naturalDeathTick", "deathCause", "factionColor", "buildingId", "structureHp", "structureMaxHp", "harvestX", "harvestY", "blockedResourceKey", "blockedResourceUntil", "blockedResourceCategory", "blockedResourceCategoryUntil",
             "stock", "diplomacy", "housing", "birthReadyTick", "lastBirthTick", "lastHostileTick",
             "lastWarTick", "territoryRadius", "stage", "eraId", "research", "cultureMemory", "blueprintType", "originX", "originY", "nextPart",
             "blockedTicks", "lastBuildTick", "lastProcessTick", "costs", "placedParts", "completed", "plots", "lastCraftTick", "carrySeed", "buildRetry", "orphanedSince", "dead", "panic", "dir", "treeHarvestCounter", "ammo", "rangedTargetTick"
-            , "carry", "carryCapacity", "territoryClaimId", "territoryClaimTick", "territoryClaimOrder", "claimMinX", "claimMaxX", "buildingType", "buildingState", "destroyedTick", "destroyedCause", "isBuildingCore", "alwaysOverlay", "nonBlocking", "eraseProtected", "workDone", "workRequired", "lifeSchemaVersion", "combatTargetId", "strikeDueTick", "strikeTargetId", "structureStrikeDueTick", "structureStrikeKey", "warRole", "warFrontId", "pathStage", "pathCache", "climbHoldUntil", "patrolX", "patrolY", "searchX", "searchY", "resumeAfterDelivery"
+            , "carry", "carryCapacity", "territoryClaimId", "territoryClaimTick", "territoryClaimOrder", "claimMinX", "claimMaxX", "buildingType", "buildingState", "destroyedTick", "destroyedCause", "isBuildingCore", "alwaysOverlay", "nonBlocking", "eraseProtected", "workDone", "workRequired", "lifeSchemaVersion", "combatTargetId", "strikeDueTick", "strikeTargetId", "structureStrikeDueTick", "structureStrikeKey", "warRole", "warFrontId", "pathStage", "pathCache", "workTrip", "climbHoldUntil", "patrolX", "patrolY", "searchX", "searchY", "resumeAfterDelivery"
             , "personActivity", "personArchived", "personArchiveSettlementId", "personTransitioning", "deceasedPeople"
         ];
         for (let i = 0; i < fields.length; i++) delete pixel[fields[i]];
@@ -1305,6 +1500,8 @@
         delete actor.pathStage;
         delete actor.climbHoldUntil;
         invalidateNavigation(actor);
+        if (!actor.preserveWorkTrip) delete actor.workTrip;
+        delete actor.preserveWorkTrip;
         if (!actor.dead) beginPersonActivity(actor, "planning", null);
     }
 
@@ -1318,6 +1515,59 @@
         return null;
     }
 
+    const TASK_SPEECH = {
+        planning: ["Let me think.", "让我想想。"], move: ["On my way.", "我这就过去。"], harvest: ["I'll gather that.", "我去采集。"],
+        deliver: ["Bringing supplies back.", "把资源送回去。"], build: ["Time to build.", "开始建造。"], farm: ["The fields need me.", "该照料农田了。"],
+        plant_tree: ["A new tree will grow here.", "这里会长出新树。"], facility: ["Back to work.", "继续干活。"], combat: ["To battle!", "准备战斗！"],
+        siege: ["Bring that structure down!", "摧毁那座建筑！"], patrol: ["I'll keep watch.", "我去巡逻。"], return: ["Heading home.", "回家了。"],
+        search_resource: ["There must be resources nearby.", "附近一定还有资源。"], explore: ["I'll look farther out.", "我去远处看看。"],
+        flee: ["Fall back!", "快撤退！"], tunnel: ["This wall is too high. Dig through!", "墙太高了，挖过去！"],
+        extinguish: ["Fire! I'll put it out!", "着火了，我去灭火！"]
+    };
+    const IDLE_CHAT = [
+        ["How is the work going?", "活干得怎么样？"], ["The town is growing.", "聚落越来越大了。"],
+        ["Stay safe out there.", "出门注意安全。"], ["We should check the supplies.", "该看看库存了。"]
+    ];
+
+    function speechText(entry) {
+        return entry ? entry[isChineseUi() ? 1 : 0] : "";
+    }
+
+    function speakPerson(actor, text, priority, duration) {
+        if (!actor || actor.dead || actor.del || !text || typeof settings !== "undefined" && settings.humanSocietySpeech === false) return false;
+        const value = String(text).slice(0, 64);
+        if (actor.speech && actor.speech.text === value && pixelTicks-safeNumber(actor.speech.startedTick,0) < 60) return false;
+        if (actor.speech && actor.speech.untilTick > pixelTicks && safeNumber(actor.speech.priority,0) > safeNumber(priority,0)) return false;
+        actor.speech = {text:value,startedTick:pixelTicks,untilTick:pixelTicks+Math.max(30,safeNumber(duration,90)),priority:safeNumber(priority,1)};
+        actor.lastSpeechText = value;
+        actor.lastSpeechTick = pixelTicks;
+        return true;
+    }
+
+    function speakForTask(actor, task, priority) {
+        const phrase = TASK_SPEECH[task];
+        if (!phrase) return false;
+        actor.lastSpeechTaskTick = pixelTicks;
+        return speakPerson(actor,speechText(phrase),priority === undefined ? (task === "combat" || task === "siege" ? 4 : 2) : priority,90);
+    }
+
+    function updatePersonSpeech(actor) {
+        if (!actor || actor.dead) return;
+        if (typeof settings !== "undefined" && settings.humanSocietySpeech === false) {
+            delete actor.speech;
+            return;
+        }
+        if (actor.speech && actor.speech.untilTick <= pixelTicks) delete actor.speech;
+        if (actor.task && actor.task !== "planning" && pixelTicks-safeNumber(actor.lastSpeechTaskTick,pixelTicks) >= 240) speakForTask(actor,actor.pathStage === "tunnel" ? "tunnel" : actor.task,1);
+        if (actor.task !== "planning" && actor.task !== "idle" && actor.task !== "wander") return;
+        if (!Number.isFinite(actor.nextChatTick)) actor.nextChatTick = pixelTicks+300+Math.floor(Math.random()*301);
+        if (pixelTicks < actor.nextChatTick) return;
+        actor.nextChatTick = pixelTicks+300+Math.floor(Math.random()*301);
+        const neighbor = nearbyActors(actor.x,actor.y,6,other => other.humanId !== actor.humanId && other.factionId === actor.factionId)[0];
+        const phrase = IDLE_CHAT[Math.floor(Math.random()*IDLE_CHAT.length)];
+        if (speakPerson(actor,speechText(phrase),1,90) && neighbor) speakPerson(neighbor,isChineseUi() ? "嗯，说得对。" : "Yes, I agree.",1,90);
+    }
+
     function setTask(actor, task, target) {
         const nextKey = taskTargetKey(target);
         const sameTarget = actor.task === task && actor.targetKey === nextKey;
@@ -1329,12 +1579,14 @@
         actor.targetKind = target && (target.element || target.kind);
         actor.targetKey = nextKey;
         if (!sameTarget) {
+            invalidateNavigation(actor);
             actor.harvestProgress = 0;
             actor.stuckCount = 0;
             actor.noProgressCount = 0;
             actor.bestTaskDistance = undefined;
             actor.progressTargetX = undefined;
             actor.progressTargetY = undefined;
+            speakForTask(actor, task);
         }
     }
 
@@ -1353,8 +1605,14 @@
         manager.relationRecords.clear();
         manager.foundingSince.clear();
         manager.buckets.clear();
+        manager.actorBucketByPixel.clear();
         manager.resourceIndex.clear();
+        manager.resourceNodeByPixel.clear();
+        manager.fireTargets.length = 0;
+        manager.lastFireScanTick = -Infinity;
         manager.treeById.clear();
+        manager.treePixelsByLineage.clear();
+        manager.dirtyTreeLineages.clear();
         manager.pendingResourceDrops.length = 0;
         if (manager.resourceReservations) manager.resourceReservations.clear();
         manager.territory = null;
@@ -1369,8 +1627,20 @@
         manager.nextBuildingId = 1;
         manager.nextTreeId = 1;
         manager.nextTerritoryClaimOrder = 1;
+        manager.navigationRevision = 1;
+        manager.routeSearches.clear();
+        manager.routeRejectedEdges.clear();
         manager.lastFullRebuild = -1;
         manager.lastIndexTick = -1;
+        manager.lastDerivedRefreshTick = -1;
+        manager.lastAuditStartedTick = -1;
+        manager.lastAuditCompletedTick = -1;
+        manager.auditCursor = 0;
+        manager.auditLimit = 0;
+        manager.auditRunning = false;
+        manager.derivedIndexesDirty = false;
+        manager.lifecycleEvents = 0;
+        manager.auditPixels = 0;
         manager.lastDiplomacyTick = -1;
         resetPeopleObserverState();
     }
@@ -1390,6 +1660,10 @@
         }
         manager.lastFullRebuild = pixelTicks;
         buildWorldIndex();
+        manager.derivedIndexesDirty = false;
+        manager.lastDerivedRefreshTick = pixelTicks;
+        manager.lastAuditStartedTick = pixelTicks;
+        manager.lastAuditCompletedTick = pixelTicks;
     }
 
     function migrateLegacySocietyPixels() {
@@ -1416,16 +1690,24 @@
         });
     }
 
-    function buildWorldIndex() {
+    function buildWorldIndex(options) {
+        const rebuildResourceTrees = !options || options.rebuildResourceTrees !== false;
+        manager.navigationRevision = safeNumber(manager.navigationRevision, 0) + 1;
         migrateLegacySocietyPixels();
         manager.actorById.clear();
         manager.deceasedByHumanId.clear();
         manager.factionById.clear();
         manager.settlementById.clear();
         manager.buckets.clear();
+        manager.actorBucketByPixel.clear();
         manager.structuresById.clear();
-        manager.resourceIndex.clear();
-        manager.treeById.clear();
+        if (rebuildResourceTrees) {
+            manager.resourceIndex.clear();
+            manager.resourceNodeByPixel.clear();
+            manager.treeById.clear();
+            manager.treePixelsByLineage.clear();
+            manager.dirtyTreeLineages.clear();
+        }
         let maxHumanId = 0;
         let maxFactionId = 0;
         let maxSettlementId = 0;
@@ -1471,6 +1753,7 @@
             const key = bucketKey(actor.x, actor.y);
             if (!manager.buckets.has(key)) manager.buckets.set(key, []);
             manager.buckets.get(key).push(actor);
+            manager.actorBucketByPixel.set(actor, key);
         });
 
         manager.settlements.forEach((banner) => {
@@ -1559,7 +1842,7 @@
             faction.housing = faction.settlements.reduce((sum, settlement) => sum + Math.max(4, settlement.housing || 4), 0);
         });
 
-        rebuildResourceAndTreeIndex();
+        if (rebuildResourceTrees) rebuildResourceAndTreeIndex();
         rebuildTerritoryIndex();
 
         manager.relationRecords.forEach((record) => {
@@ -1572,6 +1855,12 @@
         manager.nextSettlementId = Math.max(manager.nextSettlementId, maxSettlementId + 1);
         manager.nextBuildingId = Math.max(manager.nextBuildingId, maxBuildingId + 1);
         manager.lastIndexTick = pixelTicks;
+    }
+
+    function refreshDerivedIndexes() {
+        buildWorldIndex({rebuildResourceTrees: false});
+        manager.derivedIndexesDirty = false;
+        manager.lastDerivedRefreshTick = pixelTicks;
     }
 
     function fallbackMilitaryPower(adults) {
@@ -1630,31 +1919,277 @@
     function registerResource(elementName, descriptor) {
         if (!elementName || !descriptor || !descriptor.kind) return false;
         manager.resources.set(elementName, Object.assign({yield: 1, harvestTicks: 10}, descriptor));
+        if (elements[elementName]) elements[elementName].humanCollectible = true;
         return true;
+    }
+
+    function markCollectibleResource(pixel, descriptor) {
+        if (!pixel || !descriptor) return descriptor;
+        pixel._civCollectible = true;
+        if (elements[pixel.element]) elements[pixel.element].humanCollectible = true;
+        return descriptor;
     }
 
     function resourceDescriptor(pixel) {
         if (!pixel || pixel.del || !elements[pixel.element]) return null;
         if (pixel.element === "civ_wood_resource") {
+            return markCollectibleResource(pixel, {kind: "wood", material: "wood", yield: 1, harvestTicks: 8, resourceDrop: true});
+        }
+        if (pixel.element === "civ_tree_sapling_resource") {
             const seed = TREE_SAPLING_ELEMENTS.has(pixel.treeSapling) ? pixel.treeSapling : "sapling";
-            return {kind: "wood", material: "wood", yield: 1, harvestTicks: 8, treeSapling: seed, resourceDrop: true};
+            return markCollectibleResource(pixel, {kind: "wood", yield: 1, harvestTicks: 6, seed: seed, treeSeed: seed, treeSaplingResource: true, resourceDrop: true});
+        }
+        if (pixel.element === "civ_seed_resource") {
+            const seed = String(pixel.resourceSeed || "wheat_seed");
+            return markCollectibleResource(pixel, {kind: "food", yield: 1, harvestTicks: 6, seed: seed, seedOnly: true, resourceDrop: true});
+        }
+        if (CARRIED_RESOURCE_KINDS[pixel.element]) {
+            const kind = CARRIED_RESOURCE_KINDS[pixel.element];
+            return markCollectibleResource(pixel, {kind: kind, material: kind, yield: 1, harvestTicks: 8, resourceDrop: true});
+        }
+        if (pixel.element === "civ_resource_drop" && pixel.resourceKind) {
+            return markCollectibleResource(pixel, {kind: pixel.resourceKind, material: pixel.resourceMaterial || pixel.resourceKind, yield: 1, harvestTicks: 8, resourceDrop: true});
         }
         if (pixel.element.indexOf("civ_") === 0) return null;
-        if (manager.resources.has(pixel.element)) return manager.resources.get(pixel.element);
+        if (manager.resources.has(pixel.element)) return markCollectibleResource(pixel, manager.resources.get(pixel.element));
+        if (elements[pixel.element].seed === true && !TREE_SAPLING_ELEMENTS.has(pixel.element)) {
+            return markCollectibleResource(pixel, {kind: "food", yield: 1, harvestTicks: 6, seed: pixel.element, seedOnly: true});
+        }
         if (elements[pixel.element].isFood) {
             const declaredSeed = elements[pixel.element].seed;
-            return {kind: "food", yield: 1, harvestTicks: 6, seed: declaredSeed === true ? pixel.element : (declaredSeed || null), seedOnly: declaredSeed === true};
+            return markCollectibleResource(pixel, {kind: "food", yield: 1, harvestTicks: 6, seed: declaredSeed === true ? pixel.element : (declaredSeed || null), seedOnly: declaredSeed === true});
         }
-        if (DEFAULT_RESOURCES.wood.has(pixel.element)) return {kind: "wood", material: pixel.element, yield: 1, harvestTicks: 18, treeSeed: TREE_SEEDS[pixel.element] || "sapling"};
-        if (DEFAULT_RESOURCES.stone.has(pixel.element)) return {kind: "stone", yield: 1, harvestTicks: 28, harvestInto: "dirt"};
-        if (pixel.element === "copper") return {kind: "copper", material: "copper", yield: 1, harvestTicks: 38};
-        if (pixel.element === "tin") return {kind: "tin", material: "tin", yield: 1, harvestTicks: 38};
-        if (pixel.element === "iron" || pixel.element === "iron_ore") return {kind: "raw_iron", material: "raw_iron", yield: 1, harvestTicks: 48};
+        if (DEFAULT_RESOURCES.wood.has(pixel.element)) return markCollectibleResource(pixel, {kind: "wood", material: pixel.element, yield: 1, harvestTicks: 18, treeSeed: TREE_SEEDS[pixel.element] || "sapling"});
+        if (DEFAULT_RESOURCES.stone.has(pixel.element)) return markCollectibleResource(pixel, {kind: "stone", yield: 1, harvestTicks: 28, harvestInto: "dirt"});
+        if (pixel.element === "copper") return markCollectibleResource(pixel, {kind: "copper", material: "copper", yield: 1, harvestTicks: 38});
+        if (pixel.element === "tin") return markCollectibleResource(pixel, {kind: "tin", material: "tin", yield: 1, harvestTicks: 38});
+        if (pixel.element === "iron" || pixel.element === "iron_ore") return markCollectibleResource(pixel, {kind: "raw_iron", material: "raw_iron", yield: 1, harvestTicks: 48});
         return null;
     }
 
+    function removeIndexedResourcePixel(pixel) {
+        if (!pixel) return false;
+        const indexed = manager.resourceNodeByPixel.get(pixel);
+        let removed = false;
+        const indexes = indexed ? [[indexed.kind, manager.resourceIndex.get(indexed.kind) || []]] : Array.from(manager.resourceIndex.entries());
+        indexes.forEach((entry) => {
+            const nodes = entry[1];
+            for (let index = nodes.length - 1; index >= 0; index--) {
+                if (nodes[index] !== indexed && nodes[index] && nodes[index].pixel !== pixel) continue;
+                if (manager.resourceReservations && nodes[index].key) manager.resourceReservations.release(nodes[index].key);
+                nodes.splice(index, 1);
+                removed = true;
+            }
+        });
+        manager.resourceNodeByPixel.delete(pixel);
+        return removed;
+    }
+
+    function elementMayBeIndexedResource(element, pixel) {
+        if (!element) return false;
+        if (TREE_COMPONENT_ELEMENTS.has(element) || manager.resources.has(element) || DEFAULT_RESOURCES.wood.has(element) || DEFAULT_RESOURCES.stone.has(element)) return true;
+        if (element === "copper" || element === "tin" || element === "iron" || element === "iron_ore" || element === "civ_resource_drop" || element === "civ_seed_resource" || CARRIED_RESOURCE_KINDS[element]) return true;
+        const info = elements[element];
+        return !!(pixel && (pixel._civResourceDrop || pixel._civCollectible || pixel.resourceKind) || info && (info.isFood || info.seed === true || info.humanCollectible));
+    }
+
+    function pixelHasTreeIdentity(pixel) {
+        return !!(pixel && TREE_COMPONENT_ELEMENTS.has(pixel.element) && (pixel.treeLineage || Number.isFinite(pixel.treeId) || Number.isFinite(pixel.civPlantedTreeId) || pixel._civTreeRoot || pixel.naturalVegetation === true));
+    }
+
+    function indexStandaloneResourcePixel(pixel) {
+        if (!pixel || pixel.del) return false;
+        if (manager.resourceNodeByPixel.has(pixel)) removeIndexedResourcePixel(pixel);
+        if (pixelHasTreeIdentity(pixel)) return false;
+        const descriptor = resourceDescriptor(pixel);
+        if (!descriptor) return false;
+        const node = {pixel, x: pixel.x, y: pixel.y, element: pixel.element, descriptor, kind: descriptor.kind, key: pixel.element + "@" + pixel.x + "," + pixel.y, tree: null};
+        if (!manager.resourceIndex.has(descriptor.kind)) manager.resourceIndex.set(descriptor.kind, []);
+        manager.resourceIndex.get(descriptor.kind).push(node);
+        manager.resourceNodeByPixel.set(pixel, node);
+        return true;
+    }
+
+    function trackTreeLineagePixel(pixel, previousLineage) {
+        if (previousLineage) {
+            const previous = manager.treePixelsByLineage.get(previousLineage);
+            if (previous) {
+                previous.delete(pixel);
+                if (previous.size === 0) manager.treePixelsByLineage.delete(previousLineage);
+            }
+            manager.dirtyTreeLineages.add(previousLineage);
+        }
+        const lineage = pixel && !pixel.del && TREE_COMPONENT_ELEMENTS.has(pixel.element) && pixel.treeLineage;
+        if (!lineage) return;
+        if (!manager.treePixelsByLineage.has(lineage)) manager.treePixelsByLineage.set(lineage, new Set());
+        manager.treePixelsByLineage.get(lineage).add(pixel);
+        manager.dirtyTreeLineages.add(lineage);
+    }
+
+    function findTreeByLineage(lineage) {
+        if (!lineage) return null;
+        for (const tree of manager.treeById.values()) {
+            if (tree && tree.lineage === lineage) return tree;
+        }
+        return null;
+    }
+
+    function rebuildDirtyTreeLineage(lineage) {
+        const tracked = manager.treePixelsByLineage.get(lineage);
+        const pixels = tracked ? Array.from(tracked).filter((pixel) => pixel && !pixel.del && TREE_COMPONENT_ELEMENTS.has(pixel.element) && pixel.treeLineage === lineage) : [];
+        if (tracked) {
+            tracked.clear();
+            pixels.forEach((pixel) => tracked.add(pixel));
+            if (tracked.size === 0) manager.treePixelsByLineage.delete(lineage);
+        }
+        let tree = findTreeByLineage(lineage);
+        if (!tree) {
+            for (let i = 0; i < pixels.length && !tree; i++) {
+                if (Number.isFinite(pixels[i].treeId)) tree = manager.treeById.get(pixels[i].treeId) || null;
+                if (tree) break;
+                for (let dx = -1; dx <= 1 && !tree; dx++) {
+                    for (let dy = -1; dy <= 1; dy++) {
+                        if (!dx && !dy) continue;
+                        const adjacent = pixelsAt(pixels[i].x + dx, pixels[i].y + dy).find((candidate) => candidate && Number.isFinite(candidate.treeId) && manager.treeById.has(candidate.treeId));
+                        if (adjacent) { tree = manager.treeById.get(adjacent.treeId); break; }
+                    }
+                }
+            }
+        }
+        const previousPixels = tree && Array.isArray(tree.pixels) ? tree.pixels.filter((pixel) => pixel && !pixel.del && (!pixel.treeLineage || pixel.treeLineage === lineage)) : [];
+        const component = Array.from(new Set(previousPixels.concat(pixels)));
+        if (!component.length) {
+            if (tree) {
+                removeIndexedResourcePixel(tree.base);
+                manager.treeById.delete(tree.id);
+            }
+            return false;
+        }
+        const treeId = tree ? tree.id : (component.map((pixel) => pixel.treeId).find(Number.isFinite) || manager.nextTreeId++);
+        manager.nextTreeId = Math.max(manager.nextTreeId, treeId + 1);
+        const bottomY = Math.max.apply(null, component.map((pixel) => pixel.y));
+        const bottom = component.filter((pixel) => pixel.y === bottomY).sort((a, b) => a.x - b.x);
+        const markedRoot = component.find((pixel) => pixel._civTreeRoot && pixel.y === bottomY);
+        const basePixel = markedRoot || bottom[Math.floor((bottom.length - 1) / 2)] || component[0];
+        const topY = Math.min.apply(null, component.map((pixel) => pixel.y));
+        const declaredSpecies = component.map((pixel) => pixel.treeSpecies).find(Boolean);
+        const species = declaredSpecies || (component.some((pixel) => pixel.element === "bamboo") ? "bamboo_plant" : (component.some((pixel) => pixel.element === "evergreen") ? "pinecone" : "sapling"));
+        const woodPixels = component.filter((pixel) => WOOD_BEARING_TREE_ELEMENTS.has(pixel.element));
+        if (tree && tree.base && tree.base !== basePixel) removeIndexedResourcePixel(tree.base);
+        component.forEach((pixel) => {
+            pixel.treeId = treeId;
+            pixel.treeRootX = basePixel.x;
+            pixel.treeRootY = basePixel.y;
+            if (!pixel.treeLineage) pixel.treeLineage = lineage;
+        });
+        basePixel._civTreeRoot = true;
+        tree = {id: treeId, lineage, base: basePixel, root: basePixel, pixels: component, woodPixels, topY, height: Math.max(1, basePixel.y - topY + 1), woodYield: woodPixels.length, seed: species === "bamboo" ? "bamboo_plant" : (species === "evergreen" ? "pinecone" : (TREE_SAPLING_ELEMENTS.has(species) ? species : "sapling")), species};
+        manager.treeById.set(treeId, tree);
+        removeIndexedResourcePixel(basePixel);
+        const descriptor = resourceDescriptor(basePixel);
+        if (descriptor && descriptor.kind === "wood") {
+            const treeDescriptor = Object.assign({}, descriptor, {yield: tree.woodYield, treeSapling: tree.seed, treeId: tree.id, wholeTree: true});
+            const node = {pixel: basePixel, x: basePixel.x, y: basePixel.y, element: basePixel.element, descriptor: treeDescriptor, kind: "wood", key: basePixel.element + "@" + basePixel.x + "," + basePixel.y, tree};
+            if (!manager.resourceIndex.has("wood")) manager.resourceIndex.set("wood", []);
+            manager.resourceIndex.get("wood").push(node);
+            manager.resourceNodeByPixel.set(basePixel, node);
+        }
+        return true;
+    }
+
+    function processDirtyTrees(timeBudgetMs) {
+        const started = nowMs();
+        let processed = 0;
+        for (const lineage of Array.from(manager.dirtyTreeLineages)) {
+            manager.dirtyTreeLineages.delete(lineage);
+            rebuildDirtyTreeLineage(lineage);
+            processed++;
+            if (processed >= 4 || nowMs() - started >= timeBudgetMs) break;
+        }
+        return processed;
+    }
+
+    function handlePixelLifecycle(event) {
+        if (!event || !event.pixel) return;
+        const pixel = event.pixel;
+        const previous = event.old || {};
+        if (!manager.resourceNodeByPixel.has(pixel) && !elementMayBeIndexedResource(previous.element, pixel) && !elementMayBeIndexedResource(pixel.element, pixel)) return;
+        manager.lifecycleEvents++;
+        if (manager.resourceNodeByPixel.has(pixel)) removeIndexedResourcePixel(pixel);
+        if (previous.treeLineage || pixel.treeLineage) trackTreeLineagePixel(pixel, previous.treeLineage);
+        if (event.type !== "delete" && !pixel.del) indexStandaloneResourcePixel(pixel);
+    }
+
+    function auditPixelIndex(pixel) {
+        if (!pixel || pixel.del) return;
+        registerPixel(pixel);
+        if (pixel.treeLineage && TREE_COMPONENT_ELEMENTS.has(pixel.element)) {
+            const lineage = pixel.treeLineage;
+            const tracked = manager.treePixelsByLineage.get(lineage);
+            const tree = Number.isFinite(pixel.treeId) ? manager.treeById.get(pixel.treeId) : findTreeByLineage(lineage);
+            const indexed = manager.resourceNodeByPixel.get(pixel);
+            if (!tracked || !tracked.has(pixel)) {
+                trackTreeLineagePixel(pixel);
+            }
+            else if (!tree || !Array.isArray(tree.pixels) || tree.pixels.indexOf(pixel) === -1) {
+                manager.dirtyTreeLineages.add(lineage);
+            }
+            else if (tree.base === pixel) {
+                if (!indexed || indexed.tree !== tree || indexed.x !== pixel.x || indexed.y !== pixel.y || indexed.element !== pixel.element) {
+                    manager.dirtyTreeLineages.add(lineage);
+                }
+            }
+            else if (indexed) {
+                removeIndexedResourcePixel(pixel);
+                manager.dirtyTreeLineages.add(lineage);
+            }
+            return;
+        }
+        const descriptor = resourceDescriptor(pixel);
+        const indexed = manager.resourceNodeByPixel.get(pixel);
+        if (!descriptor || pixelHasTreeIdentity(pixel)) {
+            if (indexed && !pixelHasTreeIdentity(pixel)) removeIndexedResourcePixel(pixel);
+            return;
+        }
+        if (!indexed) {
+            indexStandaloneResourcePixel(pixel);
+            return;
+        }
+        if (indexed.x !== pixel.x || indexed.y !== pixel.y || indexed.element !== pixel.element || indexed.kind !== descriptor.kind) {
+            if (manager.resourceReservations && indexed.key) manager.resourceReservations.release(indexed.key);
+            removeIndexedResourcePixel(pixel);
+            indexStandaloneResourcePixel(pixel);
+        }
+    }
+
+    function processIncrementalAudit(timeBudgetMs) {
+        if (!manager.auditRunning) {
+            if (manager.lastAuditStartedTick >= 0 && pixelTicks - manager.lastAuditStartedTick < C.FULL_REBUILD_INTERVAL) return 0;
+            manager.auditRunning = true;
+            manager.auditCursor = 0;
+            manager.auditLimit = currentPixels.length;
+            manager.lastAuditStartedTick = pixelTicks;
+        }
+        const started = nowMs();
+        let processed = 0;
+        while (manager.auditCursor < manager.auditLimit && processed < 200 && nowMs() - started < timeBudgetMs) {
+            auditPixelIndex(currentPixels[manager.auditCursor++]);
+            processed++;
+        }
+        manager.auditPixels += processed;
+        if (manager.auditCursor >= manager.auditLimit) {
+            manager.auditRunning = false;
+            manager.lastAuditCompletedTick = pixelTicks;
+        }
+        return processed;
+    }
+
     function rebuildResourceAndTreeIndex() {
-        const treeElements = new Set(["wood", "tree_branch", "evergreen", "bamboo", "plant", "leaves", "pine_needles", "sapling", "pinecone", "bamboo_plant", "dead_plant", "frozen_plant"]);
+        manager.resourceIndex.clear();
+        manager.resourceNodeByPixel.clear();
+        manager.treeById.clear();
+        manager.treePixelsByLineage.clear();
+        manager.dirtyTreeLineages.clear();
         const woodyTreeElements = new Set(["wood", "tree_branch", "evergreen", "bamboo"]);
         // Civilization-planted seeds rise while growing. Preserve their
         // original germination coordinate separately, then transfer the tree
@@ -1663,7 +2198,7 @@
             const planted = currentPixels[i];
             if (!planted || planted.del) continue;
             const woodyBelow = getPixel(planted.x, planted.y + 1);
-            if (planted._civTreeRoot && !PLANTED_TREE_SEEDS.has(planted.element) && treeElements.has(planted.element) && woodyBelow && treeElements.has(woodyBelow.element)) {
+            if (planted._civTreeRoot && !PLANTED_TREE_SEEDS.has(planted.element) && TREE_COMPONENT_ELEMENTS.has(planted.element) && woodyBelow && TREE_COMPONENT_ELEMENTS.has(woodyBelow.element)) {
                 delete planted._civTreeRoot;
                 if (Number.isFinite(woodyBelow.treeId) && woodyBelow.treeId !== planted.treeId) delete planted.treeId;
             }
@@ -1693,33 +2228,34 @@
         for (let i = 0; i < currentPixels.length; i++) {
             const pixel = currentPixels[i];
             if (!pixel || pixel.del) continue;
-            const isTree = treeElements.has(pixel.element) && (pixel.naturalVegetation === true || pixel.treeLineage || (woodyTreeElements.has(pixel.element) && pixel.element !== "wood") || pixel._civTreeRoot || pixel.treeId || Number.isFinite(pixel.civPlantedTreeId));
+            const isTree = TREE_COMPONENT_ELEMENTS.has(pixel.element) && (pixel.naturalVegetation === true || pixel.treeLineage || (woodyTreeElements.has(pixel.element) && pixel.element !== "wood") || pixel._civTreeRoot || pixel.treeId || Number.isFinite(pixel.civPlantedTreeId));
             if (isTree) {
                 treePixels.push(pixel);
                 byCoordinate.set(pixel.x + "," + pixel.y, pixel);
             }
         }
-        const legacyLeafElements = new Set(["plant", "leaves", "pine_needles", "dead_plant", "frozen_plant"]);
-        for (let legacyPass = 0; legacyPass < 2; legacyPass++) {
-            let attachedLegacyLeaf = false;
-            for (let i = 0; i < currentPixels.length; i++) {
-                const pixel = currentPixels[i];
-                const key = pixel && pixel.x + "," + pixel.y;
-                if (!pixel || pixel.del || byCoordinate.has(key) || !legacyLeafElements.has(pixel.element)) continue;
-                let adjacentTree = false;
-                for (let dx = -1; dx <= 1 && !adjacentTree; dx++) {
-                    for (let dy = -1; dy <= 1; dy++) {
-                        if ((!dx && !dy) || !byCoordinate.has((pixel.x + dx) + "," + (pixel.y + dy))) continue;
-                        adjacentTree = true;
-                        break;
-                    }
+        const legacyLeaves = new Map();
+        for (let i = 0; i < currentPixels.length; i++) {
+            const pixel = currentPixels[i];
+            const key = pixel && pixel.x + "," + pixel.y;
+            if (!pixel || pixel.del || byCoordinate.has(key) || !LEGACY_TREE_LEAF_ELEMENTS.has(pixel.element)) continue;
+            legacyLeaves.set(key, pixel);
+        }
+        const legacyFrontier = treePixels.slice();
+        while (legacyFrontier.length) {
+            const source = legacyFrontier.pop();
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dy = -1; dy <= 1; dy++) {
+                    if (!dx && !dy) continue;
+                    const key = (source.x + dx) + "," + (source.y + dy);
+                    const leaf = legacyLeaves.get(key);
+                    if (!leaf) continue;
+                    legacyLeaves.delete(key);
+                    treePixels.push(leaf);
+                    byCoordinate.set(key, leaf);
+                    legacyFrontier.push(leaf);
                 }
-                if (!adjacentTree) continue;
-                treePixels.push(pixel);
-                byCoordinate.set(key, pixel);
-                attachedLegacyLeaf = true;
             }
-            if (!attachedLegacyLeaf) break;
         }
         const visited = new Set();
         for (let i = 0; i < treePixels.length; i++) {
@@ -1765,6 +2301,10 @@
             const seed = species === "bamboo" ? "bamboo_plant" : (species === "evergreen" ? "pinecone" : (TREE_SAPLING_ELEMENTS.has(species) ? species : "sapling"));
             const tree = {id: treeId, lineage: componentLineage, base: basePixel, root: basePixel, pixels: component, woodPixels, topY, height, woodYield, seed, species};
             component.forEach((pixel) => { pixel.treeId = treeId; pixel.treeRootX = basePixel.x; pixel.treeRootY = basePixel.y; if (componentLineage && !pixel.treeLineage) pixel.treeLineage = componentLineage; });
+            if (componentLineage) {
+                if (!manager.treePixelsByLineage.has(componentLineage)) manager.treePixelsByLineage.set(componentLineage, new Set());
+                component.forEach((pixel) => manager.treePixelsByLineage.get(componentLineage).add(pixel));
+            }
             basePixel._civTreeRoot = true;
             manager.treeById.set(treeId, tree);
         }
@@ -1809,6 +2349,7 @@
             const node = {pixel, x: pixel.x, y: pixel.y, element: pixel.element, descriptor, kind: descriptor.kind, key: pixel.element + "@" + pixel.x + "," + pixel.y, tree};
             if (!manager.resourceIndex.has(descriptor.kind)) manager.resourceIndex.set(descriptor.kind, []);
             manager.resourceIndex.get(descriptor.kind).push(node);
+            manager.resourceNodeByPixel.set(pixel, node);
         }
     }
 
@@ -1886,7 +2427,8 @@
     }
 
     function findSurfaceY(x, hintY) {
-        for (let delta = 0; delta <= 8; delta++) {
+        const maxDelta = typeof height === "number" && Number.isFinite(height) ? Math.max(8, height) : 8;
+        for (let delta = 0; delta <= maxDelta; delta++) {
             const ys = delta === 0 ? [hintY] : [hintY - delta, hintY + delta];
             for (let i = 0; i < ys.length; i++) {
                 const y = ys[i];
@@ -1895,6 +2437,19 @@
             }
         }
         return null;
+    }
+
+    function findNearbySurfaceTarget(preferredX, hintY, fallbackX, fallbackY) {
+        for (let offset = 0; offset <= 6; offset++) {
+            const xs = offset === 0 ? [preferredX] : [preferredX - offset, preferredX + offset];
+            for (let i = 0; i < xs.length; i++) {
+                const x = xs[i];
+                if (outOfBounds(x, hintY)) continue;
+                const y = findSurfaceY(x, hintY);
+                if (y !== null) return {x, y};
+            }
+        }
+        return {x: fallbackX, y: fallbackY};
     }
 
     function buildTargets(type, originX, originY) {
@@ -2200,18 +2755,41 @@
         return actorCanOccupyAt(actor, x, y) && solidGroundAt(x, y);
     }
 
-function harvestApproach(actor, resource) {
+    function excavationPositionPossible(actor, x, y) {
+        if (!actor || outOfBounds(x, y) || outOfBounds(x, y - 1)) return false;
+        const cells = [pixelsAt(x, y), pixelsAt(x, y - 1)];
+        return cells.every((pixels) => pixels.every((pixel) => {
+            if (!pixel || pixel.del || pixel._r === actor._r) return true;
+            if (typeof pixelsCanOverlap === "function" && pixelsCanOverlap({element: "civ_body", factionId: actor.factionId, humanId: actor.humanId}, pixel)) return true;
+            return canTunnelPixel(pixel, actor, false);
+        }));
+    }
+
+    function highApproachHasSupport(actor, x, y) {
+        if (y >= actor.y) return true;
+        for (let scanY = actor.y; scanY >= y; scanY--) {
+            if (hasInternalClimbSupport(actor, x, scanY) || climbSupportAt(actor, x, scanY, -1) || climbSupportAt(actor, x, scanY, 1)) continue;
+            if (scanY === actor.y && actorCanStandAt(actor, x, scanY)) continue;
+            return false;
+        }
+        return true;
+    }
+
+    function harvestApproach(actor, resource) {
         const candidates = [];
         for (let dx = -1; dx <= 1; dx++) {
             for (let dy = -1; dy <= 1; dy++) {
                 if (dx === 0 && dy === 0) continue;
                 const x = resource.x + dx;
                 const y = resource.y + dy;
-                if (Core.distance(x, y, resource.x, resource.y) > 1.5 || !actorCanStandAt(actor, x, y)) continue;
-                candidates.push({x: x, y: y, distance: Core.distance(actor.x, actor.y, x, y)});
+                if (Core.distance(x, y, resource.x, resource.y) > 1.5) continue;
+                const standing = actorCanStandAt(actor, x, y);
+                if (!standing && !excavationPositionPossible(actor, x, y)) continue;
+                if (y < actor.y && !highApproachHasSupport(actor, x, y)) continue;
+                candidates.push({x: x, y: y, distance: Core.distance(actor.x, actor.y, x, y), standing: standing});
             }
         }
-        candidates.sort((a, b) => a.distance - b.distance);
+        candidates.sort((a, b) => Number(b.standing) - Number(a.standing) || a.distance - b.distance);
         return candidates[0] || null;
     }
 
@@ -2228,6 +2806,22 @@ function harvestApproach(actor, resource) {
         actor.harvestY = found.pixel.y;
         actor.targetX = found.approach.x;
         actor.targetY = found.approach.y;
+        const descriptor = found.descriptor || resourceDescriptor(found.pixel);
+        const resourceKind = descriptor && descriptor.kind || actor.targetKind;
+        if (!actor.workTrip || actor.workTrip.resourceKind !== resourceKind || actor.workTrip.returning) {
+            actor.workTrip = {
+                version: 1,
+                resourceKind: resourceKind,
+                trail: [[actor.x, actor.y]],
+                surfaceAnchorIndex: solidGroundAt(actor.x, actor.y) ? 0 : null,
+                phase: "outbound",
+                returning: false,
+                resuming: false,
+                startedTick: pixelTicks
+            };
+            recordPersonLifeEvent(actor, "route_created", {phase: "outbound", resourceKind: resourceKind, targetX: actor.targetX, targetY: actor.targetY});
+        }
+        actor.workTrip.excavationFrontier = {x: actor.targetX, y: actor.targetY, harvestX: actor.harvestX, harvestY: actor.harvestY, targetKind: actor.targetKind};
         if (manager.resourceReservations && !manager.resourceReservations.reserve(found, actor.humanId)) {
             clearTask(actor, "interrupted", "resource_reserved_by_other");
             return false;
@@ -2241,13 +2835,28 @@ function harvestApproach(actor, resource) {
         return true;
     }
 
+    function resourceFailureKey(x, y, element) {
+        return x + "," + y + ":" + (element || "");
+    }
+
+    function blockFailedResource(actor, x, y, element) {
+        if (!actor || !Number.isFinite(x) || !Number.isFinite(y)) return;
+        actor.blockedResourceKey = resourceFailureKey(x, y, element);
+        actor.blockedResourceUntil = pixelTicks + RESOURCE_FAILURE_COOLDOWN;
+        if (element === "rotten_meat") {
+            actor.blockedResourceCategory = "rotten_meat";
+            actor.blockedResourceCategoryUntil = pixelTicks + ROTTEN_MEAT_FAILURE_COOLDOWN;
+        }
+    }
+
     function findResource(actor, wantedKind) {
         const banner = settlementForActor(actor);
         if (!banner) return null;
         if ((wantedKind === "copper" || wantedKind === "tin" || wantedKind === "raw_iron") && actor.role !== "miner") return null;
         const nodes = (manager.resourceIndex.get(wantedKind) || []).filter((node) => {
             if (!node.pixel || node.pixel.del || pixelsAt(node.x, node.y).indexOf(node.pixel) === -1) return false;
-            if (pixelTicks < safeNumber(actor.blockedResourceUntil, 0) && actor.blockedResourceKey === node.x + "," + node.y + ":" + node.element) return false;
+            if (pixelTicks < safeNumber(actor.blockedResourceUntil, 0) && actor.blockedResourceKey === resourceFailureKey(node.x, node.y, node.element)) return false;
+            if (node.element === "rotten_meat" && actor.blockedResourceCategory === "rotten_meat" && pixelTicks < safeNumber(actor.blockedResourceCategoryUntil, 0)) return false;
             return true;
         });
         const ordered = nodes.slice().sort((a, b) => {
@@ -2255,15 +2864,16 @@ function harvestApproach(actor, resource) {
             const ownerB = manager.territory && manager.territory.ownerAt(b.x);
             const zoneA = ownerA === actor.factionId ? 0 : (ownerA === null || ownerA === undefined ? 1 : 2);
             const zoneB = ownerB === actor.factionId ? 0 : (ownerB === null || ownerB === undefined ? 1 : 2);
-            return zoneA - zoneB || Core.distance(actor.x, actor.y, a.x, a.y) - Core.distance(actor.x, actor.y, b.x, b.y);
+            const fallbackA = a.element === "rotten_meat" ? 1 : 0;
+            const fallbackB = b.element === "rotten_meat" ? 1 : 0;
+            return zoneA - zoneB || fallbackA - fallbackB || Core.distance(actor.x, actor.y, a.x, a.y) - Core.distance(actor.x, actor.y, b.x, b.y);
         });
         for (let i = 0; i < ordered.length; i++) {
             const node = ordered[i];
             const owner = manager.territory && manager.territory.ownerAt(node.x);
             if (owner !== null && owner !== undefined && owner !== actor.factionId) continue;
             if (manager.resourceReservations && manager.resourceReservations.reservedBy(node) !== undefined && manager.resourceReservations.reservedBy(node) !== actor.humanId) continue;
-            let approach = harvestApproach(actor, node.pixel);
-            if (!approach && actor.element === "civ_body") approach = {x: node.x, y: node.y};
+            const approach = harvestApproach(actor, node.pixel);
             if (!approach) continue;
             recordDiscovery(banner, node.descriptor.kind, 0.05);
             if (node.descriptor.seed || node.descriptor.seedOnly) recordDiscovery(banner, "seed", 0.05);
@@ -2308,8 +2918,8 @@ function harvestApproach(actor, resource) {
         const faction = actor && manager.factionById.get(actor.factionId);
         if (!banner || !faction) return banner;
         const seed = String(kind || "").indexOf("seed:") === 0;
-        const treeSapling = String(kind || "").indexOf("tree_sapling:") === 0;
-        const key = treeSapling ? kind.slice(14) : (seed ? kind.slice(5) : kind);
+        const treeSapling = String(kind || "").indexOf(TREE_SAPLING_PREFIX) === 0;
+        const key = treeSapling ? kind.slice(TREE_SAPLING_PREFIX.length) : (seed ? kind.slice(5) : kind);
         let lists = [];
         if (treeSapling) lists = ["lumberyards"];
         else if (seed) lists = ["farms", "granaries"];
@@ -2339,8 +2949,8 @@ function harvestApproach(actor, resource) {
             const amount = Math.max(0, safeNumber(carry[kind], 0));
             if (!amount) return;
             delivered[kind] = amount;
-            if (kind.indexOf("tree_sapling:") === 0) {
-                const seed = kind.slice(14);
+            if (kind.indexOf(TREE_SAPLING_PREFIX) === 0) {
+                const seed = kind.slice(TREE_SAPLING_PREFIX.length);
                 banner.stock.treeSaplings[seed] = safeNumber(banner.stock.treeSaplings[seed], 0) + amount;
                 if (!banner.firstNaturalResources[kind]) {
                     banner.firstNaturalResources[kind] = true;
@@ -2374,9 +2984,35 @@ function harvestApproach(actor, resource) {
         actor.carrySeed = null;
         addPersonActivityMetrics(actor, {resourcesDelivered: delivered});
         const resume = actor.resumeAfterDelivery;
+        const completedTrip = actor.workTrip;
         delete actor.resumeAfterDelivery;
+        actor.preserveWorkTrip = !!(resume && resume.resourceKind);
         clearTask(actor, "completed", "resources_delivered", {destinationBuildingId: destination.buildingId || null, destinationType: destination.buildingType || destination.element, destinationX: destination.x, destinationY: destination.y});
-        if (resume && resume.task && resume.task !== "deliver") {
+        recordPersonLifeEvent(actor, "resources_unloaded", {destinationBuildingId: destination.buildingId || null, delivered: delivered});
+        if (resume && resume.resourceKind) {
+            actor.workTrip = completedTrip || {version: 1, resourceKind: resume.resourceKind};
+            actor.workTrip.resourceKind = resume.resourceKind;
+            actor.workTrip.phase = "resume";
+            actor.workTrip.resuming = true;
+            actor.workTrip.returning = false;
+            actor.workTrip.trail = [[actor.x, actor.y]];
+            actor.workTrip.surfaceAnchorIndex = solidGroundAt(actor.x, actor.y) ? 0 : null;
+            let found = null;
+            if (Number.isFinite(resume.harvestX) && Number.isFinite(resume.harvestY)) {
+                const pixel = pixelsAt(resume.harvestX, resume.harvestY).find((candidate) => resourceDescriptor(candidate));
+                const descriptor = resourceDescriptor(pixel);
+                const approach = pixel && descriptor && descriptor.kind === resume.resourceKind ? harvestApproach(actor, pixel) : null;
+                if (pixel && descriptor && approach) found = {pixel: pixel, descriptor: descriptor, x: pixel.x, y: pixel.y, key: pixel.element + "@" + pixel.x + "," + pixel.y, approach: approach};
+            }
+            if (!found) found = findResource(actor, resume.resourceKind);
+            if (found && setHarvestTask(actor, found)) {
+                actor.workTrip.phase = "resume";
+                actor.workTrip.resuming = true;
+                return true;
+            }
+            delete actor.workTrip;
+        }
+        if (resume && resume.task && resume.task !== "deliver" && resume.task !== "harvest" && resume.task !== "planning") {
             setTask(actor, resume.task, {x: resume.targetX, y: resume.targetY, kind: resume.targetKind});
             actor.targetId = resume.targetId;
             actor.targetKind = resume.targetKind;
@@ -2387,49 +3023,150 @@ function harvestApproach(actor, resource) {
     }
 
     function resourceDropElement(kind, sourceElement) {
-        if (sourceElement && elements[sourceElement]) return sourceElement;
-        const fallback = {wood: "wood", stone: "rock", copper: "copper", tin: "tin", raw_iron: elements.iron_ore ? "iron_ore" : "iron", food: "meat", charcoal: "charcoal"};
-        return fallback[kind] && elements[fallback[kind]] ? fallback[kind] : null;
+        if (sourceElement === "civ_tree_sapling_resource" || String(kind || "").indexOf(TREE_SAPLING_PREFIX) === 0) return "civ_tree_sapling_resource";
+        if (String(kind || "").indexOf("seed:") === 0) return "civ_seed_resource";
+        if (FALLING_RESOURCE_ELEMENTS[kind] && elements[FALLING_RESOURCE_ELEMENTS[kind]]) return FALLING_RESOURCE_ELEMENTS[kind];
+        return elements.civ_resource_drop ? "civ_resource_drop" : (sourceElement && elements[sourceElement] ? sourceElement : null);
     }
 
     function queueResourceDrops(kind, sourceElement, amount, x, y, metadata) {
         const element = resourceDropElement(kind, sourceElement);
+        const dropMetadata = Object.assign({}, metadata || {});
+        if (String(kind || "").indexOf("seed:") === 0) dropMetadata.resourceSeed = String(kind).slice(5);
+        if (String(kind || "").indexOf(TREE_SAPLING_PREFIX) === 0 && !dropMetadata.treeSapling) dropMetadata.treeSapling = String(kind).slice(TREE_SAPLING_PREFIX.length);
+        if (element === "civ_resource_drop") dropMetadata.resourceMaterial = sourceElement || kind;
         let remaining = Math.max(0, Math.floor(amount));
         if (!element || !remaining) return;
-        for (let radius = 0; radius <= 4 && remaining; radius++) {
-            for (let dx = -radius; dx <= radius && remaining; dx++) {
-                for (let dy = -radius; dy <= radius && remaining; dy++) {
-                    if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
-                    const px = x + dx;
-                    const py = y + dy;
-                    if (!outOfBounds(px, py) && isEmpty(px, py)) {
-                        createPixel(element, px, py, Object.assign({_civResourceDrop: true, resourceKind: kind}, metadata || {}));
-                        const drop = getPixel(px, py);
-                        if (drop) Object.assign(drop, {_civResourceDrop: true, resourceKind: kind}, metadata || {});
-                        remaining--;
+        const pixelMetadata = Object.assign({_civResourceDrop: true, _civCollectible: true, resourceKind: kind}, dropMetadata);
+        delete pixelMetadata.treeFellingBaseY;
+        if (Number.isFinite(dropMetadata.treeFellingBaseY)) {
+            const baseY = Number(dropMetadata.treeFellingBaseY);
+            const horizontalLimit = typeof width === "number" && Number.isFinite(width) ? Math.max(4, width) : 64;
+            for (let radius = 0; radius <= horizontalLimit && remaining; radius++) {
+                const offsets = radius === 0 ? [0] : [-radius, radius];
+                for (let i = 0; i < offsets.length && remaining; i++) {
+                    const px = x + offsets[i];
+                    if (outOfBounds(px, baseY) || !isEmpty(px, baseY)) continue;
+                    const drop = createPixel(element, px, baseY, pixelMetadata);
+                    if (!drop) continue;
+                    Object.assign(drop, pixelMetadata);
+                    remaining--;
+                }
+            }
+        }
+        else {
+            for (let radius = 0; radius <= 4 && remaining; radius++) {
+                for (let dx = -radius; dx <= radius && remaining; dx++) {
+                    for (let dy = -radius; dy <= radius && remaining; dy++) {
+                        if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+                        const px = x + dx;
+                        const py = y + dy;
+                        if (!outOfBounds(px, py) && isEmpty(px, py)) {
+                            const drop = createPixel(element, px, py, pixelMetadata);
+                            if (!drop) continue;
+                            Object.assign(drop, pixelMetadata);
+                            remaining--;
+                        }
                     }
                 }
             }
         }
-        if (remaining) manager.pendingResourceDrops.push({kind, element, amount: remaining, x, y, metadata: metadata ? Object.assign({}, metadata) : null});
+        if (remaining) manager.pendingResourceDrops.push({kind, element, amount: remaining, x, y, metadata: dropMetadata});
     }
 
     function getTreeAt(x, y) {
-        const pixel = pixelsAt(Number(x), Number(y)).find((candidate) => candidate && Number.isFinite(candidate.treeId));
-        return pixel ? manager.treeById.get(pixel.treeId) || null : null;
+        const candidates = pixelsAt(Number(x), Number(y)).filter((pixel) => pixel && TREE_COMPONENT_ELEMENTS.has(pixel.element));
+        for (let i = 0; i < candidates.length; i++) {
+            const pixel = candidates[i];
+            if (Number.isFinite(pixel.treeId) && manager.treeById.has(pixel.treeId)) return manager.treeById.get(pixel.treeId);
+            if (Number.isFinite(pixel.civPlantedTreeId) && manager.treeById.has(pixel.civPlantedTreeId)) return manager.treeById.get(pixel.civPlantedTreeId);
+            if (!pixel.treeLineage) continue;
+            for (const tree of manager.treeById.values()) {
+                if (tree && tree.lineage === pixel.treeLineage) return tree;
+            }
+        }
+        return null;
+    }
+
+    function collectLiveTreePixels(tree) {
+        if (!tree) return [];
+        const knownPixels = new Set((tree.pixels || []).filter((pixel) => pixel && !pixel.del));
+        const candidates = new Map();
+        const exactMembers = [];
+        for (let i = 0; i < currentPixels.length; i++) {
+            const pixel = currentPixels[i];
+            if (!pixel || pixel.del || !TREE_COMPONENT_ELEMENTS.has(pixel.element)) continue;
+            candidates.set(pixel.x + "," + pixel.y, pixel);
+            const sameTreeId = Number.isFinite(pixel.treeId) && pixel.treeId === tree.id;
+            const samePlantedId = Number.isFinite(pixel.civPlantedTreeId) && pixel.civPlantedTreeId === tree.id;
+            const sameLineage = !!(tree.lineage && pixel.treeLineage === tree.lineage);
+            if (sameTreeId || samePlantedId || sameLineage || knownPixels.has(pixel)) exactMembers.push(pixel);
+        }
+        const collected = new Set(exactMembers);
+        const frontier = exactMembers.slice();
+        while (frontier.length) {
+            const source = frontier.pop();
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dy = -1; dy <= 1; dy++) {
+                    if (!dx && !dy) continue;
+                    const candidate = candidates.get((source.x + dx) + "," + (source.y + dy));
+                    if (!candidate || collected.has(candidate)) continue;
+                    if (Number.isFinite(candidate.treeId) && candidate.treeId !== tree.id) continue;
+                    if (Number.isFinite(candidate.civPlantedTreeId) && candidate.civPlantedTreeId !== tree.id) continue;
+                    if (tree.lineage && candidate.treeLineage && candidate.treeLineage !== tree.lineage) continue;
+                    collected.add(candidate);
+                    frontier.push(candidate);
+                }
+            }
+        }
+        return Array.from(collected);
+    }
+
+    function removeTreeResourceNodes(treeId, removedPixels) {
+        const removed = new Set(removedPixels || []);
+        manager.resourceIndex.forEach((nodes, kind) => {
+            const kept = [];
+            for (let i = 0; i < nodes.length; i++) {
+                const node = nodes[i];
+                const belongs = node && (removed.has(node.pixel) || node.tree && node.tree.id === treeId || node.descriptor && node.descriptor.treeId === treeId);
+                if (!belongs) kept.push(node);
+                else {
+                    if (manager.resourceReservations && node.key) manager.resourceReservations.release(node.key);
+                    if (node.pixel) manager.resourceNodeByPixel.delete(node.pixel);
+                }
+            }
+            manager.resourceIndex.set(kind, kept);
+        });
     }
 
     function fellTree(treeOrX, y, actor) {
         const tree = typeof treeOrX === "object" && treeOrX && Array.isArray(treeOrX.pixels) ? treeOrX : getTreeAt(treeOrX, y);
         if (!tree) return null;
-        const woodPixels = (tree.woodPixels || tree.pixels.filter((pixel) => WOOD_BEARING_TREE_ELEMENTS.has(pixel.element))).filter((pixel) => pixel && !pixel.del);
-        const allPixels = tree.pixels.filter((pixel) => pixel && !pixel.del);
-        const dropLocations = woodPixels.map((pixel) => ({x: pixel.x, y: pixel.y}));
+        const allPixels = collectLiveTreePixels(tree);
+        const woodPixels = allPixels.filter((pixel) => WOOD_BEARING_TREE_ELEMENTS.has(pixel.element));
+        const base = tree.base && !tree.base.del ? tree.base : (woodPixels.slice().sort((a, b) => b.y - a.y || a.x - b.x)[0] || allPixels[0]);
+        const dropX = base ? base.x : safeNumber(tree.root && tree.root.x, 0);
+        const dropY = base ? base.y : safeNumber(tree.root && tree.root.y, 0);
+        removeTreeResourceNodes(tree.id, allPixels);
         allPixels.forEach((pixel) => deleteExactPixel(pixel));
-        dropLocations.forEach((location) => queueResourceDrops("wood", "civ_wood_resource", 1, location.x, location.y, {treeSapling: tree.seed || "sapling", sourceTreeId: tree.id}));
+        const woodDropCount = Math.ceil(woodPixels.length / 2);
+        const saplingDropCount = woodPixels.length;
+        const woodDropSources = woodPixels.slice().sort((a, b) => a.y - b.y || a.x - b.x);
+        for (let index = 0; index < woodDropCount; index++) {
+            const sourceIndex = Math.floor(index * woodDropSources.length / Math.max(1, woodDropCount));
+            const source = woodDropSources[sourceIndex];
+            if (source) queueResourceDrops("wood", "civ_wood_resource", 1, source.x, source.y, {sourceTreeId: tree.id, sourceTreePart: "wood"});
+        }
+        const saplingPlacement = {sourceTreeId: tree.id, sourceTreePart: "wood", treeFellingBaseY: dropY};
+        queueResourceDrops(TREE_SAPLING_PREFIX + (tree.seed || "sapling"), "civ_tree_sapling_resource", saplingDropCount, dropX, dropY, Object.assign({treeSapling: tree.seed || "sapling"}, saplingPlacement));
         manager.treeById.delete(tree.id);
-        if (actor) addPersonActivityMetrics(actor, {felledTrees: 1, felledWood: woodPixels.length});
-        return {treeId: tree.id, woodDrops: woodPixels.length, removedPixels: allPixels.length, treeSapling: tree.seed || "sapling"};
+        if (actor) {
+            addPersonActivityMetrics(actor, {felledTrees: 1, felledWood: woodDropCount, resourcesDropped: {[TREE_SAPLING_PREFIX + (tree.seed || "sapling")]: saplingDropCount}});
+            const settlement = settlementForActor(actor);
+            recordDiscovery(settlement, "seed", saplingDropCount);
+            recordDiscovery(settlement, "tree_seed", saplingDropCount);
+        }
+        return {treeId: tree.id, woodDrops: woodDropCount, saplingDrops: saplingDropCount, removedPixels: allPixels.length, treeSapling: tree.seed || "sapling"};
     }
 
     function fellTreeAt(x, y, actor) {
@@ -2444,6 +3181,92 @@ function harvestApproach(actor, resource) {
         return whole;
     }
 
+    function finishHarvestNode(actor, resourceKind, outcome, reason, resultPatch) {
+        if (manager.resourceReservations && actor.reservedResourceKey) manager.resourceReservations.release(actor.reservedResourceKey, actor.humanId);
+        delete actor.reservedResourceKey;
+        finishPersonActivity(actor, outcome || "completed", reason || "resource_harvested", resultPatch);
+        actor.harvestProgress = 0;
+        actor.harvestX = undefined;
+        actor.harvestY = undefined;
+        actor.targetX = undefined;
+        actor.targetY = undefined;
+        actor.targetId = undefined;
+        actor.targetKind = undefined;
+        actor.targetKey = undefined;
+        actor.task = "planning";
+        invalidateNavigation(actor);
+        if (carriedAmount(actor) >= carryCapacityFor(actor)) {
+            beginCarryDelivery(actor, "backpack_full");
+            return;
+        }
+        const next = findResource(actor, resourceKind);
+        if (next && setHarvestTask(actor, next)) return;
+        if (carriedAmount(actor) > 0) {
+            beginCarryDelivery(actor, "resource_batch_exhausted");
+            return;
+        }
+        delete actor.workTrip;
+        beginPersonActivity(actor, "planning", null);
+    }
+
+    function removeResourcePixelFromIndex(pixel, kind) {
+        const nodes = manager.resourceIndex.get(kind);
+        if (!nodes || !nodes.length) {
+            manager.resourceNodeByPixel.delete(pixel);
+            return;
+        }
+        for (let index = nodes.length - 1; index >= 0; index--) {
+            if (nodes[index] && nodes[index].pixel === pixel) nodes.splice(index, 1);
+        }
+        manager.resourceNodeByPixel.delete(pixel);
+    }
+
+    function blocksMiningSky(pixel) {
+        if (!pixel || pixel.del) return false;
+        const info = elements[pixel.element] || {};
+        if (info.state !== "solid" || pixel._civResourceDrop || info.humanCollectible && pixel.element.indexOf("civ_") === 0) return false;
+        if (getActorFromPixel(pixel) || isBuildingCorePixel(pixel) || STRUCTURE_PARTS.has(pixel.element)) return false;
+        if (typeof isCreaturePixel === "function" && isCreaturePixel(pixel)) return false;
+        if (typeof isPassableVegetationPixel === "function" && isPassableVegetationPixel(pixel)) return false;
+        if (typeof isNonBlockingPixel === "function" && isNonBlockingPixel(pixel)) return false;
+        if (info.passableVegetation || info.naturalVegetation || /(?:plant|leaves|needles|sapling|grass|flower|vine)/.test(pixel.element)) return false;
+        const descriptor = resourceDescriptor(pixel);
+        if (descriptor && (descriptor.resourceDrop || descriptor.kind === "wood" || descriptor.kind === "food")) return false;
+        return true;
+    }
+
+    function mineralExposedToSky(x, y) {
+        for (let scanY = y - 1; scanY >= 0; scanY--) {
+            if (pixelsAt(x, scanY).some(blocksMiningSky)) return false;
+        }
+        return true;
+    }
+
+    function clearHarvestedResourceFields(pixel) {
+        delete pixel._civCollectible;
+        delete pixel._civResourceDrop;
+        delete pixel.resourceKind;
+        delete pixel.resourceMaterial;
+        delete pixel.resourceSeed;
+        delete pixel.treeSapling;
+    }
+
+    function replaceHarvestedResourcePixel(pixel, descriptor, actor) {
+        if (!pixel || !descriptor) return false;
+        removeResourcePixelFromIndex(pixel, descriptor.kind);
+        const leavesSoil = !descriptor.resourceDrop && descriptor.kind !== "wood" && descriptor.kind !== "food" && elements.dirt;
+        if (!leavesSoil) return deleteExactPixel(pixel);
+        const leavesTunnel = NONRENEWABLE_KINDS.has(descriptor.kind) && elements.civ_tunnel && !mineralExposedToSky(pixel.x, pixel.y);
+        changePixel(pixel, leavesTunnel ? "civ_tunnel" : "dirt");
+        clearHarvestedResourceFields(pixel);
+        if (leavesTunnel) {
+            pixel.dugTick = pixelTicks;
+            pixel.dugByFactionId = actor && actor.factionId;
+            pixel.dugByHumanId = actor && actor.humanId;
+        }
+        return true;
+    }
+
     function harvestTarget(actor) {
         const harvestX = Number.isFinite(actor.harvestX) ? actor.harvestX : actor.targetX;
         const harvestY = Number.isFinite(actor.harvestY) ? actor.harvestY : actor.targetY;
@@ -2454,6 +3277,13 @@ function harvestApproach(actor, resource) {
         const target = pixelsAt(harvestX, harvestY).find((pixel) => resourceDescriptor(pixel)) || null;
         const descriptor = resourceDescriptor(target);
         if (!target || !descriptor || (actor.targetKind && target.element !== actor.targetKind)) {
+            blockFailedResource(actor, harvestX, harvestY, actor.targetKind);
+            if (carriedAmount(actor) > 0) {
+                if (manager.resourceReservations && actor.reservedResourceKey) manager.resourceReservations.release(actor.reservedResourceKey, actor.humanId);
+                delete actor.reservedResourceKey;
+                beginCarryDelivery(actor, "resource_disappeared");
+                return false;
+            }
             clearTask(actor, "interrupted", "resource_disappeared");
             return false;
         }
@@ -2481,11 +3311,10 @@ function harvestApproach(actor, resource) {
                 research.milestones.harvests = safeNumber(research.milestones.harvests, 0) + 1;
             }
             addPersonActivityMetrics(actor, {harvestedBlocks: result ? result.removedPixels : 0, resourcesDropped: {wood: result ? result.woodDrops : 0}});
-            clearTask(actor, "completed", "tree_felled", {sourceElement: harvestedElement, sourceX: harvestX, sourceY: harvestY, treeId: tree.id, woodDrops: result ? result.woodDrops : 0});
+            finishHarvestNode(actor, descriptor.kind, "completed", "tree_felled", {sourceElement: harvestedElement, sourceX: harvestX, sourceY: harvestY, treeId: tree.id, woodDrops: result ? result.woodDrops : 0});
             return true;
         }
-        if (descriptor.harvestInto && elements[descriptor.harvestInto]) changePixel(target, descriptor.harvestInto);
-        else deleteExactPixel(target);
+        replaceHarvestedResourcePixel(target, descriptor, actor);
         const carry = ensureActorCarry(actor);
         const capacity = carryCapacityFor(actor);
         const settlement = settlementForActor(actor);
@@ -2495,7 +3324,15 @@ function harvestApproach(actor, resource) {
             const research = ensureResearchState(settlement);
             research.milestones.harvests = safeNumber(research.milestones.harvests, 0) + 1;
         }
-        if (descriptor.seedOnly) {
+        if (descriptor.treeSaplingResource) {
+            const saplingKind = TREE_SAPLING_PREFIX + descriptor.treeSeed;
+            const result = World.addCarry ? World.addCarry(actor, saplingKind, 1, capacity) : {accepted: 0, overflow: 1};
+            resourcesCollected[saplingKind] = result.accepted;
+            resourcesDropped[saplingKind] = result.overflow;
+            recordFirstHarvest(settlement, saplingKind, result.accepted);
+            if (result.overflow) queueResourceDrops(saplingKind, "civ_tree_sapling_resource", result.overflow, harvestX, harvestY, {treeSapling: descriptor.treeSeed});
+        }
+        else if (descriptor.seedOnly) {
             const result = World.addCarry ? World.addCarry(actor, "seed:" + descriptor.seed, 1, capacity) : {accepted: 0, overflow: 1};
             resourcesCollected["seed:" + descriptor.seed] = result.accepted;
             resourcesDropped["seed:" + descriptor.seed] = result.overflow;
@@ -2510,16 +3347,6 @@ function harvestApproach(actor, resource) {
             resourcesDropped[descriptor.kind] = safeNumber(resourcesDropped[descriptor.kind], 0) + result.overflow;
             recordFirstHarvest(settlement, descriptor.kind, result.accepted);
             if (result.overflow) queueResourceDrops(descriptor.kind, harvestedElement, result.overflow, harvestX, harvestY);
-            const treeSapling = descriptor.treeSapling;
-            const saplingChance = Math.min(1, C.TREE_SAPLING_CHANCE * (1 + safeNumber(mods.seedDropBonus, 0)));
-            if (treeSapling && result.accepted > 0 && Math.random() < saplingChance) {
-                const saplingKind = "tree_sapling:" + treeSapling;
-                const seedResult = World.addCarry ? World.addCarry(actor, saplingKind, 1, capacity) : {accepted: 0, overflow: 1};
-                resourcesCollected[saplingKind] = safeNumber(resourcesCollected[saplingKind], 0) + seedResult.accepted;
-                resourcesDropped[saplingKind] = safeNumber(resourcesDropped[saplingKind], 0) + seedResult.overflow;
-                recordFirstHarvest(settlement, saplingKind, seedResult.accepted);
-                if (seedResult.overflow) queueResourceDrops("tree_sapling:" + treeSapling, treeSapling, seedResult.overflow, harvestX, harvestY);
-            }
             if (descriptor.kind === "wood" && result.accepted > 0) {
                 for (let index = 0; index < result.accepted; index++) {
                     if (Math.random() >= C.WOOD_FOOD_BONUS_CHANCE) continue;
@@ -2532,7 +3359,7 @@ function harvestApproach(actor, resource) {
             }
         }
         addPersonActivityMetrics(actor, {harvestedBlocks: 1, resourcesCollected: resourcesCollected, resourcesDropped: resourcesDropped});
-        clearTask(actor, "completed", "resource_harvested", {sourceElement: harvestedElement, sourceX: harvestX, sourceY: harvestY});
+        finishHarvestNode(actor, descriptor.kind, "completed", "resource_harvested", {sourceElement: harvestedElement, sourceX: harvestX, sourceY: harvestY});
         return true;
     }
 
@@ -2721,6 +3548,82 @@ function harvestApproach(actor, resource) {
         return candidates[0] || null;
     }
 
+    function isFireTarget(pixel) {
+        return !!(pixel && !pixel.del && (pixel.burning || DIRECT_FIRE_ELEMENTS.has(pixel.element)));
+    }
+
+    function refreshFireTargets(force) {
+        if (!force && pixelTicks - manager.lastFireScanTick < C.FIRE_SCAN_INTERVAL) return manager.fireTargets;
+        manager.fireTargets = currentPixels.filter(isFireTarget);
+        manager.lastFireScanTick = pixelTicks;
+        return manager.fireTargets;
+    }
+
+    function findFireTarget(actor) {
+        if (!actor || actor.del || actor.dead) return null;
+        let best = null;
+        let bestDistance = Infinity;
+        const targets = refreshFireTargets(false);
+        for (let index = 0; index < targets.length; index++) {
+            const target = targets[index];
+            if (!isFireTarget(target)) continue;
+            const distance = Core.distance(actor.x, actor.y, target.x, target.y);
+            if (distance > C.FIRE_RESPONSE_RADIUS || distance >= bestDistance) continue;
+            best = target;
+            bestDistance = distance;
+        }
+        return best;
+    }
+
+    function extinguishPixel(pixel) {
+        if (!isFireTarget(pixel)) return null;
+        const sourceElement = pixel.element;
+        const wasBurning = !!pixel.burning;
+        delete pixel.burning;
+        delete pixel.burnStart;
+        const replacement = EXTINGUISHED_FIRE_ELEMENTS[sourceElement];
+        if (replacement) {
+            if (elements[replacement]) changePixel(pixel, replacement);
+            else deleteExactPixel(pixel);
+        }
+        return {sourceElement: sourceElement, resultElement: replacement || sourceElement, wasBurning: wasBurning};
+    }
+
+    function extinguishTarget(actor) {
+        if (!actor || !Number.isFinite(actor.targetX) || !Number.isFinite(actor.targetY)) {
+            clearTask(actor, "failed", "invalid_fire_target");
+            return false;
+        }
+        const target = pixelsAt(actor.targetX, actor.targetY).find(isFireTarget) || null;
+        if (!target) {
+            refreshFireTargets(true);
+            clearTask(actor, "completed", "fire_already_out");
+            return false;
+        }
+        if (Core.distance(actor.x, actor.y, target.x, target.y) > 1.5) return false;
+        const result = extinguishPixel(target);
+        if (!result) return false;
+        manager.lastFireScanTick = -Infinity;
+        const banner = settlementForActor(actor);
+        if (banner) {
+            logSettlementEvent(banner, "fire_extinguished", "扑灭火情", {
+                humanId: actor.humanId,
+                sourceElement: result.sourceElement,
+                resultElement: result.resultElement,
+                x: target.x,
+                y: target.y
+            });
+        }
+        clearTask(actor, "completed", "fire_extinguished", {
+            firesExtinguished: 1,
+            sourceElement: result.sourceElement,
+            resultElement: result.resultElement,
+            sourceX: target.x,
+            sourceY: target.y
+        });
+        return true;
+    }
+
     function assignActorTask(actor) {
         if (!actor || actor.del || actor.dead || actor.element !== "civ_body") return;
         const banner = settlementForActor(actor);
@@ -2758,6 +3661,11 @@ function harvestApproach(actor, resource) {
                 }
             }
             if (banner) { setTask(actor, "patrol", banner); return; }
+        }
+        const fireTarget = findFireTarget(actor);
+        if (fireTarget) {
+            setTask(actor, "extinguish", fireTarget);
+            return;
         }
         if (actor.role === "builder" && faction && faction.constructionSites.length) {
             setTask(actor, "build", faction.constructionSites[0]);
@@ -2815,11 +3723,20 @@ function harvestApproach(actor, resource) {
         return pixelByElementAt(x, y, "civ_tunnel");
     }
 
-    function canTunnelPixel(pixel) {
+    function canTunnelPixel(pixel, actor, forceTraversal) {
         if (!pixel || pixel.del || isBuildingCorePixel(pixel) || getActorFromPixel(pixel)) return false;
-        const descriptor = resourceDescriptor(pixel);
-        if (descriptor && (descriptor.kind === "stone" || NONRENEWABLE_KINDS.has(descriptor.kind))) return true;
         const info = elements[pixel.element] || {};
+        if (typeof isCreaturePixel === "function" && isCreaturePixel(pixel)) return false;
+        if (pixel.eraseProtected === true || info.eraseProtected === true) return false;
+        if (STRUCTURE_PARTS.has(pixel.element)) return false;
+        const descriptor = resourceDescriptor(pixel);
+        if (actor && typeof pixelsCanOverlap === "function") {
+            const bodyProbe = {element: "civ_body", factionId: actor.factionId, humanId: actor.humanId};
+            const headProbe = {element: "civ_head", factionId: actor.factionId, humanId: actor.humanId};
+            if (pixelsCanOverlap(bodyProbe, pixel) || pixelsCanOverlap(headProbe, pixel)) return false;
+        }
+        if (descriptor && (descriptor.kind === "stone" || NONRENEWABLE_KINDS.has(descriptor.kind))) return true;
+        if (forceTraversal) return info.state === "solid";
         return info.state === "solid" && (SOIL_ELEMENTS.has(pixel.element) || /(?:dirt|soil|clay|sand|rock|stone|ore|gravel|basalt|limestone)/.test(pixel.element));
     }
 
@@ -2836,57 +3753,73 @@ function harvestApproach(actor, resource) {
     }
 
     function carveTunnelCell(actor, x, y) {
-        if (outOfBounds(x, y)) return false;
-        const base = getPixel(x, y);
-        if (base && base.element === "civ_tunnel") return true;
-        if (base) {
-            const occupyingActor = getActorFromPixel(base);
-            if (occupyingActor && occupyingActor.humanId === actor.humanId) {
-                if (typeof detachPixelFromGrid !== "function" || typeof attachPixelToGrid !== "function") return true;
-                detachPixelFromGrid(base, false);
-                const tunnel = createPixel("civ_tunnel", x, y, {dugTick: pixelTicks, dugByFactionId: actor.factionId});
-                if (!tunnel || !attachPixelToGrid(base, x, y, true)) return false;
-                addPersonActivityMetrics(actor, {tunnelCells: 1});
-                return true;
+        if (outOfBounds(x, y)) return {satisfied: false, mutated: false};
+        const forceTraversal = !!(actor.pathCache && actor.pathCache.forceTunnel);
+        const occupants = pixelsAt(x, y).slice();
+        let tunnel = occupants.find((pixel) => pixel.element === "civ_tunnel") || null;
+        let mutated = false;
+        for (let i = 0; i < occupants.length; i++) {
+            const pixel = occupants[i];
+            if (!pixel || pixel.del || pixel === tunnel || pixel._r === actor._r) continue;
+            const occupyingActor = getActorFromPixel(pixel);
+            if (occupyingActor) {
+                const probe = {element: "civ_body", factionId: actor.factionId, humanId: actor.humanId};
+                if (typeof pixelsCanOverlap === "function" && pixelsCanOverlap(probe, pixel)) continue;
+                return {satisfied: false, mutated: mutated};
             }
-            if (!canTunnelPixel(base)) return false;
-            collectTunnelResource(actor, base);
-            changePixel(base, "civ_tunnel");
-            const tunnel = getPixel(x, y);
-            if (tunnel) { tunnel.dugTick = pixelTicks; tunnel.dugByFactionId = actor.factionId; }
-            addPersonActivityMetrics(actor, {tunnelCells: 1});
-            return true;
+            if (typeof pixelsCanOverlap === "function") {
+                const bodyProbe = {element: "civ_body", factionId: actor.factionId, humanId: actor.humanId};
+                const headProbe = {element: "civ_head", factionId: actor.factionId, humanId: actor.humanId};
+                if (pixelsCanOverlap(bodyProbe, pixel) || pixelsCanOverlap(headProbe, pixel)) continue;
+            }
+            if (!canTunnelPixel(pixel, actor, forceTraversal)) return {satisfied: false, mutated: mutated};
+            collectTunnelResource(actor, pixel);
+            if (!tunnel) {
+                changePixel(pixel, "civ_tunnel");
+                tunnel = pixel;
+                tunnel.dugTick = pixelTicks;
+                tunnel.dugByFactionId = actor.factionId;
+            }
+            else deleteExactPixel(pixel);
+            mutated = true;
         }
-        createPixel("civ_tunnel", x, y);
-        const tunnel = getPixel(x, y);
-        if (tunnel) { tunnel.dugTick = pixelTicks; tunnel.dugByFactionId = actor.factionId; }
-        if (tunnel) addPersonActivityMetrics(actor, {tunnelCells: 1});
-        return !!tunnel;
+        if (mutated) addPersonActivityMetrics(actor, {tunnelCells: 1});
+        return {satisfied: true, mutated: mutated};
     }
 
     function digToward(actor, relation, targetX, targetY) {
         if (actor.element !== "civ_body") return false;
         if (actor.role === "miner" && carriedAmount(actor) >= carryCapacityFor(actor)) {
-            const carry = ensureActorCarry(actor);
-            const firstKind = Object.keys(carry).find((kind) => carry[kind] > 0);
-            const destination = deliveryDestination(actor, firstKind);
-            actor.resumeAfterDelivery = {
-                task: actor.task,
-                targetX: actor.targetX,
-                targetY: actor.targetY,
-                targetId: actor.targetId,
-                targetKind: actor.targetKind,
-                harvestX: actor.harvestX,
-                harvestY: actor.harvestY
-            };
-            setTask(actor, "deliver", destination);
+            beginCarryDelivery(actor, "tunnel_backpack_full");
             return false;
         }
         const dxTotal = targetX - actor.x;
         const dyTotal = targetY - actor.y;
-        let dx = Math.sign(dxTotal);
-        let dy = Math.sign(dyTotal);
+        let dx = 0;
+        let dy = 0;
+        const routeLeg = actor.pathCache && actor.pathCache.legs && actor.pathCache.legs[actor.pathCache.legIndex];
+        if (routeLeg && routeLeg.axis === "y" && dyTotal) dy = Math.sign(dyTotal);
+        else if (routeLeg && routeLeg.axis === "x" && dxTotal) dx = Math.sign(dxTotal);
+        else if (dyTotal) dy = Math.sign(dyTotal);
+        else if (dxTotal) dx = Math.sign(dxTotal);
         if (!dx && !dy) dx = actor.dir || 1;
+        const bodyX = actor.x + dx;
+        const bodyY = actor.y + dy;
+        const headX = bodyX;
+        const headY = bodyY - 1;
+        const targetPixels = pixelsAt(bodyX, bodyY).concat(pixelsAt(headX, headY));
+        targetPixels.forEach((pixel) => resourceDescriptor(pixel));
+        if (actorCanOccupyAt(actor, bodyX, bodyY)) {
+            if (tryMoveRelation(relation, dx, dy, true)) {
+                recordWorkTripStep(actor);
+                return true;
+            }
+            return false;
+        }
+        const forceTraversal = !!(actor.pathCache && actor.pathCache.forceTunnel);
+        const bodyNeedsExcavation = pixelsAt(bodyX, bodyY).some((pixel) => canTunnelPixel(pixel, actor, forceTraversal));
+        const headNeedsExcavation = pixelsAt(headX, headY).some((pixel) => canTunnelPixel(pixel, actor, forceTraversal));
+        if (!bodyNeedsExcavation && !headNeedsExcavation) return false;
         const banner = settlementForActor(actor);
         if (banner && !banner.firstTunnelLogged) {
             banner.firstTunnelLogged = true;
@@ -2894,14 +3827,13 @@ function harvestApproach(actor, resource) {
         }
         actor.pathStage = "tunnel";
         setPersonActivityPhase(actor, "tunnel");
-        const bodyX = actor.x + dx;
-        const bodyY = actor.y + dy;
-        const headX = bodyX;
-        const headY = bodyY - 1;
         const carvedBody = carveTunnelCell(actor, bodyX, bodyY);
         const carvedHead = carveTunnelCell(actor, headX, headY);
-        if (carvedBody && carvedHead && tryMoveRelation(relation, dx, dy, true)) return true;
-        return carvedBody || carvedHead;
+        if (carvedBody.satisfied && carvedHead.satisfied && actorCanOccupyAt(actor, bodyX, bodyY) && tryMoveRelation(relation, dx, dy, true)) {
+            recordWorkTripStep(actor);
+            return true;
+        }
+        return carvedBody.mutated || carvedHead.mutated;
     }
 
     function blockingWallAt(actor, x, y) {
@@ -2913,14 +3845,78 @@ function harvestApproach(actor, resource) {
             if (typeof isCreaturePixel === "function" && isCreaturePixel(pixel)) return false;
             if (typeof isPassableVegetationPixel === "function" && isPassableVegetationPixel(pixel)) return false;
             if (typeof isNonBlockingPixel === "function" && isNonBlockingPixel(pixel)) return false;
+            resourceDescriptor(pixel);
             const probe = {element: "civ_body", factionId: actor.factionId, humanId: actor.humanId};
             return typeof pixelsCanOverlap !== "function" || !pixelsCanOverlap(probe, pixel);
         }) || null;
     }
 
+    function overlapClimbableAt(actor, x, y) {
+        const bodyProbe = {element: "civ_body", factionId: actor.factionId, humanId: actor.humanId};
+        const headProbe = {element: "civ_head", factionId: actor.factionId, humanId: actor.humanId};
+        return pixelsAt(x, y).some((pixel) => {
+            if (!pixel || pixel.del || pixel._r === actor._r || getActorFromPixel(pixel)) return false;
+            if (typeof pixelsCanOverlap !== "function") return pixel.element === "civ_tunnel";
+            return pixelsCanOverlap(bodyProbe, pixel) || pixelsCanOverlap(headProbe, pixel);
+        });
+    }
+
+    function hasInternalClimbSupport(actor, x, y) {
+        return overlapClimbableAt(actor, x, y) || overlapClimbableAt(actor, x, y - 1);
+    }
+
     function climbSupportAt(actor, x, y, side) {
         if (side !== -1 && side !== 1) return false;
-        return !!(blockingWallAt(actor, x + side, y) || blockingWallAt(actor, x + side, y - 1));
+        return !!(blockingWallAt(actor, x + side, y) || blockingWallAt(actor, x + side, y - 1) ||
+            overlapClimbableAt(actor, x, y) || overlapClimbableAt(actor, x, y - 1) ||
+            overlapClimbableAt(actor, x + side, y) || overlapClimbableAt(actor, x + side, y - 1));
+    }
+
+    function continuousWallHeight(actor, side) {
+        if (side !== -1 && side !== 1) return 0;
+        let height = 0;
+        for (let y = actor.y; y >= 1; y--) {
+            if (!blockingWallAt(actor, actor.x + side, y)) break;
+            height++;
+        }
+        return height;
+    }
+
+    function corridorRequiresExcavation(actor, targetX, targetY) {
+        if (!actor || outOfBounds(targetX, targetY) || outOfBounds(targetX, targetY - 1)) return false;
+        return pixelsAt(targetX, targetY).some((pixel) => canTunnelPixel(pixel, actor, true)) ||
+            pixelsAt(targetX, targetY - 1).some((pixel) => canTunnelPixel(pixel, actor, true));
+    }
+
+    function corridorBuildingAt(actor, x, y) {
+        if (actorCanOccupyAt(actor, x, y)) return null;
+        const candidates = [getBuildingCoreAt(x, y), getBuildingCoreAt(x, y - 1)].filter(Boolean);
+        const bodyProbe = {element: "civ_body", factionId: actor.factionId, humanId: actor.humanId};
+        const headProbe = {element: "civ_head", factionId: actor.factionId, humanId: actor.humanId};
+        return candidates.find((building, index) => {
+            if (candidates.indexOf(building) !== index || building.del || building.buildingState === "destroyed") return false;
+            if (typeof pixelsCanOverlap === "function") return !pixelsCanOverlap(bodyProbe, building) && !pixelsCanOverlap(headProbe, building);
+            const info = elements[building.element] || {};
+            return building.nonBlocking !== true && info.nonBlocking !== true;
+        }) || null;
+    }
+
+    function beginHighWallTunnel(actor, side) {
+        const nav = ensureNavigationState(actor);
+        nav.forceTunnel = true;
+        nav.tunnelDirection = side;
+        nav.tunnelStartX = actor.x;
+        nav.tunnelStartedTick = pixelTicks;
+        let exitX = actor.x + side;
+        for (let steps = 0; steps < Math.max(1, width); steps++, exitX += side) {
+            if (outOfBounds(exitX, actor.y) || outOfBounds(exitX, actor.y - 1)) break;
+            const bodyBlocked = pixelsAt(exitX, actor.y).some((pixel) => canTunnelPixel(pixel, actor, true));
+            const headBlocked = pixelsAt(exitX, actor.y - 1).some((pixel) => canTunnelPixel(pixel, actor, true));
+            if (!bodyBlocked && !headBlocked) break;
+        }
+        nav.tunnelExitX = exitX;
+        speakForTask(actor, "tunnel", 3);
+        return nav;
     }
 
     function activeClimbSide(actor) {
@@ -2931,25 +3927,34 @@ function harvestApproach(actor, resource) {
     }
 
     function ensureNavigationState(actor) {
-        if (!actor.pathCache || actor.pathCache.version !== 1 || !Array.isArray(actor.pathCache.edges) || actor.pathCache.edges.length > 24) {
-            actor.pathCache = {version: 1, edges: [], cursor: 0, climbSide: 0, stallSinceTick: pixelTicks};
+        if (!actor.pathCache || actor.pathCache.version !== NAVIGATION_SCHEMA_VERSION || !Array.isArray(actor.pathCache.path)) {
+            actor.pathCache = {version: NAVIGATION_SCHEMA_VERSION, mode: "astar", phase: "outbound", path: [], pathIndex: 0, climbSide: 0, searchStatus: "idle", stallSinceTick: pixelTicks, blockedTicks: 0};
         }
         return actor.pathCache;
     }
 
-    function invalidateNavigation(actor) {
+    function invalidateNavigation(actor, reason) {
         if (!actor) return;
         const side = actor.pathCache && actor.pathCache.climbSide;
-        actor.pathCache = {version: 1, edges: [], cursor: 0, climbSide: side === -1 || side === 1 ? side : 0, stallSinceTick: pixelTicks};
+        if (Number.isFinite(actor.humanId)) manager.routeSearches.delete(actor.humanId);
+        if (Number.isFinite(actor.humanId) && reason !== "next_edge_invalid") manager.routeRejectedEdges.delete(actor.humanId);
+        actor.pathCache = {
+            version: NAVIGATION_SCHEMA_VERSION,
+            mode: "astar",
+            phase: actor.workTrip && actor.workTrip.phase || "outbound",
+            path: [],
+            pathIndex: 0,
+            climbSide: side === -1 || side === 1 ? side : 0,
+            searchStatus: "idle",
+            replanReason: reason || null,
+            stallSinceTick: pixelTicks,
+            blockedTicks: 0
+        };
     }
 
     function navigationExcavationAllowed(actor) {
         if (!actor) return false;
-        if (actor.role === "miner") return true;
-        if (actor.task !== "harvest") return false;
-        const target = Number.isFinite(actor.harvestX) && Number.isFinite(actor.harvestY) ? pixelsAt(actor.harvestX, actor.harvestY).find((pixel) => resourceDescriptor(pixel)) : null;
-        const descriptor = resourceDescriptor(target);
-        return !!(descriptor && (descriptor.kind === "stone" || NONRENEWABLE_KINDS.has(descriptor.kind)));
+        return actor.element === "civ_body" && actor._r !== undefined;
     }
 
     function executeNavigationEdge(actor, dx, dy, stage, climbSide) {
@@ -2961,12 +3966,470 @@ function harvestApproach(actor, resource) {
         if (dx) actor.dir = Math.sign(dx);
         const nav = ensureNavigationState(actor);
         nav.climbSide = climbSide === -1 || climbSide === 1 ? climbSide : 0;
+        if (stage === "climb" && nav.climbSide === 0) actor.climbHoldUntil = pixelTicks + Math.max(2, C.LOCOMOTION_INTERVAL_TICKS);
+        else if (stage !== "climb") delete actor.climbHoldUntil;
         nav.lastMoveTick = pixelTicks;
         nav.stallSinceTick = pixelTicks;
+        nav.blockedTicks = 0;
+        recordWorkTripStep(actor);
         return true;
     }
 
     let deferAdultLocomotion = false;
+
+    function legacyNavigationStep(actor, targetX, targetY, away) {
+        if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) {
+            if (actor.playerOrder) clearPlayerOrder(actor, "failed", "invalid_navigation_target");
+            else clearTask(actor, "failed", "invalid_navigation_target");
+            return false;
+        }
+        const nav = ensureNavigationState(actor);
+        const horizontal = Math.sign(targetX - actor.x) * (away ? -1 : 1);
+        const vertical = Math.sign(targetY - actor.y) * (away ? -1 : 1);
+        let side = activeClimbSide(actor);
+
+        if (!away && horizontal && !nav.forceTunnel && continuousWallHeight(actor, horizontal) > 6) beginHighWallTunnel(actor, horizontal);
+        if (!away && nav.forceTunnel) {
+            const tunnelDirection = nav.tunnelDirection === -1 ? -1 : 1;
+            const building = corridorBuildingAt(actor, actor.x + tunnelDirection, actor.y);
+            if (building) {
+                if (building.factionId !== actor.factionId && atWar(actor.factionId, building.factionId)) {
+                    setTask(actor, "siege", building);
+                    return false;
+                }
+                nav.forceTunnel = false;
+                nav.tunnelDirection = 0;
+            }
+            else {
+                const passedExit = tunnelDirection > 0 ? actor.x >= safeNumber(nav.tunnelExitX, actor.x + 1) : actor.x <= safeNumber(nav.tunnelExitX, actor.x - 1);
+                if (!passedExit && digToward(actor, getRelation(actor._r), actor.x + tunnelDirection, actor.y)) {
+                    nav.stallSinceTick = pixelTicks;
+                    return true;
+                }
+                nav.forceTunnel = false;
+                nav.tunnelDirection = 0;
+            }
+        }
+
+        if (side) {
+            if (horizontal === side && actorCanStandAt(actor, actor.x + side, actor.y - 1)) {
+                nav.descentSupport = -side;
+                if (executeNavigationEdge(actor, side, -1, "top", 0)) return true;
+            }
+            if (horizontal === side && actorCanOccupyAt(actor, actor.x, actor.y - 1) && climbSupportAt(actor, actor.x, actor.y - 1, side) && executeNavigationEdge(actor, 0, -1, "climb", side)) return true;
+            if (!horizontal && vertical !== 0 && actorCanOccupyAt(actor, actor.x, actor.y + vertical) && climbSupportAt(actor, actor.x, actor.y + vertical, side) && executeNavigationEdge(actor, 0, vertical, "climb", side)) return true;
+            nav.climbSide = 0;
+            side = 0;
+        }
+
+        if (vertical > 0 && (nav.descentSupport === -1 || nav.descentSupport === 1)) {
+            const support = nav.descentSupport;
+            if (actorCanOccupyAt(actor, actor.x, actor.y + 1) && climbSupportAt(actor, actor.x, actor.y + 1, support) && executeNavigationEdge(actor, 0, 1, "climb", support)) return true;
+            if (!climbSupportAt(actor, actor.x, actor.y, support)) nav.descentSupport = 0;
+        }
+
+        if (horizontal && executeNavigationEdge(actor, horizontal, 0, "flat", 0)) return true;
+        if (horizontal && actorCanStandAt(actor, actor.x + horizontal, actor.y - 1) && executeNavigationEdge(actor, horizontal, -1, "step", 0)) return true;
+        if (horizontal && climbSupportAt(actor, actor.x, actor.y, horizontal)) {
+            nav.climbSide = horizontal;
+            if (actorCanOccupyAt(actor, actor.x, actor.y - 1) && climbSupportAt(actor, actor.x, actor.y - 1, horizontal) && executeNavigationEdge(actor, 0, -1, "climb", horizontal)) return true;
+        }
+        if (horizontal && targetY > actor.y && actorCanStandAt(actor, actor.x + horizontal, actor.y + 1) && executeNavigationEdge(actor, horizontal, 1, "down", 0)) return true;
+        if (vertical !== 0 && hasInternalClimbSupport(actor, actor.x, actor.y) && actorCanOccupyAt(actor, actor.x, actor.y + vertical) && executeNavigationEdge(actor, 0, vertical, "climb", 0)) return true;
+        if (!horizontal && vertical < 0) {
+            const preferred = nav.climbSide || actor.dir || 1;
+            const selectedSide = climbSupportAt(actor, actor.x, actor.y, preferred) ? preferred : (climbSupportAt(actor, actor.x, actor.y, -preferred) ? -preferred : 0);
+            if (selectedSide && actorCanOccupyAt(actor, actor.x, actor.y - 1) && climbSupportAt(actor, actor.x, actor.y - 1, selectedSide) && executeNavigationEdge(actor, 0, -1, "climb", selectedSide)) return true;
+        }
+        if (!away && navigationExcavationAllowed(actor) && digToward(actor, getRelation(actor._r), targetX, targetY)) {
+            nav.stallSinceTick = pixelTicks;
+            return true;
+        }
+        if (!Number.isFinite(nav.stallSinceTick)) nav.stallSinceTick = pixelTicks;
+        return false;
+    }
+
+    function routeTaskKey(actor, away) {
+        return [actor.task || "move", actor.targetKey || "", safeNumber(actor.targetId, ""), away ? 1 : 0].join("|");
+    }
+
+    function routeGoalRadius(actor) {
+        if (!actor) return 0;
+        if (actor.task === "move") return 1;
+        if (actor.task === "harvest") return 0;
+        if (actor.task === "extinguish") return 1.5;
+        if (actor.task === "farm" || actor.task === "plant_tree") return 1.5;
+        if (actor.task === "deliver" || actor.task === "build" || actor.task === "facility") return 2.5;
+        if (actor.task === "combat") {
+            const weapon = manager.weapons.get(actor.weapon) || manager.weapons.get("fists");
+            return Math.max(1, safeNumber(weapon && weapon.range, 1));
+        }
+        if (actor.task === "siege") {
+            const weapon = manager.weapons.get(actor.weapon) || manager.weapons.get("fists");
+            return Math.max(2, safeNumber(weapon && weapon.range, 1));
+        }
+        return 1;
+    }
+
+    function navigationBounds(actor, targetX, targetY) {
+        const distance = Math.abs(targetX - actor.x) + Math.abs(targetY - actor.y);
+        const margin = Math.max(C.PATH_SEARCH_MARGIN_MIN, Math.min(C.PATH_SEARCH_MARGIN_MAX, Math.ceil(distance / 4)));
+        return {
+            minX: Math.max(0, Math.min(actor.x, targetX) - margin),
+            maxX: Math.min(width - 1, Math.max(actor.x, targetX) + margin),
+            minY: Math.max(1, Math.min(actor.y, targetY) - margin),
+            maxY: Math.min(height - 1, Math.max(actor.y, targetY) + margin)
+        };
+    }
+
+    function navigationInBounds(bounds, x, y) {
+        return x >= bounds.minX && x <= bounds.maxX && y >= bounds.minY && y <= bounds.maxY;
+    }
+
+    function navigationTunnelAt(actor, x, y) {
+        return !!(tunnelAt(x, y) || tunnelAt(x, y - 1));
+    }
+
+    function navigationSupportSide(actor, x, y) {
+        if (climbSupportAt(actor, x, y, -1)) return -1;
+        if (climbSupportAt(actor, x, y, 1)) return 1;
+        return 0;
+    }
+
+    function navigationPositionSupported(actor, x, y) {
+        return actorCanStandAt(actor, x, y) || navigationTunnelAt(actor, x, y) || hasInternalClimbSupport(actor, x, y) || navigationSupportSide(actor, x, y) !== 0;
+    }
+
+    function climbSegmentFrom(actor, node, side, bounds) {
+        if (!blockingWallAt(actor, node.x + side, node.y) && !blockingWallAt(actor, node.x + side, node.y - 1)) return null;
+        if (node.x === actor.x && node.y === actor.y && continuousWallHeight(actor, side) > 6) return null;
+        let blockingHeight = 0;
+        for (let y = node.y; y >= bounds.minY && (blockingWallAt(actor, node.x + side, y) || blockingWallAt(actor, node.x + side, y - 1)); y--) blockingHeight++;
+        if (blockingHeight > 6) return null;
+        const segment = [];
+        for (let rise = 1; rise <= 6; rise++) {
+            const y = node.y - rise;
+            if (!navigationInBounds(bounds, node.x, y) || !actorCanOccupyAt(actor, node.x, y) || !climbSupportAt(actor, node.x, y, side)) return null;
+            segment.push({x: node.x, y: y, dx: 0, dy: -1, action: "climb", climbSide: side});
+            if (navigationInBounds(bounds, node.x + side, y - 1) && actorCanStandAt(actor, node.x + side, y - 1)) {
+                segment.push({x: node.x + side, y: y - 1, dx: side, dy: -1, action: "top", climbSide: 0});
+                return segment.length <= 6 ? segment : null;
+            }
+        }
+        return null;
+    }
+
+    function descentSegmentFrom(actor, node, side, bounds) {
+        if (!actorCanStandAt(actor, node.x, node.y) || !actorCanOccupyAt(actor, node.x + side, node.y)) return null;
+        if (!blockingWallAt(actor, node.x, node.y + 1)) return null;
+        const segment = [{x: node.x + side, y: node.y, dx: side, dy: 0, action: "ledge", climbSide: -side}];
+        for (let y = node.y + 1; y <= bounds.maxY; y++) {
+            if (!actorCanOccupyAt(actor, node.x + side, y) || !climbSupportAt(actor, node.x + side, y, -side)) return null;
+            segment.push({x: node.x + side, y: y, dx: 0, dy: 1, action: "climb", climbSide: -side});
+            if (actorCanStandAt(actor, node.x + side, y)) return segment;
+        }
+        return null;
+    }
+
+    function excavationCellCount(actor, x, y) {
+        let count = 0;
+        [pixelsAt(x, y), pixelsAt(x, y - 1)].forEach((pixels) => {
+            pixels.forEach((pixel) => { if (canTunnelPixel(pixel, actor, true)) count++; });
+        });
+        return count;
+    }
+
+    function navigationNeighbors(actor, bounds, allowExcavation, node) {
+        const edges = [];
+        const seen = new Set();
+        function addEdge(nextNode, action, cost) {
+            if (!nextNode || !navigationInBounds(bounds, nextNode.x, nextNode.y)) return;
+            const firstAction = action && Array.isArray(action.segment) ? action.segment[0] : action;
+            const firstX = firstAction && Number.isFinite(firstAction.x) ? firstAction.x : nextNode.x;
+            const firstY = firstAction && Number.isFinite(firstAction.y) ? firstAction.y : nextNode.y;
+            const rejectedKey = node.x + "," + node.y + ">" + firstX + "," + firstY + ":" + (firstAction && firstAction.action || "move");
+            const rejectedEdges = manager.routeRejectedEdges.get(actor.humanId);
+            if (rejectedEdges && rejectedEdges.has(rejectedKey)) return;
+            const key = nextNode.x + "," + nextNode.y;
+            if (seen.has(key)) return;
+            seen.add(key);
+            edges.push({node: nextNode, action: action, cost: cost});
+        }
+        [-1, 1].forEach((side) => {
+            const flatX = node.x + side;
+            if (actorCanOccupyAt(actor, flatX, node.y) && navigationPositionSupported(actor, flatX, node.y)) {
+                const supportSide = navigationSupportSide(actor, flatX, node.y);
+                addEdge({x: flatX, y: node.y}, {dx: side, dy: 0, action: supportSide && !actorCanStandAt(actor, flatX, node.y) ? "climb" : "flat", climbSide: supportSide}, 1);
+            }
+            if (actorCanStandAt(actor, flatX, node.y - 1)) {
+                addEdge({x: flatX, y: node.y - 1}, {dx: side, dy: -1, action: "step", climbSide: 0}, 1.1);
+            }
+            if (actorCanStandAt(actor, flatX, node.y + 1)) {
+                addEdge({x: flatX, y: node.y + 1}, {dx: side, dy: 1, action: "down", climbSide: 0}, 1.1);
+            }
+            const climbSegment = climbSegmentFrom(actor, node, side, bounds);
+            if (climbSegment) {
+                const last = climbSegment[climbSegment.length - 1];
+                addEdge({x: last.x, y: last.y}, {segment: climbSegment}, climbSegment.length);
+            }
+            const descentSegment = descentSegmentFrom(actor, node, side, bounds);
+            if (descentSegment) {
+                const last = descentSegment[descentSegment.length - 1];
+                addEdge({x: last.x, y: last.y}, {segment: descentSegment}, descentSegment.length);
+            }
+        });
+        [-1, 1].forEach((vertical) => {
+            const y = node.y + vertical;
+            if (!actorCanOccupyAt(actor, node.x, y)) return;
+            const internal = hasInternalClimbSupport(actor, node.x, node.y) || hasInternalClimbSupport(actor, node.x, y);
+            const side = navigationSupportSide(actor, node.x, y);
+            const inTunnel = navigationTunnelAt(actor, node.x, y);
+            if (internal || inTunnel || vertical > 0 && side) {
+                addEdge({x: node.x, y: y}, {dx: 0, dy: vertical, action: navigationTunnelAt(actor, node.x, y) ? "tunnel_move" : "climb", climbSide: side}, 1);
+            }
+            else if (vertical > 0) addEdge({x: node.x, y: y}, {dx: 0, dy: 1, action: "fall", climbSide: 0}, 1.25);
+        });
+        if (allowExcavation) {
+            [[-1, 0], [1, 0], [0, -1], [0, 1]].forEach((delta) => {
+                const x = node.x + delta[0];
+                const y = node.y + delta[1];
+                if (!navigationInBounds(bounds, x, y)) return;
+                const cells = excavationCellCount(actor, x, y);
+                if (!cells || !excavationPositionPossible(actor, x, y)) return;
+                addEdge({x: x, y: y}, {dx: delta[0], dy: delta[1], action: "tunnel", climbSide: 0}, 1 + cells * 12);
+            });
+        }
+        return edges;
+    }
+
+    function flattenNavigationPath(path) {
+        const flattened = [];
+        (path || []).forEach((step) => {
+            if (Array.isArray(step.segment)) step.segment.forEach((part) => flattened.push(part));
+            else flattened.push(step);
+        });
+        return flattened;
+    }
+
+    function beginNavigationSearch(actor, targetX, targetY, options) {
+        const opts = options || {};
+        const nav = ensureNavigationState(actor);
+        const radius = routeGoalRadius(actor);
+        const bounds = navigationBounds(actor, targetX, targetY);
+        const allowExcavation = !!opts.allowExcavation;
+        const search = Pathfinding.createSearch({
+            start: {x: actor.x, y: actor.y},
+            maxNodes: C.PATH_SEARCH_MAX_NODES,
+            key(node) { return node.x + "," + node.y; },
+            isGoal(node) { return Core.distance(node.x, node.y, targetX, targetY) <= radius; },
+            heuristic(node) { return Math.max(0, Math.abs(targetX - node.x) + Math.abs(targetY - node.y) - Math.ceil(radius)); },
+            neighbors(node) { return navigationNeighbors(actor, bounds, allowExcavation, node); }
+        });
+        manager.routeSearches.set(actor.humanId, {search: search, targetX: targetX, targetY: targetY, allowExcavation: allowExcavation});
+        nav.version = NAVIGATION_SCHEMA_VERSION;
+        nav.mode = "astar";
+        nav.phase = opts.phase || actor.workTrip && actor.workTrip.phase || (actor.task === "deliver" ? "return" : "outbound");
+        nav.taskKey = routeTaskKey(actor, !!opts.away);
+        nav.goal = {x: targetX, y: targetY, radius: radius, task: actor.task, targetId: actor.targetId || null, targetKind: actor.targetKind || null};
+        nav.path = [];
+        nav.pathIndex = 0;
+        nav.searchStatus = "searching";
+        nav.searchMode = allowExcavation ? "tunnel" : "walk";
+        nav.searchExpanded = 0;
+        nav.blockedReason = null;
+        nav.blockedTicks = 0;
+        nav.stallSinceTick = pixelTicks;
+        nav.lastProgressTick = safeNumber(nav.lastProgressTick, pixelTicks);
+        nav.bounds = bounds;
+        if (!allowExcavation) recordPersonLifeEvent(actor, "route_created", {phase: nav.phase, targetX: targetX, targetY: targetY, mode: "astar"});
+        return nav;
+    }
+
+    function advanceNavigationSearch(actor, targetX, targetY, away) {
+        let nav = ensureNavigationState(actor);
+        let runtime = manager.routeSearches.get(actor.humanId);
+        if (!runtime) {
+            nav = beginNavigationSearch(actor, targetX, targetY, {phase: nav.phase, away: away});
+            runtime = manager.routeSearches.get(actor.humanId);
+        }
+        const budget = actor.playerOrder ? C.PATH_SEARCH_PLAYER_NODES_PER_TICK : C.PATH_SEARCH_NODES_PER_TICK;
+        Pathfinding.advanceSearch(runtime.search, budget);
+        nav.searchExpanded = runtime.search.expanded;
+        nav.searchStatus = runtime.search.status;
+        if (runtime.search.status === "found") {
+            nav.path = flattenNavigationPath(runtime.search.path);
+            nav.pathIndex = 0;
+            nav.searchStatus = "ready";
+            nav.searchMode = runtime.allowExcavation ? "tunnel" : "walk";
+            nav.plannedEnd = nav.path.length ? {x: nav.path[nav.path.length - 1].x, y: nav.path[nav.path.length - 1].y} : {x: actor.x, y: actor.y};
+            nav.lastProgressTick = pixelTicks;
+            manager.routeSearches.delete(actor.humanId);
+            return nav;
+        }
+        if (runtime.search.status === "no_path" || runtime.search.status === "exhausted") {
+            const reason = runtime.search.reason;
+            manager.routeSearches.delete(actor.humanId);
+            if (!runtime.allowExcavation && !away && navigationExcavationAllowed(actor)) {
+                nav.replanReason = reason;
+                nav = beginNavigationSearch(actor, targetX, targetY, {phase: nav.phase, allowExcavation: true, away: false});
+                nav.blockedReason = "walk_route_unavailable";
+                return advanceNavigationSearch(actor, targetX, targetY, away);
+            }
+            nav.searchStatus = "failed";
+            nav.blockedReason = reason || "no_path";
+        }
+        return nav;
+    }
+
+    function recordWorkTripStep(actor) {
+        const trip = actor && actor.workTrip;
+        if (!trip || trip.returning || trip.phase === "return") return;
+        if (!Array.isArray(trip.trail)) trip.trail = [];
+        const last = trip.trail[trip.trail.length - 1];
+        if (!last || last[0] !== actor.x || last[1] !== actor.y) {
+            trip.trail.push([actor.x, actor.y]);
+            const maximum = Math.max(32, (typeof width === "number" ? width : 96) * 2 + (typeof height === "number" ? height : 64) * 2);
+            if (trip.trail.length > maximum) trip.trail.splice(0, trip.trail.length - maximum);
+        }
+        const head = getBodyHead(actor);
+        if (solidGroundAt(actor.x, actor.y) && !tunnelAt(actor.x, actor.y) && !(head && tunnelAt(head.x, head.y))) trip.surfaceAnchorIndex = trip.trail.length - 1;
+    }
+
+    function beginCarryDelivery(actor, reason) {
+        if (!actor || carriedAmount(actor) <= 0 || actor.task === "deliver") return false;
+        const carry = ensureActorCarry(actor);
+        const firstKind = Object.keys(carry).find((kind) => carry[kind] > 0);
+        const destination = deliveryDestination(actor, firstKind);
+        if (!destination) return false;
+        actor.resumeAfterDelivery = {
+            task: actor.task === "planning" && actor.workTrip && actor.workTrip.resourceKind ? "harvest" : actor.task,
+            targetX: actor.targetX === undefined && actor.workTrip && actor.workTrip.excavationFrontier ? actor.workTrip.excavationFrontier.x : actor.targetX,
+            targetY: actor.targetY === undefined && actor.workTrip && actor.workTrip.excavationFrontier ? actor.workTrip.excavationFrontier.y : actor.targetY,
+            targetId: actor.targetId,
+            targetKind: actor.targetKind,
+            harvestX: actor.harvestX === undefined && actor.workTrip && actor.workTrip.excavationFrontier ? actor.workTrip.excavationFrontier.harvestX : actor.harvestX,
+            harvestY: actor.harvestY === undefined && actor.workTrip && actor.workTrip.excavationFrontier ? actor.workTrip.excavationFrontier.harvestY : actor.harvestY,
+            resourceKind: actor.workTrip && actor.workTrip.resourceKind || firstKind,
+            excavationFrontier: actor.workTrip && actor.workTrip.excavationFrontier || (Number.isFinite(actor.targetX) ? {x: actor.targetX, y: actor.targetY} : null)
+        };
+        if (!actor.workTrip) actor.workTrip = {version: 1, resourceKind: firstKind, trail: [[actor.x, actor.y]], surfaceAnchorIndex: solidGroundAt(actor.x, actor.y) ? 0 : null};
+        actor.workTrip.phase = "return";
+        actor.workTrip.returning = Array.isArray(actor.workTrip.trail) && actor.workTrip.trail.length > 1;
+        actor.workTrip.returnCursor = actor.workTrip.returning ? actor.workTrip.trail.length - 2 : -1;
+        actor.workTrip.suspendedTask = Object.assign({}, actor.resumeAfterDelivery);
+        recordPersonLifeEvent(actor, "return_started", {reason: reason || "backpack_ready", destinationBuildingId: destination.buildingId || null});
+        setTask(actor, "deliver", destination);
+        const nav = ensureNavigationState(actor);
+        nav.phase = "return";
+        return true;
+    }
+
+    function followReturnTrail(actor) {
+        const trip = actor && actor.workTrip;
+        if (!trip || !trip.returning || !Array.isArray(trip.trail)) return null;
+        while (trip.returnCursor >= 0) {
+            const point = trip.trail[trip.returnCursor];
+            if (point && point[0] === actor.x && point[1] === actor.y) trip.returnCursor--;
+            else break;
+        }
+        if (trip.returnCursor < 0) {
+            trip.returning = false;
+            invalidateNavigation(actor);
+            return null;
+        }
+        const point = trip.trail[trip.returnCursor];
+        const dx = point[0] - actor.x;
+        const dy = point[1] - actor.y;
+        if (Math.abs(dx) + Math.abs(dy) !== 1 || !executeNavigationEdge(actor, dx, dy, tunnelAt(point[0], point[1]) ? "tunnel" : "return", 0)) {
+            trip.returning = false;
+            trip.returnBroken = true;
+            invalidateNavigation(actor, "recorded_return_path_blocked");
+            const nav = beginNavigationSearch(actor, actor.targetX, actor.targetY, {phase: "return"});
+            nav.blockedReason = "recorded_return_path_blocked";
+            recordPersonLifeEvent(actor, "return_broken", {atX: actor.x, atY: actor.y, repair: "astar"});
+            return false;
+        }
+        trip.returnCursor--;
+        setPersonActivityPhase(actor, "return");
+        return true;
+    }
+
+    function routeStillTargets(actor, nav, targetX, targetY, away) {
+        if (!nav || nav.taskKey !== routeTaskKey(actor, away) || !nav.goal) return false;
+        if (nav.searchStatus === "searching") return Core.distance(nav.goal.x, nav.goal.y, targetX, targetY) <= Math.max(1, nav.goal.radius);
+        const end = nav.plannedEnd || nav.goal;
+        return Core.distance(end.x, end.y, targetX, targetY) <= nav.goal.radius;
+    }
+
+    function chooseEscapeDestination(actor, threatX, threatY) {
+        let best = null;
+        let bestScore = -Infinity;
+        for (let x = Math.max(0, actor.x - 8); x <= Math.min(width - 1, actor.x + 8); x++) {
+            const y = findSurfaceY(x, actor.y);
+            if (y === null || !actorCanStandAt(actor, x, y)) continue;
+            const threatDistance = Core.distance(x, y, threatX, threatY);
+            const travelDistance = Core.distance(actor.x, actor.y, x, y);
+            const score = threatDistance * 100 - travelDistance;
+            if (score > bestScore) {
+                best = {x: x, y: y};
+                bestScore = score;
+            }
+        }
+        return best;
+    }
+
+    function plannedStepValid(actor, step) {
+        if (!step || Math.abs(step.x - actor.x) + Math.abs(step.y - actor.y) > 2) return false;
+        if (step.action === "tunnel") return actorCanOccupyAt(actor, step.x, step.y) || excavationCellCount(actor, step.x, step.y) > 0;
+        if (!actorCanOccupyAt(actor, step.x, step.y)) return false;
+        if (step.action === "step" || step.action === "down" || step.action === "top") return actorCanStandAt(actor, step.x, step.y);
+        if (step.action === "fall") return actorCanOccupyAt(actor, step.x, step.y);
+        if (step.action === "ledge") return actorCanOccupyAt(actor, step.x, step.y) && !!blockingWallAt(actor, actor.x, actor.y + 1);
+        if (step.action === "climb") return hasInternalClimbSupport(actor, actor.x, actor.y) || hasInternalClimbSupport(actor, step.x, step.y) || navigationSupportSide(actor, step.x, step.y) !== 0;
+        return navigationPositionSupported(actor, step.x, step.y);
+    }
+
+    function executePlannedNavigationStep(actor, step) {
+        const nav = ensureNavigationState(actor);
+        const dx = step.x - actor.x;
+        const dy = step.y - actor.y;
+        if (Math.abs(dx) > 1 || Math.abs(dy) > 1 || (!dx && !dy)) return false;
+        if (step.action === "tunnel") {
+            const beforeX = actor.x;
+            const beforeY = actor.y;
+            nav.forceTunnel = true;
+            const progressed = actorCanOccupyAt(actor, step.x, step.y) ? executeNavigationEdge(actor, dx, dy, "tunnel", 0) : digToward(actor, getRelation(actor._r), step.x, step.y);
+            if (actor.x === step.x && actor.y === step.y) {
+                nav.pathIndex++;
+                nav.forceTunnel = false;
+                nav.lastProgressTick = pixelTicks;
+                actor.navigationFailureCount = 0;
+            }
+            else if (actor.x !== beforeX || actor.y !== beforeY) nav.lastProgressTick = pixelTicks;
+            if (actor.x !== beforeX || actor.y !== beforeY || progressed) actor.navigationLastProgressTick = pixelTicks;
+            return progressed;
+        }
+        if (!plannedStepValid(actor, step)) return false;
+        if (!executeNavigationEdge(actor, dx, dy, step.action || "flat", step.climbSide || 0)) return false;
+        nav.pathIndex++;
+        nav.lastProgressTick = pixelTicks;
+        actor.navigationFailureCount = 0;
+        actor.navigationLastProgressTick = pixelTicks;
+        return true;
+    }
+
+    function failNavigation(actor, reason) {
+        const nav = ensureNavigationState(actor);
+        nav.searchStatus = "failed";
+        nav.blockedReason = reason || nav.blockedReason || "unreachable";
+        if (actor.task === "harvest") {
+            blockFailedResource(actor, actor.harvestX, actor.harvestY, actor.targetKind);
+        }
+        if (actor.task !== "deliver" && carriedAmount(actor) > 0 && beginCarryDelivery(actor, "target_unreachable")) return false;
+        if (actor.playerOrder) clearPlayerOrder(actor, "failed", "unreachable");
+        else clearTask(actor, "failed", "unreachable", {targetX: actor.targetX, targetY: actor.targetY});
+        return false;
+    }
 
     function moveRelationToward(actor, targetX, targetY, away) {
         if (deferAdultLocomotion) {
@@ -2980,44 +4443,50 @@ function harvestApproach(actor, resource) {
             else clearTask(actor, "failed", "invalid_navigation_target");
             return false;
         }
-        const nav = ensureNavigationState(actor);
-        const horizontal = Math.sign(targetX - actor.x) * (away ? -1 : 1);
-        const vertical = Math.sign(targetY - actor.y) * (away ? -1 : 1);
-        let side = activeClimbSide(actor);
-
-        if (side) {
-            if (horizontal === side && actorCanStandAt(actor, actor.x + side, actor.y - 1) && executeNavigationEdge(actor, side, -1, "top", 0)) return true;
-            if (vertical !== 0 && actorCanOccupyAt(actor, actor.x, actor.y + vertical) && climbSupportAt(actor, actor.x, actor.y + vertical, side) && executeNavigationEdge(actor, 0, vertical, "climb", side)) return true;
-            if (vertical === 0 && actorCanOccupyAt(actor, actor.x, actor.y - 1) && climbSupportAt(actor, actor.x, actor.y - 1, side) && executeNavigationEdge(actor, 0, -1, "climb", side)) return true;
-            nav.climbSide = 0;
-            side = 0;
+        if (away) {
+            const escape = chooseEscapeDestination(actor, targetX, targetY);
+            if (!escape || Core.distance(escape.x, escape.y, targetX, targetY) <= Core.distance(actor.x, actor.y, targetX, targetY)) return false;
+            targetX = escape.x;
+            targetY = escape.y;
         }
-
-        if (horizontal && executeNavigationEdge(actor, horizontal, 0, "flat", 0)) return true;
-        if (horizontal && actorCanStandAt(actor, actor.x + horizontal, actor.y - 1) && executeNavigationEdge(actor, horizontal, -1, "step", 0)) return true;
-        if (horizontal && climbSupportAt(actor, actor.x, actor.y, horizontal)) {
-            nav.climbSide = horizontal;
-            if (actorCanOccupyAt(actor, actor.x, actor.y - 1) && climbSupportAt(actor, actor.x, actor.y - 1, horizontal) && executeNavigationEdge(actor, 0, -1, "climb", horizontal)) return true;
+        const trailResult = actor.task === "deliver" ? followReturnTrail(actor) : null;
+        if (trailResult !== null) return trailResult;
+        let nav = ensureNavigationState(actor);
+        if (!routeStillTargets(actor, nav, targetX, targetY, !!away)) {
+            actor.navigationFailureCount = 0;
+            actor.navigationLastProgressTick = pixelTicks;
+            invalidateNavigation(actor, nav.goal ? "goal_changed" : "new_goal");
+            nav = beginNavigationSearch(actor, targetX, targetY, {phase: actor.task === "deliver" ? "return" : actor.workTrip && actor.workTrip.resuming ? "resume" : "outbound", away: away});
         }
-        if (horizontal && targetY > actor.y && actorCanStandAt(actor, actor.x + horizontal, actor.y + 1) && executeNavigationEdge(actor, horizontal, 1, "down", 0)) return true;
-        if (!horizontal && vertical < 0) {
-            const preferred = nav.climbSide || actor.dir || 1;
-            const selectedSide = climbSupportAt(actor, actor.x, actor.y, preferred) ? preferred : (climbSupportAt(actor, actor.x, actor.y, -preferred) ? -preferred : 0);
-            if (selectedSide && actorCanOccupyAt(actor, actor.x, actor.y - 1) && climbSupportAt(actor, actor.x, actor.y - 1, selectedSide) && executeNavigationEdge(actor, 0, -1, "climb", selectedSide)) return true;
+        if (pixelTicks - safeNumber(actor.navigationLastProgressTick, pixelTicks) >= C.NAVIGATION_STALL_TICKS) return failNavigation(actor, "navigation_stalled");
+        if (nav.searchStatus === "idle" || nav.searchStatus === "searching") nav = advanceNavigationSearch(actor, targetX, targetY, !!away);
+        if (nav.searchStatus === "searching") return false;
+        if (nav.searchStatus === "failed") return failNavigation(actor, nav.blockedReason);
+        if (nav.pathIndex >= nav.path.length) {
+            if (Core.distance(actor.x, actor.y, targetX, targetY) <= routeGoalRadius(actor)) return false;
+            invalidateNavigation(actor, "path_complete_before_goal");
+            beginNavigationSearch(actor, targetX, targetY, {phase: nav.phase, away: away});
+            return false;
         }
-        if (!away && navigationExcavationAllowed(actor) && digToward(actor, getRelation(actor._r), targetX, targetY)) {
-            nav.stallSinceTick = pixelTicks;
-            return true;
+        const step = nav.path[nav.pathIndex];
+        const building = corridorBuildingAt(actor, step.x, step.y);
+        if (building && building.factionId !== actor.factionId && atWar(actor.factionId, building.factionId)) {
+            setTask(actor, "siege", building);
+            return false;
         }
-        if (!Number.isFinite(nav.stallSinceTick)) nav.stallSinceTick = pixelTicks;
-        if (pixelTicks - nav.stallSinceTick >= C.NAVIGATION_STALL_TICKS) {
-            if (actor.task === "harvest" && Number.isFinite(actor.harvestX) && Number.isFinite(actor.harvestY)) {
-                actor.blockedResourceKey = actor.harvestX + "," + actor.harvestY + ":" + (actor.targetKind || "");
-                actor.blockedResourceUntil = pixelTicks + 180;
-            }
-            if (actor.playerOrder) clearPlayerOrder(actor, "failed", "unreachable");
-            else clearTask(actor, "failed", "unreachable", {targetX, targetY});
+        if (building) {
+            invalidateNavigation(actor, "building");
+            return false;
         }
+        if (executePlannedNavigationStep(actor, step)) return true;
+        actor.navigationFailureCount = safeNumber(actor.navigationFailureCount, 0) + 1;
+        if (!manager.routeRejectedEdges.has(actor.humanId)) manager.routeRejectedEdges.set(actor.humanId, new Set());
+        manager.routeRejectedEdges.get(actor.humanId).add(actor.x + "," + actor.y + ">" + step.x + "," + step.y + ":" + (step.action || "move"));
+        if (actor.navigationFailureCount >= 24) return failNavigation(actor, "next_edge_repeatedly_invalid");
+        invalidateNavigation(actor, "next_edge_invalid");
+        const replacement = beginNavigationSearch(actor, targetX, targetY, {phase: nav.phase, away: away});
+        replacement.blockedReason = "next_edge_invalid";
+        replacement.lastInvalidStep = cloneActivityValue(step);
         return false;
     }
 
@@ -3172,20 +4641,8 @@ function harvestApproach(actor, resource) {
     }
 
     function runAdultAction(actor) {
-        if (actor.task !== "deliver" && actor.task !== "combat" && actor.task !== "siege" && actor.task !== "flee" && carriedAmount(actor) >= carryCapacityFor(actor)) {
-            const carry = ensureActorCarry(actor);
-            const firstKind = Object.keys(carry).find((kind) => carry[kind] > 0);
-            const destination = deliveryDestination(actor, firstKind);
-            actor.resumeAfterDelivery = {
-                task: actor.task,
-                targetX: actor.targetX,
-                targetY: actor.targetY,
-                targetId: actor.targetId,
-                targetKind: actor.targetKind,
-                harvestX: actor.harvestX,
-                harvestY: actor.harvestY
-            };
-            setTask(actor, "deliver", destination);
+        if (actor.task !== "deliver" && actor.task !== "combat" && actor.task !== "siege" && actor.task !== "flee" && actor.task !== "extinguish" && carriedAmount(actor) >= carryCapacityFor(actor)) {
+            beginCarryDelivery(actor, "backpack_full");
         }
         if (actor.task === "move") {
             if (!Number.isFinite(actor.targetX) || !Number.isFinite(actor.targetY)) return clearPlayerOrder(actor, "failed", "invalid_destination");
@@ -3196,6 +4653,11 @@ function harvestApproach(actor, resource) {
         if (actor.task === "harvest") {
             if (!harvestTarget(actor)) moveRelationToward(actor, actor.targetX, actor.targetY, false);
             else if (actor.task === "harvest") setPersonActivityPhase(actor, "working");
+            return;
+        }
+        if (actor.task === "extinguish") {
+            if (!extinguishTarget(actor) && actor.task === "extinguish") moveRelationToward(actor, actor.targetX, actor.targetY, false);
+            else if (actor.task === "extinguish") setPersonActivityPhase(actor, "working");
             return;
         }
         const banner = settlementForActor(actor);
@@ -3282,8 +4744,9 @@ function harvestApproach(actor, resource) {
                 const halfWidth = Math.max(2, C.TERRITORY_HALF_WIDTH - 1);
                 let patrolX = banner.x + Math.floor(Math.random() * (halfWidth * 2 + 1)) - halfWidth;
                 if (manager.territory && manager.territory.ownerAt(patrolX) !== actor.factionId) patrolX = banner.x;
-                actor.patrolX = patrolX;
-                actor.patrolY = findSurfaceY(patrolX, banner.y) ?? banner.y;
+                const patrolTarget = findNearbySurfaceTarget(patrolX, banner.y, actor.x, actor.y);
+                actor.patrolX = patrolTarget.x;
+                actor.patrolY = patrolTarget.y;
             }
             setPersonActivityPhase(actor, "patrolling");
             moveRelationToward(actor, actor.patrolX, actor.patrolY, false);
@@ -3293,8 +4756,10 @@ function harvestApproach(actor, resource) {
             if (!Number.isFinite(actor.searchX) || !Number.isFinite(actor.searchY) || Core.distance(actor.x, actor.y, actor.searchX, actor.searchY) <= 1.5) {
                 const originX = banner ? banner.x : actor.x;
                 const radius = banner ? Math.max(C.EXTENDED_RESOURCE_RADIUS, C.TERRITORY_HALF_WIDTH) : 8;
-                actor.searchX = originX + Math.floor(Math.random() * (radius * 2 + 1)) - radius;
-                actor.searchY = findSurfaceY(actor.searchX, banner ? banner.y : actor.y) ?? actor.y;
+                const searchX = originX + Math.floor(Math.random() * (radius * 2 + 1)) - radius;
+                const searchTarget = findNearbySurfaceTarget(searchX, banner ? banner.y : actor.y, actor.x, actor.y);
+                actor.searchX = searchTarget.x;
+                actor.searchY = searchTarget.y;
             }
             setPersonActivityPhase(actor, actor.task === "search_resource" ? "searching" : "exploring");
             moveRelationToward(actor, actor.searchX, actor.searchY, false);
@@ -3399,6 +4864,7 @@ function harvestApproach(actor, resource) {
     function setPeaceMode(value) {
         const next = normalizePeaceMode(value);
         const previous = getPeaceMode();
+        if (previous !== next) captureTimelineBoundary("before-peace-mode");
         if (typeof settings !== "undefined" && settings) settings.humanSocietyPeaceMode = next;
         if (previous !== "full-peace" && next === "full-peace") {
             manager.relationRecords.forEach((record) => {
@@ -3417,6 +4883,7 @@ function harvestApproach(actor, resource) {
         }
         if (next !== "normal") clearScarcityTimers();
         if (typeof saveSettings === "function") saveSettings();
+        if (previous !== next) captureTimelineBoundary("after-peace-mode");
         return next;
     }
 
@@ -3442,6 +4909,7 @@ function harvestApproach(actor, resource) {
         if (!info || !manager.factionById.has(Number(attackerFactionId)) || !manager.factionById.has(Number(defenderFactionId))) return false;
         const record = loadPairRecord(info, true);
         if (record.atWar && !record.surrendered) return true;
+        if (reason === "manual") captureTimelineBoundary("before-manual-war");
         record.atWar = true;
         record.surrendered = false;
         record.permanent = true;
@@ -3462,6 +4930,7 @@ function harvestApproach(actor, resource) {
                 logSettlementEvent(banner, "war", (record.reason === "manual" ? "被手动卷入战争" : "因不可再生资源枯竭进入战争") + "：对阵阵营 " + (factionId === Number(attackerFactionId) ? defenderFactionId : attackerFactionId), {enemyFactionId: factionId === Number(attackerFactionId) ? Number(defenderFactionId) : Number(attackerFactionId), reason: record.reason});
             }
         });
+        if (reason === "manual") captureTimelineBoundary("after-manual-war");
         return true;
     }
 
@@ -3767,10 +5236,78 @@ function harvestApproach(actor, resource) {
         return actor.role || "worker";
     }
 
+    function currentHarvestResourceKind(actor) {
+        if (!actor) return null;
+        if (actor.workTrip && actor.workTrip.resourceKind) return actor.workTrip.resourceKind;
+        if (Number.isFinite(actor.harvestX) && Number.isFinite(actor.harvestY)) {
+            const target = pixelsAt(actor.harvestX, actor.harvestY).find((pixel) => resourceDescriptor(pixel));
+            const descriptor = resourceDescriptor(target);
+            if (descriptor) return descriptor.kind;
+        }
+        return null;
+    }
+
+    function combatTaskStillValid(actor) {
+        if (!actor) return false;
+        if (actor.task === "combat" || actor.task === "flee") {
+            const target = manager.actorById.get(actor.targetId);
+            return !!(target && !target.del && !target.dead && target.factionId !== actor.factionId &&
+                (atWar(actor.factionId, target.factionId) || retaliationAllowed(actor, target)));
+        }
+        if (actor.task === "siege") {
+            const target = getBuildingById(actor.targetId);
+            return !!(target && !target.del && target.factionId !== actor.factionId && atWar(actor.factionId, target.factionId));
+        }
+        return false;
+    }
+
+    function roleTaskCompatible(actor, role) {
+        if (!actor || !actor.task || actor.task === "planning" || actor.task === "idle" || actor.task === "dead") return true;
+        if (actor.playerOrder) return true;
+        if (actor.task === "combat" || actor.task === "flee" || actor.task === "siege") return combatTaskStillValid(actor);
+        if (actor.task === "deliver" || actor.task === "return" || actor.task === "search_resource" || actor.task === "explore" || actor.task === "wander" || actor.task === "extinguish") return true;
+        if (actor.task === "harvest") {
+            const kind = currentHarvestResourceKind(actor);
+            if (role === "worker") return true;
+            if (role === "food" || role === "farmer" || role === "hunter") return kind === "food";
+            if (role === "wood" || role === "forester") return kind === "wood";
+            if (role === "miner") return kind === "stone" || NONRENEWABLE_KINDS.has(kind);
+            return false;
+        }
+        if (actor.task === "build") return role === "builder";
+        if (actor.task === "farm") return role === "farmer";
+        if (actor.task === "plant_tree") return role === "forester";
+        if (actor.task === "facility") return role === "artisan" || role === "industry" || role === "scholar" || role === "merchant" || role === "artisan_trade";
+        if (actor.task === "patrol") {
+            return role === "guard" || role === "warrior" || role === "builder" || role === "artisan" || role === "industry" || role === "scholar" || role === "merchant" || role === "artisan_trade";
+        }
+        return false;
+    }
+
     function assignPermanentActorRole(actor, role) {
-        if (!actor) return;
+        if (!actor) return false;
         const nextRole = role || "worker";
+        if (permanentActorRole(actor) === nextRole) return false;
         actor.role = nextRole;
+        if (actor.playerOrder || combatTaskStillValid(actor)) return true;
+
+        delete actor.resumeAfterDelivery;
+        if (actor.workTrip) {
+            delete actor.workTrip.suspendedTask;
+            delete actor.workTrip.resuming;
+        }
+        if (carriedAmount(actor) > 0) {
+            if (actor.task !== "deliver") {
+                clearTask(actor, "interrupted", "job_reassigned");
+                const firstKind = Object.keys(ensureActorCarry(actor)).find((kind) => actor.carry[kind] > 0);
+                const destination = deliveryDestination(actor, firstKind);
+                if (destination) setTask(actor, "deliver", destination);
+            }
+            else invalidateNavigation(actor, "job_reassigned");
+            return true;
+        }
+        if (!roleTaskCompatible(actor, nextRole)) clearTask(actor, "interrupted", "job_reassigned");
+        return true;
     }
 
     function recordPermanentRoleChanges(adults, previousRoles) {
@@ -4434,6 +5971,7 @@ function harvestApproach(actor, resource) {
         if (tunnelAt(actor.x, actor.y) || (head && tunnelAt(head.x, head.y))) return false;
         if (solidGroundAt(actor.x, actor.y)) return false;
         if (activeClimbSide(actor)) return false;
+        if (safeNumber(actor.climbHoldUntil, -1) >= pixelTicks) return false;
         const relation = getRelation(actor._r);
         if (!relation || !relation.p || relation.p.length < 2) return false;
         if (!tryMoveRelation(relation, 0, 1, true)) return false;
@@ -4450,14 +5988,31 @@ function harvestApproach(actor, resource) {
 
     function taskNeedsMovement(actor) {
         if (!actor || actor.dead || actor.del) return false;
-        return actor.task === "move" || actor.task === "harvest" || actor.task === "deliver" || actor.task === "build" || actor.task === "farm" || actor.task === "plant_tree" || actor.task === "facility" || actor.task === "combat" || actor.task === "siege" || actor.task === "flee" || actor.task === "return" || actor.task === "patrol" || actor.task === "search_resource" || actor.task === "explore";
+        return actor.task === "move" || actor.task === "harvest" || actor.task === "extinguish" || actor.task === "deliver" || actor.task === "build" || actor.task === "farm" || actor.task === "plant_tree" || actor.task === "facility" || actor.task === "combat" || actor.task === "siege" || actor.task === "flee" || actor.task === "return" || actor.task === "patrol" || actor.task === "search_resource" || actor.task === "explore";
+    }
+
+    function fireTaskCanInterrupt(actor) {
+        if (!actor || actor.playerOrder || actor.warRole || actor.underAttackUntil > pixelTicks) return false;
+        if (carriedAmount(actor) >= carryCapacityFor(actor)) return false;
+        return actor.task !== "extinguish" && actor.task !== "deliver" && actor.task !== "combat" && actor.task !== "siege" && actor.task !== "flee" && actor.task !== "move";
     }
 
     function runAdultLocomotion(actor) {
         if (!taskNeedsMovement(actor)) return false;
         if (actor.task === "harvest" && Number.isFinite(actor.harvestX) && Core.distance(actor.x, actor.y, actor.harvestX, actor.harvestY) <= 1.5) return false;
+        if (actor.task === "extinguish" && Number.isFinite(actor.targetX) && Number.isFinite(actor.targetY) && Core.distance(actor.x, actor.y, actor.targetX, actor.targetY) <= 1.5) return false;
         if (actor.task === "deliver" || actor.task === "build" || actor.task === "facility") {
             if (Number.isFinite(actor.targetX) && Number.isFinite(actor.targetY) && Core.distance(actor.x, actor.y, actor.targetX, actor.targetY) <= 2.5) return false;
+        }
+        if (actor.task === "combat") {
+            const target = manager.actorById.get(actor.targetId);
+            const weapon = manager.weapons.get(actor.weapon) || manager.weapons.get("fists");
+            if (target && targetInAttackBox(actor, target, weapon) && (!weapon.ranged || mutualLineOfSight(actor, target))) return false;
+        }
+        if (actor.task === "siege") {
+            const target = getBuildingById(actor.targetId);
+            const weapon = manager.weapons.get(actor.weapon) || manager.weapons.get("fists");
+            if (target && Core.distance(actor.x, actor.y, target.x, target.y) <= Math.max(2, weapon.range)) return false;
         }
         const targetX = Number.isFinite(actor.targetX) ? actor.targetX : (Number.isFinite(actor.searchX) ? actor.searchX : actor.patrolX);
         const targetY = Number.isFinite(actor.targetY) ? actor.targetY : (Number.isFinite(actor.searchY) ? actor.searchY : actor.patrolY);
@@ -4480,6 +6035,7 @@ function harvestApproach(actor, resource) {
         }
         processLife(pixel);
         if (pixel.dead) return;
+        updatePersonSpeech(pixel);
         processCombatFrame(pixel);
         processStructureCombatFrame(pixel);
         if (pixel.burning) {
@@ -4491,12 +6047,19 @@ function harvestApproach(actor, resource) {
         if (applyAdultGravity(pixel)) return;
         if ((pixelTicks + pixel.humanId) % C.THINK_INTERVAL === 0) {
             for (let attempt = 0; attempt < 2; attempt++) {
+                const hadPlayerOrder = !!pixel.playerOrder;
+                const emergencyFire = fireTaskCanInterrupt(pixel) ? findFireTarget(pixel) : null;
+                if (emergencyFire) setTask(pixel, "extinguish", emergencyFire);
                 const activeTask = pixel.task === "move" || pixel.task === "harvest" || pixel.task === "deliver" || pixel.task === "build" ||
-                    pixel.task === "farm" || pixel.task === "plant_tree" || pixel.task === "combat" || pixel.task === "siege";
+                    pixel.task === "farm" || pixel.task === "plant_tree" || pixel.task === "combat" || pixel.task === "siege" || pixel.task === "extinguish";
                 const taskIsFacility = pixel.task === "facility";
                 const urgentReplan = pixel.underAttackUntil > pixelTicks;
                 const periodicReplan = !activeTask && !taskIsFacility && (!Number.isFinite(pixel.lastPlanTick) || pixelTicks - pixel.lastPlanTick >= 60);
                 if (pixel.playerOrder && !urgentReplan) applyPlayerOrder(pixel);
+                if (hadPlayerOrder && !pixel.playerOrder) {
+                    pixel.lastPlanTick = pixelTicks;
+                    break;
+                }
                 if (!pixel.task || pixel.task === "idle" || pixel.task === "planning" || pixel.task === "dead" || urgentReplan || periodicReplan) {
                     if (pixel.playerOrder && !urgentReplan) applyPlayerOrder(pixel);
                     else assignActorTask(pixel);
@@ -5094,9 +6657,47 @@ function harvestApproach(actor, resource) {
         state: "solid",
         density: 720,
         movable: true,
-        properties: {_civResourceDrop: true, resourceKind: "wood", treeSapling: "sapling"},
+        humanCollectible: true,
+        properties: {_civResourceDrop: true, _civCollectible: true, resourceKind: "wood"},
         forceSaveColor: true
     };
+
+    elements.civ_tree_sapling_resource = {
+        color: ["#65a84a", "#7ebc57", "#4d8f3c"],
+        category: "civilization",
+        hidden: true,
+        behavior: behaviors.POWDER,
+        state: "solid",
+        density: 620,
+        movable: true,
+        humanCollectible: true,
+        properties: {_civResourceDrop: true, _civCollectible: true, resourceKind: TREE_SAPLING_PREFIX + "sapling", treeSapling: "sapling"},
+        forceSaveColor: true
+    };
+
+    function defineFallingResourceElement(name, colors, kind, density, extraProperties) {
+        elements[name] = {
+            color: colors,
+            category: "civilization",
+            hidden: true,
+            behavior: behaviors.POWDER,
+            state: "solid",
+            density: density,
+            movable: true,
+            humanCollectible: true,
+            properties: Object.assign({_civResourceDrop: true, _civCollectible: true, resourceKind: kind}, extraProperties || {}),
+            forceSaveColor: true
+        };
+    }
+
+    defineFallingResourceElement("civ_food_resource", ["#b65f45", "#d18455", "#9d493b"], "food", 760);
+    defineFallingResourceElement("civ_stone_resource", ["#77756f", "#918e86", "#625f5a"], "stone", 2100);
+    defineFallingResourceElement("civ_copper_resource", ["#b87333", "#cf8648", "#915728"], "copper", 1900);
+    defineFallingResourceElement("civ_tin_resource", ["#b8bcc0", "#d1d4d6", "#969b9f"], "tin", 1800);
+    defineFallingResourceElement("civ_raw_iron_resource", ["#8d756b", "#a48779", "#715d56"], "raw_iron", 2200);
+    defineFallingResourceElement("civ_charcoal_resource", ["#343434", "#484848", "#252525"], "charcoal", 620);
+    defineFallingResourceElement("civ_seed_resource", ["#c9ad55", "#ddc46c", "#a68b3f"], "seed:wheat_seed", 540, {resourceSeed: "wheat_seed"});
+    defineFallingResourceElement("civ_resource_drop", ["#d1b36b", "#8a9b72", "#8299a8"], "resource", 900);
 
     elements.civ_tunnel = {
         color: ["#795c3f", "#6d5138", "#856447"],
@@ -5105,9 +6706,10 @@ function harvestApproach(actor, resource) {
         behavior: behaviors.WALL,
         state: "solid",
         density: 1900,
-        passableVegetation: true,
         isTunnel: true,
-        properties: {naturalVegetation: false, isTunnel: true},
+        supportsPowder: true,
+        overlapLocked: true,
+        properties: {naturalVegetation: false, isTunnel: true, supportsPowder: true, overlapLocked: true},
         forceSaveColor: true
     };
 
@@ -5133,7 +6735,7 @@ function harvestApproach(actor, resource) {
     const RESOURCE_NAMES_ZH = {food: "食物", wood: "木材", stone: "石材", seed: "种子", tree_seed: "树种", water: "水", copper: "铜", tin: "锡", raw_iron: "铁矿", iron: "铁", steel: "钢", charcoal: "木炭", bronze: "青铜"};
     const PERSON_TASK_LABELS = {
         idle: ["Idle", "待命"], planning: ["Planning work", "规划工作"], move: ["Following command", "执行移动命令"], wander: ["Exploring", "探索"], explore: ["Exploring", "探索"], search_resource: ["Searching resources", "搜寻资源"], harvest: ["Gathering", "采集"], deliver: ["Delivering", "运输"],
-        build: ["Building", "建造"], farm: ["Farming", "耕作"], plant_tree: ["Planting trees", "种树"], facility: ["Working", "设施工作"],
+        extinguish: ["Extinguishing fire", "灭火"], build: ["Building", "建造"], farm: ["Farming", "耕作"], plant_tree: ["Planting trees", "种树"], facility: ["Working", "设施工作"],
         combat: ["Fighting", "战斗"], siege: ["Sieging", "攻城"], flee: ["Fleeing", "逃跑"], patrol: ["Patrolling", "巡逻"],
         return: ["Returning", "返回聚落"], placed: ["Entered the world", "进入世界"], birth: ["Born", "出生"], maturity: ["Reached adulthood", "成年"],
         faction_changed: ["Changed faction", "阵营变更"], role_changed: ["Changed role", "职业变更"], death: ["Died", "死亡"], dead: ["Dead", "已死亡"]
@@ -5165,7 +6767,7 @@ function harvestApproach(actor, resource) {
     let commandHover = null;
     let commandLastResult = null;
     let commandInputInstalled = false;
-    let bannerInputInstalled = false;
+    let interactionMode = "place";
 
     function isChineseUi() {
         if (typeof langCode !== "undefined" && (langCode === "zh_cn" || langCode === "zh_hant" || String(langCode).indexOf("zh") === 0)) return true;
@@ -5211,8 +6813,8 @@ function harvestApproach(actor, resource) {
 
     function localizedResourceName(kind) {
         const value = String(kind || "");
-        if (value.indexOf("tree_sapling:") === 0) {
-            const seed = value.slice(14);
+        if (value.indexOf(TREE_SAPLING_PREFIX) === 0) {
+            const seed = value.slice(TREE_SAPLING_PREFIX.length);
             return (isChineseUi() ? "树苗 " : "Tree sapling ") + localizedResourceName(seed);
         }
         if (value.indexOf("seed:") === 0) {
@@ -5278,6 +6880,7 @@ function harvestApproach(actor, resource) {
             if (target && (actor.task === "combat" ? targetInAttackBox(actor, target, weapon) : Core.distance(actor.x, actor.y, target.x, target.y) <= Math.max(2, weapon.range))) return "attacking";
         }
         if (actor.task === "harvest" && Number.isFinite(actor.harvestX) && Core.distance(actor.x, actor.y, actor.harvestX, actor.harvestY) <= 1.5) return "working";
+        if (actor.task === "extinguish" && Number.isFinite(actor.targetX) && Core.distance(actor.x, actor.y, actor.targetX, actor.targetY) <= 1.5) return "working";
         if (actor.task === "facility" && Number.isFinite(actor.targetX) && Core.distance(actor.x, actor.y, actor.targetX, actor.targetY) <= 2.5) return "working";
         return actor.pathStage === "climb" || actor.pathStage === "tunnel" ? actor.pathStage : "flat";
     }
@@ -5292,6 +6895,7 @@ function harvestApproach(actor, resource) {
         }
         if (metrics.buildWork) parts.push(civilizationText("people.work", "Work ", "工作量 ") + Math.round(metrics.buildWork));
         if (metrics.tunnelCells) parts.push(civilizationText("people.tunnelCells", "Tunnel cells ", "矿洞格 ") + Math.round(metrics.tunnelCells));
+        if (metrics.firesExtinguished) parts.push(civilizationText("people.firesExtinguished", "Fires extinguished ", "扑灭火情 ") + Math.round(metrics.firesExtinguished));
         if (metrics.attacks) parts.push(civilizationText("people.attacks", "Attacks ", "攻击 ") + Math.round(metrics.attacks));
         if (metrics.hits) parts.push(civilizationText("people.hits", "Hits ", "命中 ") + Math.round(metrics.hits));
         if (metrics.kills) parts.push(civilizationText("people.kills", "Kills ", "击杀 ") + Math.round(metrics.kills));
@@ -5348,6 +6952,11 @@ function harvestApproach(actor, resource) {
     function livePersonSnapshot(actor) {
         const activity = ensurePersonActivity(actor, true);
         const carry = cloneActivityValue(ensureActorCarry(actor)) || {};
+        const nav = actor.pathCache && actor.pathCache.version === NAVIGATION_SCHEMA_VERSION ? actor.pathCache : null;
+        const trip = actor.workTrip;
+        const activeStep = nav && nav.path && nav.path[nav.pathIndex];
+        const remainingSteps = nav && Array.isArray(nav.path) ? Math.max(0, nav.path.length - safeNumber(nav.pathIndex, 0)) : 0;
+        const anchor = trip && Array.isArray(trip.trail) && Number.isFinite(trip.surfaceAnchorIndex) ? trip.trail[trip.surfaceAnchorIndex] : null;
         return {
             humanId: actor.humanId,
             status: "living",
@@ -5374,7 +6983,24 @@ function harvestApproach(actor, resource) {
             historyRetained: activity.h.length,
             latestSequence: Math.max(activityRecordSequence(activity.c), activity.h.reduce((maximum, record) => Math.max(maximum, activityRecordSequence(record)), 0)),
             playerOrder: actor.playerOrder ? cloneActivityValue(actor.playerOrder) : null,
-            commandSelected: commandPersonId === actor.humanId
+            commandSelected: commandPersonId === actor.humanId,
+            speech: actor.speech ? cloneActivityValue(actor.speech) : null,
+            pathStage: actor.pathStage || null,
+            route: nav ? {
+                mode: "astar",
+                phase: nav.phase || null,
+                goal: nav.goal ? cloneActivityValue(nav.goal) : null,
+                pathLength: Array.isArray(nav.path) ? nav.path.length : 0,
+                remainingSteps: remainingSteps,
+                nextAction: activeStep ? {x: activeStep.x, y: activeStep.y, action: activeStep.action, climbSide: activeStep.climbSide || 0} : null,
+                searchStatus: nav.searchStatus || null,
+                searchMode: nav.searchMode || null,
+                searchExpanded: safeNumber(nav.searchExpanded, 0),
+                replanReason: nav.replanReason || null,
+                surfaceAnchor: anchor ? {x: anchor[0], y: anchor[1]} : null,
+                blockedReason: nav.blockedReason || null,
+                followingRecordedReturn: !!(trip && trip.returning)
+            } : null
         };
     }
 
@@ -5522,6 +7148,16 @@ function harvestApproach(actor, resource) {
             completedInEra: technologies.filter((tech) => tech.eraId === banner.eraId && tech.unlocked).length,
             requiredToAdvance: safeNumber(era && era.requiredTechsToAdvance, C.RESEARCH_ERA_UNLOCK_COUNT),
             knowledge: research.knowledge,
+            knowledgeGain: research.lastKnowledgeGain,
+            totalKnowledgeGenerated: research.totalKnowledgeGenerated,
+            researchBlocker: research.blockedReason ? {
+                techId: research.blockedTechId || null,
+                reason: research.blockedReason,
+                resource: research.blockedResource || null,
+                current: safeNumber(research.blockedCurrent, 0),
+                required: safeNumber(research.blockedRequired, 0),
+                sinceTick: safeNumber(research.blockedSinceTick, pixelTicks)
+            } : null,
             focusTechId: research.focusTechId || null,
             activeTechId: research.activeTechId || null,
             domainExperience: Object.assign({}, research.domainExperience),
@@ -5550,8 +7186,10 @@ function harvestApproach(actor, resource) {
         if (!banner) return false;
         const research = ensureResearchState(banner);
         if (techId === null || techId === undefined || techId === "") {
+            captureTimelineBoundary("before-research-focus");
             delete research.focusTechId;
             research.priorityQueue = [];
+            captureTimelineBoundary("after-research-focus");
             return true;
         }
         const tech = manager.technologies.get(String(techId));
@@ -5578,21 +7216,25 @@ function harvestApproach(actor, resource) {
         if (!banner || !tech) return false;
         const research = ensureResearchState(banner);
         if (research.unlocked[tech.id]) return state === "researched";
+        captureTimelineBoundary("before-technology-state");
         if (state === "researched") {
             research.forcedUnlocked[tech.id] = true;
             const unlocked = unlockTechnology(faction, banner, tech);
             if (unlocked) maybeAdvanceEra(faction, banner);
+            if (unlocked) captureTimelineBoundary("after-technology-state");
             return unlocked;
         }
         if (state === "focused") {
             enqueueTechnologyWithPrerequisites(research, tech, safeNumber(tech.eraIndex, eraIndexFor(banner)));
             research.focusTechId = research.priorityQueue[0] || tech.id;
             research.focusDomain = tech.domain;
+            captureTimelineBoundary("after-technology-state");
             return true;
         }
         if (state === "unresearched") {
             research.priorityQueue = research.priorityQueue.filter((id) => id !== tech.id);
             if (research.focusTechId === tech.id) research.focusTechId = research.priorityQueue[0];
+            captureTimelineBoundary("after-technology-state");
             return true;
         }
         return false;
@@ -5605,10 +7247,12 @@ function harvestApproach(actor, resource) {
         const research = ensureResearchState(banner);
         const oldIndex = research.priorityQueue.indexOf(String(techId));
         if (oldIndex < 0) return false;
+        captureTimelineBoundary("before-research-priority");
         const id = research.priorityQueue.splice(oldIndex, 1)[0];
         const index = Math.max(0, Math.min(research.priorityQueue.length, Math.floor(safeNumber(Number(newIndex), 0))));
         research.priorityQueue.splice(index, 0, id);
         research.focusTechId = research.priorityQueue[0];
+        captureTimelineBoundary("after-research-priority");
         return true;
     }
 
@@ -5616,6 +7260,7 @@ function harvestApproach(actor, resource) {
         const faction = manager.factionById.get(Number(factionId));
         const settlement = faction && faction.settlements.find((candidate) => candidate.settlementId === Number(settlementId));
         if (!settlement || !patch || typeof patch !== "object") return false;
+        captureTimelineBoundary("before-resource-edit");
         const stock = ensureStock(settlement);
         STOCK_KEYS.forEach((key) => {
             if (!Object.prototype.hasOwnProperty.call(patch, key)) return;
@@ -5636,6 +7281,7 @@ function harvestApproach(actor, resource) {
             if (TREE_SAPLING_ELEMENTS.has(seed)) stock.treeSaplings[seed] = Math.max(0, safeNumber(Number(treeSaplings[seed]), 0));
         });
         logSettlementEvent(settlement, "resource_edit", "玩家强制修改资源库存", {patch: JSON.parse(JSON.stringify(patch))});
+        captureTimelineBoundary("after-resource-edit");
         return true;
     }
 
@@ -5763,9 +7409,16 @@ function setMapOverlay(name, value) {
         const summary = document.createElement("div");
         summary.className = "civ-summary";
         summary.textContent = civilizationText("ui.population", "Population", "人口") + " " + snapshot.population + "/" + snapshot.housing + " · " +
-            civilizationText("ui.knowledge", "Knowledge", "知识") + " " + snapshot.knowledge.toFixed(1) + " · " +
+            civilizationText("ui.knowledge", "Knowledge", "知识储备") + " " + snapshot.knowledge.toFixed(1) + " (＋" + snapshot.knowledgeGain.toFixed(1) + ", Σ" + snapshot.totalKnowledgeGenerated.toFixed(1) + ") · " +
             civilizationText("ui.stock", "Stock F/W/S", "库存 食/木/石") + " " + Math.floor(snapshot.stock.food) + "/" + Math.floor(snapshot.stock.wood) + "/" + Math.floor(snapshot.stock.stone);
         content.appendChild(summary);
+        if (snapshot.researchBlocker) {
+            const blocker = document.createElement("div");
+            blocker.className = "civ-summary";
+            blocker.textContent = "研究受阻：" + (snapshot.researchBlocker.techId || "未知科技") + " · " +
+                (snapshot.researchBlocker.resource ? snapshot.researchBlocker.resource + " " + snapshot.researchBlocker.current + "/" + snapshot.researchBlocker.required : snapshot.researchBlocker.reason);
+            content.appendChild(blocker);
+        }
         if (selectedCivilizationTab === "overview") {
             const editor = document.createElement("div");
             editor.className = "civ-resource-editor";
@@ -5788,7 +7441,7 @@ function setMapOverlay(name, value) {
                 input.type = "number";
                 input.min = "0";
                 input.value = Math.floor(safeNumber(snapshot.stock.treeSaplings && snapshot.stock.treeSaplings[seed], 0));
-                inputs["tree_sapling:" + seed] = input;
+                inputs[TREE_SAPLING_PREFIX + seed] = input;
                 label.appendChild(input);
                 editor.appendChild(label);
             });
@@ -5799,7 +7452,7 @@ function setMapOverlay(name, value) {
                 const patch = {seeds: {}, treeSaplings: {}};
                 Object.keys(inputs).forEach((key) => {
                     if (key.indexOf("seed:") === 0) patch.seeds[key.slice(5)] = Number(inputs[key].value);
-                    else if (key.indexOf("tree_sapling:") === 0) patch.treeSaplings[key.slice(14)] = Number(inputs[key].value);
+                    else if (key.indexOf(TREE_SAPLING_PREFIX) === 0) patch.treeSaplings[key.slice(TREE_SAPLING_PREFIX.length)] = Number(inputs[key].value);
                     else patch[key] = Number(inputs[key].value);
                 });
                 setSettlementResources(snapshot.id, snapshot.selectedSettlementId, patch);
@@ -6398,6 +8051,36 @@ function setMapOverlay(name, value) {
         return {accepted: !!accepted, action: action || null, reason: reason || null, target: target || null};
     }
 
+    function captureTimelineBoundary(reason) {
+        return typeof captureWorldTimelineSnapshot === "function" ? captureWorldTimelineSnapshot(reason) : false;
+    }
+
+    function syncInteractionModeUi() {
+        if (typeof document === "undefined") return;
+        const place = document.getElementById("interactionModePlace");
+        const control = document.getElementById("interactionModeControl");
+        if (place) {
+            place.setAttribute("on", interactionMode === "place" ? "true" : "false");
+            place.setAttribute("aria-pressed", interactionMode === "place" ? "true" : "false");
+        }
+        if (control) {
+            control.setAttribute("on", interactionMode === "control" ? "true" : "false");
+            control.setAttribute("aria-pressed", interactionMode === "control" ? "true" : "false");
+        }
+    }
+
+    function setInteractionMode(nextMode) {
+        const next = nextMode === "control" ? "control" : "place";
+        interactionMode = next;
+        if (next === "place") cancelPersonCommand();
+        syncInteractionModeUi();
+        return interactionMode;
+    }
+
+    function getInteractionMode() {
+        return interactionMode;
+    }
+
     function cancelPersonCommand() {
         commandPersonId = null;
         commandHover = null;
@@ -6408,9 +8091,11 @@ function setMapOverlay(name, value) {
     function setCommandPerson(humanId) {
         const actor = findLivingActor(humanId);
         if (!actor || actor.element !== "civ_body") return commandResult(false, "select", "adult_not_available", null);
+        interactionMode = "control";
         commandPersonId = actor.humanId;
         focusedPersonId = actor.humanId;
         commandLastResult = commandResult(true, "select", null, {humanId: actor.humanId});
+        syncInteractionModeUi();
         return commandLastResult;
     }
 
@@ -6434,6 +8119,8 @@ function setMapOverlay(name, value) {
 
     function nearestCommandDestination(actor, x, y) {
         if (actorCanStandAt(actor, x, y)) return {x, y};
+        if (y > actor.y && excavationPositionPossible(actor, x, y)) return {x, y};
+        if (y < actor.y && highApproachHasSupport(actor, x, y) && (actorCanOccupyAt(actor, x, y) || excavationPositionPossible(actor, x, y))) return {x, y};
         for (let radius = 0; radius <= 6; radius++) {
             for (let dx = -radius; dx <= radius; dx++) {
                 if (radius && Math.abs(dx) !== radius) continue;
@@ -6469,8 +8156,7 @@ function setMapOverlay(name, value) {
         if (owner !== null && owner !== undefined && owner !== actor.factionId) return commandResult(false, "harvest", "foreign_territory", null);
         const key = pixel.element + "@" + pixel.x + "," + pixel.y;
         if (manager.resourceReservations && manager.resourceReservations.reservedBy({key, x: pixel.x, y: pixel.y, element: pixel.element}) !== undefined && manager.resourceReservations.reservedBy({key, x: pixel.x, y: pixel.y, element: pixel.element}) !== actor.humanId) return commandResult(false, "harvest", "resource_reserved_by_other", null);
-        let approach = harvestApproach(actor, pixel);
-        if (!approach && actor.element === "civ_body") approach = {x: pixel.x, y: pixel.y};
+        const approach = harvestApproach(actor, pixel);
         if (!approach) return commandResult(false, "harvest", "unreachable", null);
         return {pixel, descriptor, approach, key};
     }
@@ -6511,10 +8197,13 @@ function setMapOverlay(name, value) {
     }
 
     function commitPlayerOrder(actor, order, taskTarget) {
+        captureTimelineBoundary("before-person-command");
         cancelActorTaskState(actor, "player_command_replaced");
         actor.playerOrder = order;
         if (taskTarget) setTask(actor, order.type === "attack" ? "combat" : order.type, taskTarget);
         else applyPlayerOrder(actor);
+        captureTimelineBoundary("after-person-command");
+        return true;
     }
 
     function issuePersonCommandAt(humanId, button, x, y) {
@@ -6550,10 +8239,23 @@ function setMapOverlay(name, value) {
     }
 
     function handleCommandMouse(event) {
-        if (commandPersonId === null || (event.button !== 0 && event.button !== 2)) return;
+        if (interactionMode !== "control" || (event.button !== 0 && event.button !== 2)) return;
         event.preventDefault();
         event.stopImmediatePropagation();
-        const position = typeof getMousePos === "function" ? getMousePos(document.getElementById("game"), event) : mousePos;
+        const canvas = document.getElementById("game");
+        const position = typeof getMousePos === "function" ? getMousePos(canvas, event) : mousePos;
+        const clickedActor = pixelsAt(position.x, position.y).slice().reverse().map(getActorFromPixel).find((candidate) => candidate && !candidate.dead && !candidate.del && candidate.element === "civ_body") || null;
+        if (event.button === 2 && clickedActor) {
+            commandLastResult = setCommandPerson(clickedActor.humanId);
+            commandHover = {x: position.x, y: position.y, action: "select", accepted: true};
+            if (peoplePanelOpen) refreshPeopleUi();
+            return;
+        }
+        if (commandPersonId === null) {
+            commandLastResult = commandResult(false, event.button === 0 ? "attack" : "select", "no_person_selected", position);
+            commandHover = {x: position.x, y: position.y, action: commandLastResult.action, accepted: false};
+            return;
+        }
         commandLastResult = issuePersonCommandAt(commandPersonId, event.button, position.x, position.y);
         commandHover = {x: position.x, y: position.y, action: commandLastResult.action, accepted: commandLastResult.accepted};
         if (peoplePanelOpen) refreshPeopleUi();
@@ -6566,56 +8268,25 @@ function setMapOverlay(name, value) {
         commandInputInstalled = true;
         canvas.addEventListener("mousedown", handleCommandMouse, true);
         canvas.addEventListener("mousemove", function (event) {
-            if (commandPersonId === null) return;
+            if (interactionMode !== "control") return;
             const position = typeof getMousePos === "function" ? getMousePos(canvas, event) : mousePos;
             commandHover = {x: position.x, y: position.y};
         }, true);
+        root.addEventListener("mouseup", function (event) {
+            if (interactionMode !== "control" || (event.button !== 0 && event.button !== 2)) return;
+            if (typeof mouseIsDown !== "undefined") mouseIsDown = false;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        }, true);
         root.addEventListener("keydown", function (event) {
-            if (event.key === "Escape" && commandPersonId !== null) {
-                cancelPersonCommand();
+            if (event.key === "Escape" && interactionMode === "control") {
+                if (commandPersonId !== null) cancelPersonCommand();
+                else setInteractionMode("place");
                 event.preventDefault();
                 event.stopImmediatePropagation();
                 if (peoplePanelOpen) refreshPeopleUi();
             }
         }, true);
-    }
-
-    // A civ_banner is one logical core pixel drawn as a 3x3 sprite, and civilized humans are
-    // nonBlocking overlay pixels that sit on top of it in getPixelsAt() order. Routing banner
-    // clicks through the engine's mouse1Action() therefore fails two ways: only the single core
-    // cell carries a real pixel (the other 8 sprite cells do nothing), and when a human overlaps
-    // the core it masks the banner's onClicked. The held-mouse retry in the engine tick then makes
-    // a long press eventually open the panel once a masking human walks away. This capture-phase
-    // handler resolves the full 3x3 sprite via buildingVisualAt() and opens the panel exactly once,
-    // before the engine sees the event, so a single click is reliable and a long press cannot retrigger.
-    function handleCivilizationBannerMouse(event) {
-        // Touch taps carry no button; the engine binds touchstart to the same placement path
-        // (index.html), so cover both. For mouse events only the left button is the panel gesture.
-        const isTouch = !!(event && event.touches);
-        if (!isTouch && event.button !== 0) return;
-        // Person-command mode owns clicks; let handleCommandMouse handle them.
-        if (commandPersonId !== null) return;
-        const canvas = document.getElementById("game");
-        if (!canvas) return;
-        const position = typeof getMousePos === "function" ? getMousePos(canvas, event) : mousePos;
-        if (!position) return;
-        const x = Math.round(Number(position.x));
-        const y = Math.round(Number(position.y));
-        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-        const building = buildingVisualAt(x, y);
-        if (!building || building.element !== "civ_banner" || building.buildingState === "destroyed") return;
-        if (typeof event.preventDefault === "function") event.preventDefault();
-        event.stopImmediatePropagation();
-        openCivilizationPanel(building.factionId);
-    }
-
-    function installCivilizationBannerInput() {
-        if (bannerInputInstalled || typeof document === "undefined") return;
-        const canvas = document.getElementById("game");
-        if (!canvas) return;
-        bannerInputInstalled = true;
-        canvas.addEventListener("mousedown", handleCivilizationBannerMouse, true);
-        canvas.addEventListener("touchstart", handleCivilizationBannerMouse, {capture: true, passive: false});
     }
 
     function renderPersonCommand(ctx) {
@@ -6646,6 +8317,52 @@ function setMapOverlay(name, value) {
             ctx.lineTo(tx, ty);
             ctx.stroke();
             ctx.strokeRect(tx - pixelSize * 0.35, ty - pixelSize * 0.35, pixelSize * 0.7, pixelSize * 0.7);
+        }
+        ctx.restore();
+    }
+
+    function renderPersonSpeech(ctx) {
+        if (typeof settings !== "undefined" && settings.humanSocietySpeech === false) return;
+        const speakers = Array.from(manager.actors).filter((actor) => actor && !actor.dead && !actor.del && actor.speech && actor.speech.untilTick > pixelTicks);
+        speakers.sort((a, b) => safeNumber(b.speech.priority, 0) - safeNumber(a.speech.priority, 0) || safeNumber(b.speech.startedTick, 0) - safeNumber(a.speech.startedTick, 0));
+        const placed = [];
+        ctx.save();
+        ctx.font = "12px sans-serif";
+        ctx.textBaseline = "middle";
+        for (let i = 0; i < Math.min(12, speakers.length); i++) {
+            const actor = speakers[i];
+            const text = String(actor.speech.text || "").slice(0, 64);
+            if (!text) continue;
+            const measured = typeof ctx.measureText === "function" ? ctx.measureText(text).width : text.length * 7;
+            const bubbleWidth = Math.max(34, Math.min(180, Math.ceil(measured) + 12));
+            const bubbleHeight = 20;
+            let x = canvasCoord(actor.x) + pixelSize / 2 - bubbleWidth / 2;
+            let y = canvasCoord(actor.y - 2) - bubbleHeight - 5;
+            x = Math.max(2, Math.min(ctx.canvas.width - bubbleWidth - 2, x));
+            let attempts = 0;
+            while (placed.some((rect) => x < rect.x + rect.width + 3 && x + bubbleWidth + 3 > rect.x && y < rect.y + rect.height + 3 && y + bubbleHeight + 3 > rect.y) && attempts < 10) {
+                y -= bubbleHeight + 4;
+                attempts++;
+            }
+            if (y < 2) continue;
+            const opacity = Math.min(1, Math.max(0.25, (actor.speech.untilTick - pixelTicks) / 20));
+            ctx.globalAlpha = opacity;
+            ctx.fillStyle = "rgba(255,255,255,0.94)";
+            ctx.strokeStyle = "rgba(20,20,20,0.9)";
+            ctx.lineWidth = 1;
+            ctx.fillRect(x, y, bubbleWidth, bubbleHeight);
+            ctx.strokeRect(x, y, bubbleWidth, bubbleHeight);
+            const pointerX = Math.max(x + 5, Math.min(x + bubbleWidth - 5, canvasCoord(actor.x) + pixelSize / 2));
+            ctx.beginPath();
+            ctx.moveTo(pointerX - 3, y + bubbleHeight);
+            ctx.lineTo(pointerX + 3, y + bubbleHeight);
+            ctx.lineTo(pointerX, y + bubbleHeight + 4);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            ctx.fillStyle = "#111111";
+            ctx.fillText(text, x + 6, y + bubbleHeight / 2, bubbleWidth - 12);
+            placed.push({x, y, width: bubbleWidth, height: bubbleHeight + 4});
         }
         ctx.restore();
     }
@@ -6833,8 +8550,6 @@ function setMapOverlay(name, value) {
         }
     }
 
-    elements.civ_banner.onClicked = function (pixel) { openCivilizationPanel(pixel && pixel.factionId); };
-
     function debugSnapshot() {
         const factions = [];
         let livingPopulation = 0;
@@ -6860,7 +8575,8 @@ function setMapOverlay(name, value) {
             factions: factions,
             pendingAttacks: manager.pendingAttacks.length + manager.pendingStructureAttacks.length + manager.pendingRangedImpacts.length,
             averageTickMs: manager.perfSamples ? manager.perfTotal / manager.perfSamples : 0,
-            maxTickMs: manager.perfMax
+            maxTickMs: manager.perfMax,
+            indexAudit: {running: manager.auditRunning, cursor: manager.auditCursor, limit: manager.auditLimit, lastFullRebuildTick: manager.lastFullRebuild, lastStartedTick: manager.lastAuditStartedTick, lastCompletedTick: manager.lastAuditCompletedTick, pixelsChecked: manager.auditPixels, lifecycleEvents: manager.lifecycleEvents, dirtyTrees: manager.dirtyTreeLineages.size, resourceNodes: Array.from(manager.resourceIndex.values()).reduce((sum, nodes) => sum + nodes.length, 0), trees: manager.treeById.size}
         };
     }
 
@@ -6870,7 +8586,12 @@ function setMapOverlay(name, value) {
             const drops = manager.pendingResourceDrops.splice(0, Math.min(8, manager.pendingResourceDrops.length));
             drops.forEach((drop) => queueResourceDrops(drop.kind, drop.element, drop.amount, drop.x, drop.y, drop.metadata));
         }
-        if (manager.lastFullRebuild < 0 || pixelTicks - manager.lastFullRebuild >= C.FULL_REBUILD_INTERVAL) rebuildIndexes(true);
+        if (manager.lastFullRebuild < 0) rebuildIndexes(true);
+        else {
+            processIncrementalAudit(0.75);
+            processDirtyTrees(0.75);
+            if (manager.derivedIndexesDirty && (manager.lastDerivedRefreshTick < 0 || pixelTicks - manager.lastDerivedRefreshTick >= C.CIVILIZATION_INTERVAL)) refreshDerivedIndexes();
+        }
         resolvePendingAttacks();
         if (pixelTicks % C.CIVILIZATION_INTERVAL === 0) civilizationStep();
         const elapsed = nowMs() - started;
@@ -6908,9 +8629,6 @@ function setMapOverlay(name, value) {
         setPeaceMode: setPeaceMode,
         declareWar: declareWar,
         setMapOverlay: setMapOverlay,
-        getElementInteractionSettings: typeof getElementInteractionSettings === "function" ? getElementInteractionSettings : null,
-        setElementInteractionSettings: typeof setElementInteractionSettings === "function" ? setElementInteractionSettings : null,
-        resetElementInteractionSettings: typeof resetElementInteractionSettings === "function" ? resetElementInteractionSettings : null,
         getBuildingById: getBuildingById,
         getBuildingCoreAt: getBuildingCoreAt,
         getTreeAt: getTreeAt,
@@ -6926,17 +8644,24 @@ function setMapOverlay(name, value) {
         cancelPersonCommand: cancelPersonCommand,
         issuePersonCommandAt: issuePersonCommandAt,
         getPersonCommandState: getPersonCommandState,
+        setInteractionMode: setInteractionMode,
+        getInteractionMode: getInteractionMode,
+        undoWorld: typeof undoWorld === "function" ? undoWorld : null,
+        redoWorld: typeof redoWorld === "function" ? redoWorld : null,
+        getTimelineState: typeof getTimelineState === "function" ? getTimelineState : null,
         forceReindex: function () { rebuildIndexes(true); },
         getDebugSnapshot: debugSnapshot
     });
 
     runEveryTick(societyTick);
+    if (typeof addPixelLifecycleListener === "function") addPixelLifecycleListener(handlePixelLifecycle);
     if (typeof renderPrePixel === "function") renderPrePixel(renderNormalBuildingSprites);
     if (typeof renderPostPixel === "function") {
         renderPostPixel(renderTerritoryHover);
         renderPostPixel(renderResourceOverlay);
         renderPostPixel(renderRangedProjectiles);
         renderPostPixel(renderTopBuildingSprites);
+        renderPostPixel(renderPersonSpeech);
         renderPostPixel(renderPersonFocus);
         renderPostPixel(renderPersonCommand);
     }
@@ -6946,13 +8671,11 @@ function setMapOverlay(name, value) {
             root.addEventListener("load", installCivilizationUi);
             root.addEventListener("load", installPeopleObserverUi);
             root.addEventListener("load", installPersonCommandInput);
-            root.addEventListener("load", installCivilizationBannerInput);
         }
         else {
             installCivilizationUi();
             installPeopleObserverUi();
             installPersonCommandInput();
-            installCivilizationBannerInput();
         }
     }
 }(typeof globalThis !== "undefined" ? globalThis : window));

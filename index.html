@@ -179,13 +179,13 @@ POWDER: function(pixel) {
 		pixelTick(pixel);
 		return;
 	}
-	if (tryMove(pixel, pixel.x, pixel.y+1) !== true) {
+	if (tryGravityMove(pixel, pixel.x, pixel.y+1) !== true) {
 		if (Math.random() < 0.5) {
-			if (tryMove(pixel, pixel.x+1, pixel.y+1) !== true) {
-				tryMove(pixel, pixel.x-1, pixel.y+1);
+			if (tryGravityMove(pixel, pixel.x+1, pixel.y+1) !== true) {
+				tryGravityMove(pixel, pixel.x-1, pixel.y+1);
 			}
-		} else if (tryMove(pixel, pixel.x-1, pixel.y+1) !== true) {
-			tryMove(pixel, pixel.x+1, pixel.y+1);
+		} else if (tryGravityMove(pixel, pixel.x-1, pixel.y+1) !== true) {
+			tryGravityMove(pixel, pixel.x+1, pixel.y+1);
 		}
 	}
 	doDefaults(pixel);
@@ -449,7 +449,7 @@ STURDYPOWDER: function(pixel) {
 		pixelTick(pixel);
 		return;
 	}
-	tryMove(pixel,pixel.x,pixel.y+1);
+	tryGravityMove(pixel,pixel.x,pixel.y+1);
 	doDefaults(pixel);
 },
 SELFDELETE: [
@@ -14198,6 +14198,26 @@ runPerPixelList = [];
 function runPerPixel(callback) {
 	runPerPixelList.push(callback);
 }
+pixelLifecycleListeners = [];
+function addPixelLifecycleListener(callback) {
+	if (typeof callback !== "function" || pixelLifecycleListeners.indexOf(callback) !== -1) return false;
+	pixelLifecycleListeners.push(callback);
+	return true;
+}
+function removePixelLifecycleListener(callback) {
+	const index = pixelLifecycleListeners.indexOf(callback);
+	if (index === -1) return false;
+	pixelLifecycleListeners.splice(index,1);
+	return true;
+}
+function emitPixelLifecycleEvent(event) {
+	if (!event || pixelLifecycleListeners.length === 0) return;
+	const listeners = pixelLifecycleListeners.slice();
+	for (let i = 0; i < listeners.length; i++) {
+		try { listeners[i](event); }
+		catch (error) { console.error("Pixel lifecycle listener failed",error); }
+	}
+}
 runAfterResetList = [];
 function runAfterReset(callback) {
 	runAfterResetList.push(callback);
@@ -14656,19 +14676,6 @@ function langKey(key,fallback,template) {
 			const info = elements[element];
 			return !!(info && (info[flag] === true || (info.properties && info.properties[flag] === true)));
 		}
-		function normalizeElementInteractionMode(value,allowed) {
-			value = String(value || "default");
-			return allowed.indexOf(value) !== -1 ? value : "default";
-		}
-		function normalizeElementInteractionList(value) {
-			if (!Array.isArray(value)) return [];
-			const result = [];
-			for (let i = 0; i < value.length; i++) {
-				const element = String(value[i] || "").trim();
-				if (element && result.indexOf(element) === -1) result.push(element);
-			}
-			return result;
-		}
 		function isLockedOverlapElement(element) {
 			return element === "civ_tunnel";
 		}
@@ -14685,6 +14692,7 @@ function langKey(key,fallback,template) {
 			const firstHuman = isCivilizedHumanElement(firstElement);
 			const secondHuman = isCivilizedHumanElement(secondElement);
 			if (firstHuman && secondHuman) return true;
+			if ((firstHuman && elementFlag(secondElement,"humanCollectible")) || (secondHuman && elementFlag(firstElement,"humanCollectible"))) return true;
 			const firstCreature = looksLikeCreatureElement(firstElement,elements[firstElement]);
 			const secondCreature = looksLikeCreatureElement(secondElement,elements[secondElement]);
 			if ((firstHuman && secondCreature) || (secondHuman && firstCreature)) return true;
@@ -14729,35 +14737,6 @@ function langKey(key,fallback,template) {
 						if (defaultElementsCanOverlap(names[i],names[j])) setCatalogPair(names[i],names[j],true);
 					}
 				}
-				if (!settings.elementInteractions || typeof settings.elementInteractions !== "object") settings.elementInteractions = {};
-				const configured = settings.elementInteractions;
-				if (settings.elementInteractionsVersion === 2) {
-					const overrides = Object.keys(configured).filter(element => configured[element] && Array.isArray(configured[element].overlapWith));
-					for (let i = 0; i < overrides.length; i++) {
-						const element = overrides[i];
-						Array.from(ensureElementOverlapEntry(element)).forEach(other => setCatalogPair(element,other,false));
-					}
-					for (let i = 0; i < overrides.length; i++) {
-						const element = overrides[i];
-						normalizeElementInteractionList(configured[element].overlapWith).forEach(other => setCatalogPair(element,other,true));
-					}
-				}
-				else {
-					Object.keys(configured).forEach(element => {
-						const legacy = configured[element] && typeof configured[element] === "object" ? configured[element] : {};
-						const directory = ensureElementOverlapEntry(element);
-						if (legacy.overlap === "block") Array.from(directory).forEach(other => setCatalogPair(element,other,false));
-						else if (legacy.overlap === "allow") names.forEach(other => setCatalogPair(element,other,true));
-						if (legacy.sameElement === "allow") setCatalogPair(element,element,true);
-						else if (legacy.sameElement === "block") setCatalogPair(element,element,false);
-						normalizeElementInteractionList(legacy.allowWith).forEach(other => setCatalogPair(element,other,true));
-						configured[element] = {
-							renderLayer: normalizeElementInteractionMode(legacy.renderLayer,["default","top","normal"]),
-							overlapWith: Array.from(ensureElementOverlapEntry(element)).sort()
-						};
-					});
-					settings.elementInteractionsVersion = 2;
-				}
 				return elementOverlapCatalog;
 			}
 			finally { elementOverlapCatalogInitializing = false; }
@@ -14769,29 +14748,15 @@ function langKey(key,fallback,template) {
 			});
 			return Array.from(ensureElementOverlapEntry(element)).sort();
 		}
-		function getElementInteractionSettings(element) {
-			initializeElementOverlapCatalog();
-			const all = settings.elementInteractions && typeof settings.elementInteractions === "object" ? settings.elementInteractions : {};
-			const configured = all[element] && typeof all[element] === "object" ? all[element] : {};
-			const overlapWith = getElementOverlapDirectory(element);
-			return {
-				renderLayer: normalizeElementInteractionMode(configured.renderLayer,["default","top","normal"]),
-				overlapWith: overlapWith,
-				allowWith: overlapWith.filter(other => other !== element),
-				sameElement: overlapWith.indexOf(element) !== -1 ? "allow" : "block",
-				overlap: "catalog"
-			};
-		}
 		function interactionOverlapMode(pixelOrElement) {
 			return "catalog";
 		}
 		function interactionRenderLayer(pixelOrElement) {
-			const element = typeof pixelOrElement === "string" ? pixelOrElement : pixelOrElement && pixelOrElement.element;
-			return element ? getElementInteractionSettings(element).renderLayer : "default";
+			return "default";
 		}
 		function interactionSameElementMode(pixelOrElement) {
 			const element = typeof pixelOrElement === "string" ? pixelOrElement : pixelOrElement && pixelOrElement.element;
-			return element ? getElementInteractionSettings(element).sameElement : "default";
+			return element && getElementOverlapDirectory(element).indexOf(element) !== -1 ? "allow" : "block";
 		}
 		function interactionAllowWith(pixelOrElement) {
 			const element = typeof pixelOrElement === "string" ? pixelOrElement : pixelOrElement && pixelOrElement.element;
@@ -14820,17 +14785,18 @@ function pixelFlag(pixel,flag) {
 		function civilizedHumansCanOverlap(first,second) {
 			return isCivilizedHumanPixel(first) && isCivilizedHumanPixel(second);
 		}
+		function isCivilizationCollectiblePixel(pixel) {
+			return !!(pixel && (pixel._civResourceDrop === true || pixel._civCollectible === true || elementFlag(pixel.element,"humanCollectible")));
+		}
 		function pixelsCanOverlap(first,second) {
 			if (!first || !second || first === second) return true;
 			if (isLockedOverlapElement(first.element) || isLockedOverlapElement(second.element)) return true;
+			if ((isCivilizedHumanPixel(first) && isCivilizationCollectiblePixel(second)) || (isCivilizedHumanPixel(second) && isCivilizationCollectiblePixel(first))) return true;
 			initializeElementOverlapCatalog();
 			return ensureElementOverlapEntry(first.element).has(second.element);
 		}
 		function requiresOverlayStorageElement(element) {
-			const configured = getElementInteractionSettings(element);
-			return configured.renderLayer === "top" ||
-				(configured.renderLayer !== "normal" && elementFlag(element,"alwaysOverlay")) ||
-				elementFlag(element,"nonBlocking");
+			return elementFlag(element,"alwaysOverlay") || elementFlag(element,"nonBlocking");
 		}
 		function requiresOverlayStoragePixel(pixel) {
 			return isAlwaysOverlayPixel(pixel) || isNonBlockingPixel(pixel);
@@ -14902,11 +14868,29 @@ function pixelFlag(pixel,flag) {
 			if (!cell) return [];
 			return Array.from(cell).filter(pixel => pixel && !pixel.del);
 		}
+		function orderOverlappingPixelsForDisplay(pixels) {
+			if (!Array.isArray(pixels) || pixels.length < 2) return pixels || [];
+			const hasHuman = pixels.some(isCivilizedHumanPixel);
+			const hasResource = pixels.some(isCivilizationCollectiblePixel);
+			if (!hasHuman || !hasResource) return pixels;
+			const resources = [];
+			const ordinary = [];
+			const humans = [];
+			const alwaysOnTop = [];
+			for (let i = 0; i < pixels.length; i++) {
+				const pixel = pixels[i];
+				if (isCivilizationCollectiblePixel(pixel)) resources.push(pixel);
+				else if (isAlwaysOverlayPixel(pixel)) alwaysOnTop.push(pixel);
+				else if (isCivilizedHumanPixel(pixel)) humans.push(pixel);
+				else ordinary.push(pixel);
+			}
+			return resources.concat(ordinary,humans,alwaysOnTop);
+		}
 		function getPixelsAt(x,y) {
 			if (outOfBounds(x,y)) return [];
 			const result = [];
 			if (pixelMap[x] && pixelMap[x][y] && !pixelMap[x][y].del) result.push(pixelMap[x][y]);
-			return result.concat(getOverlayPixels(x,y));
+			return orderOverlappingPixelsForDisplay(result.concat(getOverlayPixels(x,y)));
 		}
 		function getTopErasablePixelAt(x,y) {
 			const pixels = getPixelsAt(x,y);
@@ -15125,70 +15109,6 @@ function pixelFlag(pixel,flag) {
 			pixel._overlapMustExit = true;
 			return false;
 		}
-		function reconcileElementInteractionSettings(element) {
-			const handledRelations = new Set();
-			const matching = currentPixels.filter(pixel => pixel && !pixel.del && pixel.element === element);
-			for (let i = 0; i < matching.length; i++) reconcilePixelStorageAfterChange(matching[i]);
-			for (let i = 0; i < matching.length; i++) {
-				const pixel = matching[i];
-				if (!pixelHasInteractionConflict(pixel)) continue;
-				if (pixel._r !== undefined) {
-					if (handledRelations.has(pixel._r)) continue;
-					handledRelations.add(pixel._r);
-				}
-				movePixelOrRelationToNearestValid(pixel);
-			}
-			return matching.length;
-		}
-		function setElementOverlapDirectory(element,list,skipSave=false) {
-			if (!element || isLockedOverlapElement(element)) return false;
-			initializeElementOverlapCatalog();
-			const desired = normalizeElementInteractionList(list);
-			Object.keys(elements).forEach(other => { if (isLockedOverlapElement(other) && desired.indexOf(other) === -1) desired.push(other); });
-			const old = new Set(getElementOverlapDirectory(element));
-			const next = new Set(desired);
-			const affected = new Set([element]);
-			old.forEach(other => { affected.add(other); if (!next.has(other)) setCatalogPair(element,other,false); });
-			next.forEach(other => { affected.add(other); setCatalogPair(element,other,true); });
-			if (!settings.elementInteractions || typeof settings.elementInteractions !== "object") settings.elementInteractions = {};
-			const current = settings.elementInteractions[element] && typeof settings.elementInteractions[element] === "object" ? settings.elementInteractions[element] : {};
-			settings.elementInteractions[element] = {renderLayer: normalizeElementInteractionMode(current.renderLayer,["default","top","normal"]), overlapWith: getElementOverlapDirectory(element)};
-			old.forEach(other => {
-				const peer = settings.elementInteractions[other];
-				if (!next.has(other) && peer && Array.isArray(peer.overlapWith)) peer.overlapWith = normalizeElementInteractionList(peer.overlapWith).filter(name => name !== element);
-			});
-			settings.elementInteractionsVersion = 2;
-			affected.forEach(reconcileElementInteractionSettings);
-			if (!skipSave && typeof saveSettings === "function") saveSettings();
-			return true;
-		}
-		function setElementInteractionSettings(element,patch) {
-			if (!element || isLockedOverlapElement(element) || !patch || typeof patch !== "object") return false;
-			initializeElementOverlapCatalog();
-			if (!settings.elementInteractions || typeof settings.elementInteractions !== "object") settings.elementInteractions = {};
-			const current = getElementInteractionSettings(element);
-			let directory = patch.overlapWith === undefined ? current.overlapWith.slice() : normalizeElementInteractionList(patch.overlapWith);
-			if (patch.overlapWith === undefined && patch.allowWith !== undefined) directory = normalizeElementInteractionList(patch.allowWith);
-			if (patch.overlap === "allow") directory = Object.keys(elements);
-			else if (patch.overlap === "block") directory = [];
-			if (patch.sameElement === "allow" && directory.indexOf(element) === -1) directory.push(element);
-			else if (patch.sameElement === "block") directory = directory.filter(other => other !== element);
-			setElementOverlapDirectory(element,directory,true);
-			const next = settings.elementInteractions[element] || {overlapWith:getElementOverlapDirectory(element)};
-			next.renderLayer = patch.renderLayer === undefined ? current.renderLayer : normalizeElementInteractionMode(patch.renderLayer,["default","top","normal"]);
-			settings.elementInteractions[element] = next;
-			reconcileElementInteractionSettings(element);
-			if (typeof saveSettings === "function") saveSettings();
-			return true;
-		}
-		function resetElementInteractionSettings(element) {
-			if (!element || !elements[element] || isLockedOverlapElement(element)) return false;
-			const defaults = Object.keys(elements).filter(other => defaultElementsCanOverlap(element,other));
-			setElementOverlapDirectory(element,defaults,true);
-			if (settings.elementInteractions) delete settings.elementInteractions[element];
-			if (typeof saveSettings === "function") saveSettings();
-			return true;
-		}
 		function isPixelStored(pixel) {
 			if (!pixel || pixel.del) return false;
 			if (pixelMap[pixel.x] && pixelMap[pixel.x][pixel.y] === pixel) return true;
@@ -15197,11 +15117,13 @@ function pixelFlag(pixel,flag) {
 		}
 		function deletePixelObject(pixel) {
 			if (!pixel || pixel.del) return false;
+			const deletedState = {element:pixel.element,x:pixel.x,y:pixel.y,treeLineage:pixel.treeLineage,treeId:pixel.treeId,civPlantedTreeId:pixel.civPlantedTreeId};
 			pixel.del = true;
 			if (elements[pixel.element] && elements[pixel.element].onDelete !== undefined) {
 				elements[pixel.element].onDelete(pixel);
 			}
 			detachPixelFromGrid(pixel,true);
+			if (typeof emitPixelLifecycleEvent === "function") emitPixelLifecycleEvent({type:"delete",pixel:pixel,old:deletedState});
 			return true;
 		}
 		function erasePixelObject(pixel) {
@@ -15344,6 +15266,19 @@ function pixelFlag(pixel,flag) {
 			if (getBlockingOverlay(pixel.x,pixel.y,pixel._r,pixel)) return false;
 			return canPixelShareCell(pixel,x,y,pixel._r);
 		}
+		function cellSupportsPowder(pixel,x,y) {
+			if (!pixel || pixel.del || outOfBounds(x,y)) return false;
+			const occupants = getPixelsAt(x,y);
+			for (let i = 0; i < occupants.length; i++) {
+				const occupant = occupants[i];
+				if (occupant !== pixel && pixelFlag(occupant,"supportsPowder")) return true;
+			}
+			return false;
+		}
+		function tryGravityMove(pixel,x,y,leaveBehind) {
+			if (cellSupportsPowder(pixel,x,y)) return false;
+			return tryMove(pixel,x,y,leaveBehind);
+		}
 		function movePixel(pixel,x,y,leaveBehind=null) {
 			if (!pixel || pixel.del || outOfBounds(x,y)) return false;
 			const oldX = pixel.x;
@@ -15402,6 +15337,7 @@ function pixelFlag(pixel,flag) {
 			}
 			if (!newPixel.del) enforceAlwaysOverlayStorage(newPixel);
 			checkUnlock(element);
+			if (!newPixel.del && typeof emitPixelLifecycleEvent === "function") emitPixelLifecycleEvent({type:"create",pixel:newPixel});
 			return newPixel.del ? null : newPixel;
 		}
 		function createDetachedPixel(element,x,y) {
@@ -15439,6 +15375,7 @@ function pixelFlag(pixel,flag) {
 
 		function changePixel(pixel,element,changetemp=true) {
 			if (!element) { return }
+			const changedState = {element:pixel.element,x:pixel.x,y:pixel.y,treeLineage:pixel.treeLineage,treeId:pixel.treeId,civPlantedTreeId:pixel.civPlantedTreeId};
 			const oldExclusiveGroup = getOverlayExclusiveGroup(pixel);
 			const oldLegacyExclusiveConflict = pixel._legacyExclusiveConflict === true;
 			const newExclusiveGroup = getElementOverlayExclusiveGroup(elements[element] ? element : "unknown");
@@ -15531,6 +15468,7 @@ function pixelFlag(pixel,flag) {
 			if (oldLegacyExclusiveConflict && oldExclusiveGroup && oldExclusiveGroup === getOverlayExclusiveGroup(pixel)) pixel._legacyExclusiveConflict = true;
 			if (!pixel.del && !reconcilePixelStorageAfterChange(pixel)) return false;
 			checkUnlock(element);
+			if (!pixel.del && typeof emitPixelLifecycleEvent === "function") emitPixelLifecycleEvent({type:"change",pixel:pixel,old:changedState});
 			return pixel;
 		}
 		function reactPixels(pixel1,pixel2) {
@@ -17292,7 +17230,7 @@ behaviorRules = {
 		};
 		// version;codes;pixels;
 		basicProperties = ["x","y","color","start","origColor","temp"];
-		vitalSettings = ["abszero","airdensity","airtemp","bg","burn","clouds","events","stain","limitless","elementInteractions","elementInteractionsVersion","humanSocietyPeaceMode","humanSocietySpeech"];
+		vitalSettings = ["abszero","airdensity","airtemp","bg","burn","clouds","events","stain","limitless","humanSocietyPeaceMode","humanSocietySpeech"];
 		function uuidv4() {
 			return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, c =>
 				(c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
@@ -18327,7 +18265,8 @@ behaviorRules = {
 						pixel = pixel.con;
 					}
 				}
-				if (pixel._overlap && interactionRenderLayer(pixel) === "normal") pixelsUnderlay.push(pixel);
+				if (pixel._overlap && isCivilizationCollectiblePixel(pixel) && getPixelsAt(pixel.x,pixel.y).some(isCivilizedHumanPixel)) pixelsUnderlay.push(pixel);
+				else if (pixel._overlap && interactionRenderLayer(pixel) === "normal") pixelsUnderlay.push(pixel);
 				else if (pixel._overlap) pixelsOverlay.push(pixel);
 				else if (elements[pixel.element].isGas === true || elements[pixel.element].glow === true) pixelsLast.push(pixel);
 				else pixelsFirst.push(pixel);
@@ -18886,6 +18825,7 @@ behaviorRules = {
 			else pauseButton.setAttribute("on","false");
 
 			if (manualPaused && !paused) paused = true;
+			if (paused || manualPaused) resetSimulationSchedulerClock();
 		}
 		function toggleShift() {
 			if (shiftDown) {
@@ -18926,6 +18866,22 @@ behaviorRules = {
 		}
 		MAX_TPS = 150;
 		SIMULATION_SPEEDS = [30,60,90,150];
+		SIMULATION_PULSE_MS = 1000/30;
+		SIMULATION_MAX_TICKS_PER_PULSE = 10;
+		SIMULATION_WORK_BUDGET_MS = 12;
+		SIMULATION_MAX_BACKLOG_TICKS = 15;
+		var simulationTickDebt = 0;
+		var simulationLastPulseTime = 0;
+		var simulationActualTPS = 0;
+		var simulationActualWindowStarted = 0;
+		var simulationActualWindowTicks = 0;
+		function simulationSchedulerNow() {
+			return window.performance && typeof window.performance.now === "function" ? window.performance.now() : Date.now();
+		}
+		function resetSimulationSchedulerClock() {
+			simulationTickDebt = 0;
+			simulationLastPulseTime = simulationSchedulerNow();
+		}
 		function mapLegacyTPS(oldTps) {
 			let parsed = parseInt(oldTps);
 			if (!isFinite(parsed) || parsed <= 0) return 30;
@@ -18943,7 +18899,7 @@ behaviorRules = {
 			if (!speedButton) return;
 			const multiplier = tps/30;
 			speedButton.textContent = (Number.isInteger(multiplier) ? multiplier : multiplier.toFixed(1))+"×";
-			speedButton.title = "Simulation speed: "+tps+" TPS";
+			speedButton.title = "Simulation speed target: "+tps+" TPS; actual: "+simulationActualTPS.toFixed(1)+" TPS";
 		}
 		function setTPS(newtps) {
 			tps = Math.max(1,Math.min(MAX_TPS,parseInt(newtps) || 30));
@@ -18993,6 +18949,7 @@ behaviorRules = {
 			)
 		}
 		function doFrame() {
+			resetSimulationSchedulerClock();
 			paused = false;
 			manualPaused = false;
 			
@@ -19000,6 +18957,7 @@ behaviorRules = {
 			
 			paused = true;
 			manualPaused = true;
+			resetSimulationSchedulerClock();
 			checkPause();
 		}
 
@@ -20620,150 +20578,8 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			var settingsParent = document.getElementById("settingsParent");
 			settingsParent.style.display = "block";
 			showingMenu = "settings";
-			refreshElementInteractionEditor();
 			paused = true;
 			checkPause();
-		}
-		function populateElementInteractionDatalist() {
-			const datalist = document.getElementById("elementInteractionDatalist");
-			if (!datalist) return;
-			// Force repopulate if elements object is larger than datalist options
-			const editableElements = Object.keys(elements).filter(element => !isLockedOverlapElement(element)).sort();
-			if (datalist.children.length >= editableElements.length && datalist.children.length > 0) return; // Already populated correctly
-
-			// Clear and repopulate
-			datalist.innerHTML = "";
-			editableElements.forEach(elem => {
-				const option = document.createElement("option");
-				option.value = elem;
-				datalist.appendChild(option);
-			});
-		}
-		function refreshElementInteractionEditor() {
-			const input = document.getElementById("elementInteractionElement");
-			const container = document.getElementById("elementInteractionOverlapContainer");
-			const layer = document.getElementById("elementInteractionLayer");
-			if (!input || !container || !layer) return;
-
-			const previousElement = input.value.trim();
-			const editableElements = Object.keys(elements).filter(element => !isLockedOverlapElement(element)).sort();
-
-			// Populate datalist for all searchable inputs
-			populateElementInteractionDatalist();
-
-			// Set default element if current is invalid
-			if (!elements[previousElement]) {
-				input.value = editableElements.indexOf("civ_body") !== -1 ? "civ_body" : editableElements[0] || "";
-			}
-
-			const element = input.value.trim();
-			if (!elements[element]) return;
-
-			const configured = getElementInteractionSettings(element);
-
-			// Build the overlap list UI with searchable inputs
-			container.innerHTML = "";
-			const overlapList = configured.overlapWith.filter(other => !isLockedOverlapElement(other));
-			overlapList.forEach((other, index) => {
-				const row = document.createElement("div");
-				row.style.cssText = "display:flex;gap:0.3em;align-items:center;";
-				row.dataset.elementName = other;
-
-				const inputWrapper = document.createElement("span");
-				inputWrapper.style.cssText = "flex:1;position:relative;";
-
-				const searchInput = document.createElement("input");
-				searchInput.type = "text";
-				searchInput.value = other;
-				searchInput.list = "elementInteractionDatalist";
-				searchInput.style.cssText = "width:100%;box-sizing:border-box;";
-				searchInput.placeholder = "输入元素名搜索...";
-				searchInput.onchange = function() {
-					row.dataset.elementName = this.value.trim();
-				};
-
-				inputWrapper.appendChild(searchInput);
-				row.appendChild(inputWrapper);
-
-				const removeBtn = document.createElement("button");
-				removeBtn.textContent = "×";
-				removeBtn.type = "button";
-				removeBtn.style.cssText = "padding:0.2em 0.5em;cursor:pointer;";
-				removeBtn.title = "删除此项";
-				removeBtn.onclick = function() {
-					container.removeChild(row);
-				};
-				row.appendChild(removeBtn);
-
-				container.appendChild(row);
-			});
-
-			layer.value = configured.renderLayer;
-		}
-		function addElementInteractionEntry() {
-			const element = document.getElementById("elementInteractionElement").value;
-			const container = document.getElementById("elementInteractionOverlapContainer");
-			if (!elements[element] || !container || isLockedOverlapElement(element)) return false;
-
-			const row = document.createElement("div");
-			row.style.cssText = "display:flex;gap:0.3em;align-items:center;";
-			row.dataset.elementName = "";
-
-			const inputWrapper = document.createElement("span");
-			inputWrapper.style.cssText = "flex:1;position:relative;";
-
-			const searchInput = document.createElement("input");
-			searchInput.type = "text";
-			searchInput.value = "";
-			searchInput.list = "elementInteractionDatalist";
-			searchInput.style.cssText = "width:100%;box-sizing:border-box;";
-			searchInput.placeholder = "输入元素名搜索...";
-			searchInput.onchange = function() {
-				row.dataset.elementName = this.value.trim();
-			};
-
-			inputWrapper.appendChild(searchInput);
-			row.appendChild(inputWrapper);
-
-			const removeBtn = document.createElement("button");
-			removeBtn.textContent = "×";
-			removeBtn.type = "button";
-			removeBtn.style.cssText = "padding:0.2em 0.5em;cursor:pointer;";
-			removeBtn.title = "删除此项";
-			removeBtn.onclick = function() {
-				container.removeChild(row);
-			};
-			row.appendChild(removeBtn);
-
-			container.appendChild(row);
-			searchInput.focus();
-			return true;
-		}
-		function removeElementInteractionEntry() {
-			// This function is now handled by individual × buttons, kept for compatibility
-			return false;
-		}
-		function applyElementInteractionEditor(reset) {
-			const input = document.getElementById("elementInteractionElement");
-			const element = input && input.value;
-			if (!element || !elements[element]) {
-				if (typeof logMessage === "function") logMessage("Unknown element: " + (element || "(empty)"));
-				return false;
-			}
-			captureWorldTimelineSnapshot("before-element-interaction");
-			if (reset) resetElementInteractionSettings(element);
-			else {
-				const container = document.getElementById("elementInteractionOverlapContainer");
-				const rows = container ? Array.from(container.children) : [];
-				const overlapWith = rows.map(row => row.dataset.elementName).filter(name => name && elements[name] && !isLockedOverlapElement(name));
-				setElementInteractionSettings(element,{
-					overlapWith: overlapWith,
-					renderLayer: document.getElementById("elementInteractionLayer").value
-				});
-			}
-			refreshElementInteractionEditor();
-			captureWorldTimelineSnapshot("after-element-interaction");
-			return true;
 		}
 		function setSetting(setting,value) {
 			settings[setting] = value;
@@ -20998,15 +20814,47 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 		editingPixels = [];
 		lookupTempElements = {};
 		hiding = false;
-		// On window load, run tick() 30 times per second
+		// Drive logical ticks from a fixed pulse so higher speeds can advance in
+		// bounded batches without relying on sub-10ms browser timers.
 		tps = mapLegacyTPS(settings.tps || 30);
 		settings.tps = tps;
-		tickInterval = window.setInterval(tick, 1000/tps);
+		resetSimulationSchedulerClock();
+		simulationActualWindowStarted = simulationLastPulseTime;
+		function simulationPulse() {
+			const now = simulationSchedulerNow();
+			const elapsed = Math.max(0,Math.min(250,now-simulationLastPulseTime));
+			simulationLastPulseTime = now;
+			if (paused || manualPaused) {
+				simulationTickDebt = 0;
+			}
+			else {
+				simulationTickDebt = Math.min(SIMULATION_MAX_BACKLOG_TICKS,simulationTickDebt+elapsed*tps/1000);
+				const workStarted = simulationSchedulerNow();
+				let completed = 0;
+				while (simulationTickDebt >= 1 && completed < SIMULATION_MAX_TICKS_PER_PULSE && simulationSchedulerNow()-workStarted < SIMULATION_WORK_BUDGET_MS) {
+					tick();
+					simulationTickDebt -= 1;
+					completed++;
+					simulationActualWindowTicks++;
+					if (paused || manualPaused) {
+						simulationTickDebt = 0;
+						break;
+					}
+				}
+			}
+			const actualElapsed = now-simulationActualWindowStarted;
+			if (actualElapsed >= 500) {
+				simulationActualTPS = simulationActualWindowTicks*1000/Math.max(1,actualElapsed);
+				simulationActualWindowTicks = 0;
+				simulationActualWindowStarted = now;
+				updateSpeedButton();
+			}
+		}
+		tickInterval = window.setInterval(simulationPulse, SIMULATION_PULSE_MS);
 		function resetInterval(newtps=30) {
 			newtps = Math.max(1,Math.min(MAX_TPS,parseInt(newtps) || 30));
 			tps = newtps;
-			window.clearInterval(tickInterval);
-			tickInterval = window.setInterval(tick, 1000/newtps);
+			resetSimulationSchedulerClock();
 			updateSpeedButton();
 		}
 		window.addEventListener("load",updateSpeedButton);
@@ -22041,6 +21889,7 @@ window.onload = function() {
 	<script src="scripts/human_society_core.js?v=20260725"></script>
 	<script src="scripts/human_society_tech_data.js?v=20260725"></script>
 	<script src="scripts/human_society_world.js?v=20260725"></script>
+	<script src="scripts/human_society_pathfinding.js?v=20260725"></script>
 	<script src="scripts/human_society.js?v=20260725"></script>
 	<link rel="stylesheet" type="text/css" href="style.css?nocache=4">
 </head>
@@ -22392,19 +22241,6 @@ window.onload = function() {
 					<span setting="humanSocietySpeech" class="setting-span multisetting" title="控制文明人类头顶语言气泡">
 						<input type="button" value="人类说话" id="settingLabel-humanSocietySpeech" class="toggleInput" onclick="toggleInput(this,'humanSocietySpeech',false)" state="1">
 					</span>
-					<span class="setting-span multisetting" id="elementInteractionSetting" title="Configure collision and render order for any element">
-						<span>元素重叠</span>
-						<input type="text" id="elementInteractionElement" list="elementInteractionDatalist" placeholder="输入元素名搜索..." style="width:200px;" onchange="refreshElementInteractionEditor()">
-						<div id="elementInteractionOverlapContainer" style="display:flex;flex-direction:column;gap:0.3em;margin:0.5em 0;"></div>
-						<input type="button" value="+ 添加可重叠元素" onclick="addElementInteractionEntry()">
-						<select id="elementInteractionLayer">
-							<option value="default">层级：默认</option>
-							<option value="top">层级：最上层</option>
-							<option value="normal">层级：普通</option>
-						</select>
-						<input type="button" value="应用" onclick="applyElementInteractionEditor(false)">
-						<input type="button" value="恢复默认" onclick="applyElementInteractionEditor(true)">
-					</span>
 					<span setting="lang" class="setting-span" title="Default: Disabled" style="display:none" id="setting-span-lang">
 						<span id="settingLabel-lang">Language</span>
 					</span>
@@ -22729,8 +22565,6 @@ if (document.referrer && document.referrer.indexOf("r74n.") === -1) {
 	gtag('js', new Date());
 	gtag('config', 'UA-93720349-9');
 </script>
-<datalist id="elementInteractionDatalist"></datalist>
-
 </body>
 
 </html>

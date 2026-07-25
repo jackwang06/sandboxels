@@ -284,8 +284,7 @@
                 prerequisites: ["seed_selection", "polished_axes"],
                 conditions: [encountered("tree_seed", 1, false)],
                 effects: [
-                    unlock("role", "forester"),
-                    modifier("seedDropChance", "add", 0.25)
+                    unlock("role", "forester")
                 ]
             },
             {

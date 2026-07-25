@@ -9,6 +9,7 @@ const vm = require("node:vm");
 const Core = require("../scripts/human_society_core.js");
 const TechData = require("../scripts/human_society_tech_data.js");
 const World = require("../scripts/human_society_world.js");
+const Pathfinding = require("../scripts/human_society_pathfinding.js");
 const techDataSource = fs.readFileSync(
     path.join(__dirname, "../scripts/human_society_tech_data.js"),
     "utf8"
@@ -32,7 +33,9 @@ function createHarness(options) {
     const currentRelations = {_id: 1};
     const everyTickCallbacks = [];
     const resetCallbacks = [];
+    const pixelLifecycleListeners = [];
     const wallBehavior = Object.freeze([["XX", "XX", "XX"], ["XX", "XX", "XX"], ["XX", "XX", "XX"]]);
+    const powderBehavior = Object.freeze([["XX", "XX", "XX"], ["XX", "XX", "XX"], ["M2", "M1", "M2"]]);
 
     const elements = {
         blood: {color: "#bb0000", state: "liquid", properties: {}},
@@ -45,6 +48,8 @@ function createHarness(options) {
         fiber: {color: "#9b8b6b", state: "solid", behavior: wallBehavior, properties: {}},
         apple: {color: "#cc3322", state: "solid", isFood: true, seed: "apple_seed", properties: {}},
         apple_seed: {color: "#886633", state: "solid", seed: true, isFood: true, properties: {}},
+        wheat_seed: {color: "#b6c981", state: "solid", seed: true, properties: {}},
+        corn_seed: {color: "#f2b813", state: "solid", seed: true, properties: {}},
         sapling: {color: "#3e9c3e", state: "solid", seed: true, properties: {}},
         wood: {color: "#82552f", state: "solid", properties: {}},
         tree_branch: {color: "#6f4f2f", state: "solid", properties: {}},
@@ -54,6 +59,13 @@ function createHarness(options) {
         copper: {color: "#b87333", state: "solid", properties: {}},
         tin: {color: "#d4d7dc", state: "solid", properties: {}},
         iron: {color: "#8f6552", state: "solid", properties: {}},
+        fire: {color: "#ff7a22", state: "gas", properties: {}},
+        plasma: {color: "#ffd8aa", state: "gas", properties: {}},
+        ember: {color: "#d95b24", state: "solid", properties: {}},
+        fw_ember: {color: "#ff4455", state: "solid", properties: {}},
+        torch: {color: "#9b5a2f", state: "solid", properties: {}},
+        smoke: {color: "#777777", state: "gas", properties: {}},
+        ash: {color: "#555555", state: "solid", properties: {}},
         water: {color: "#3f86d9", state: "liquid", properties: {}},
         unknown: {color: "#ff00ff", state: "solid", properties: {}},
         meat: {color: "#8b493f", state: "solid", isFood: true, properties: {}}
@@ -124,19 +136,23 @@ function createHarness(options) {
         currentPixels.push(pixel);
         pixelMap[x][y] = pixel;
         if (definition.onPlace) definition.onPlace(pixel);
+        pixelLifecycleListeners.slice().forEach((listener) => listener({type: "create", pixel}));
         return pixel;
     }
 
     function deletePixel(x, y) {
         const pixel = getPixel(x, y);
         if (!pixel) return;
+        const old = {element: pixel.element, x: pixel.x, y: pixel.y, treeLineage: pixel.treeLineage, treeId: pixel.treeId, civPlantedTreeId: pixel.civPlantedTreeId};
         pixel.del = true;
         const definition = elements[pixel.element];
         if (definition && definition.onDelete) definition.onDelete(pixel);
         pixelMap[x][y] = undefined;
+        pixelLifecycleListeners.slice().forEach((listener) => listener({type: "delete", pixel, old}));
     }
 
     function changePixel(pixel, elementName) {
+        const old = {element: pixel.element, x: pixel.x, y: pixel.y, treeLineage: pixel.treeLineage, treeId: pixel.treeId, civPlantedTreeId: pixel.civPlantedTreeId};
         const oldDefinition = elements[pixel.element];
         if (oldDefinition && oldDefinition.onChange) oldDefinition.onChange(pixel, elementName);
         const definition = elements[elementName] || elements.unknown;
@@ -145,6 +161,7 @@ function createHarness(options) {
         pixel.start = sandbox.pixelTicks;
         Object.assign(pixel, cloneProperties(definition.properties));
         if (definition.onPlace) definition.onPlace(pixel);
+        pixelLifecycleListeners.slice().forEach((listener) => listener({type: "change", pixel, old}));
     }
 
     function movePixel(pixel, x, y) {
@@ -245,7 +262,7 @@ function createHarness(options) {
         HumanSocietyCore: Core,
         HumanSocietyWorld: World,
         elements,
-        behaviors: {WALL: wallBehavior},
+        behaviors: {WALL: wallBehavior, POWDER: powderBehavior},
         currentPixels,
         pixelMap,
         currentRelations,
@@ -280,6 +297,7 @@ function createHarness(options) {
         removeFromRelation,
         runEveryTick(callback) { everyTickCallbacks.push(callback); },
         runAfterReset(callback) { resetCallbacks.push(callback); },
+        addPixelLifecycleListener(callback) { if (!pixelLifecycleListeners.includes(callback)) pixelLifecycleListeners.push(callback); },
         doHeat() {},
         doBurning() {},
         doElectricity() {},
@@ -289,12 +307,25 @@ function createHarness(options) {
         pixelSize: 1,
         mousePos: {x: 0, y: 0},
         settings: {humanSocietyPeaceMode: "normal"},
+        HumanSocietyPathfinding: Pathfinding,
         saveSettings() {},
         getPixelsAt(x, y) {
             const pixel = getPixel(x, y);
-            return pixel ? [pixel] : [];
+            const pixels = pixel ? [pixel] : [];
+            if (Array.isArray(opts.overlayPixels)) {
+                opts.overlayPixels.forEach((overlay) => {
+                    if (overlay && !overlay.del && overlay.x === x && overlay.y === y) pixels.push(overlay);
+                });
+            }
+            return pixels;
         }
     };
+
+    if (Array.isArray(opts.overlapElements)) {
+        sandbox.pixelsCanOverlap = function (first, second) {
+            return !!(first && second && (opts.overlapElements.includes(first.element) || opts.overlapElements.includes(second.element)));
+        };
+    }
 
     if (opts.dom) {
         sandbox.document = domDocument;
@@ -322,6 +353,7 @@ function createHarness(options) {
         everyTickCallbacks,
         resetCallbacks,
         wallBehavior,
+        powderBehavior,
         getPixel,
         createPixel,
         changePixel,
@@ -339,6 +371,7 @@ test("browser adapter loads and registers the civilization API and elements", ()
         "registerResource", "registerWeapon", "damageActor", "damageStructure",
         "recordIncident", "atWar", "forceReindex", "getDebugSnapshot",
         "getPeaceMode", "setPeaceMode", "setCommandPerson", "cancelPersonCommand", "issuePersonCommandAt", "getPersonCommandState",
+        "setInteractionMode", "getInteractionMode",
         "getPeopleSnapshot", "getPersonSnapshot", "getPersonHistory"
     ]) {
         assert.equal(typeof api[method], "function", `${method} should be public`);
@@ -350,8 +383,89 @@ test("browser adapter loads and registers the civilization API and elements", ()
     ]) {
         assert.ok(harness.elements[elementName], `${elementName} should be registered`);
     }
+    for (const elementName of [
+        "civ_wood_resource", "civ_tree_sapling_resource", "civ_food_resource", "civ_stone_resource",
+        "civ_copper_resource", "civ_tin_resource", "civ_raw_iron_resource", "civ_charcoal_resource",
+        "civ_seed_resource", "civ_resource_drop"
+    ]) {
+        assert.equal(harness.elements[elementName].behavior, harness.powderBehavior, `${elementName} should fall under gravity`);
+        assert.equal(harness.elements[elementName].humanCollectible, true, `${elementName} should overlap civilization humans`);
+        assert.equal(harness.elements[elementName].properties._civResourceDrop, true);
+    }
+    for (const removedMethod of [
+        "getElementOverlapDirectory", "setElementOverlapDirectory", "getElementInteractionSettings",
+        "setElementInteractionSettings", "resetElementInteractionSettings"
+    ]) {
+        assert.equal(api[removedMethod], undefined, `${removedMethod} should no longer be public`);
+    }
     assert.equal(harness.everyTickCallbacks.length, 1);
     assert.equal(harness.resetCallbacks.length, 1);
+});
+
+test("periodic index maintenance audits pixels without repeating a synchronous full rebuild", () => {
+    const harness = createHarness();
+    for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
+    harness.createPixel("civilized_human", 8, 8);
+    harness.sandbox.pixelTicks = 30;
+    harness.everyTickCallbacks[0]();
+    const initial = harness.sandbox.HumanSociety.getDebugSnapshot().indexAudit;
+
+    harness.sandbox.pixelTicks = 330;
+    harness.everyTickCallbacks[0]();
+    const audited = harness.sandbox.HumanSociety.getDebugSnapshot().indexAudit;
+
+    assert.equal(audited.lastFullRebuildTick, initial.lastFullRebuildTick);
+    assert.equal(audited.lastStartedTick, 330);
+    assert.ok(audited.pixelsChecked > initial.pixelsChecked);
+    assert.equal(audited.lastCompletedTick, 330, "small maps finish the bounded audit in one maintenance slice");
+});
+
+test("lifecycle events update resources immediately and rebuild only the changed tree lineage", () => {
+    const harness = createHarness();
+    for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
+    harness.createPixel("civilized_human", 8, 8);
+    harness.sandbox.pixelTicks = 30;
+    harness.everyTickCallbacks[0]();
+    const initial = harness.sandbox.HumanSociety.getDebugSnapshot().indexAudit;
+
+    const apple = harness.createPixel("apple", 20, 9);
+    const afterCreate = harness.sandbox.HumanSociety.getDebugSnapshot().indexAudit;
+    assert.equal(afterCreate.resourceNodes, initial.resourceNodes + 1);
+    harness.changePixel(apple, "dirt");
+    const afterChange = harness.sandbox.HumanSociety.getDebugSnapshot().indexAudit;
+    assert.equal(afterChange.resourceNodes, initial.resourceNodes);
+
+    harness.createPixel("tree_branch", 24, 9, {naturalVegetation: true, treeLineage: "incremental-tree"});
+    harness.createPixel("plant", 24, 8, {naturalVegetation: true, treeLineage: "incremental-tree"});
+    harness.sandbox.pixelTicks = 31;
+    harness.everyTickCallbacks[0]();
+    const afterTree = harness.sandbox.HumanSociety.getDebugSnapshot().indexAudit;
+    assert.equal(afterTree.trees, initial.trees + 1);
+    assert.equal(afterTree.resourceNodes, initial.resourceNodes + 1);
+    assert.equal(afterTree.lastFullRebuildTick, initial.lastFullRebuildTick);
+});
+
+test("incremental audits preserve indexed trees as harvestable wood resources", () => {
+    const harness = createHarness();
+    for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
+    const root = harness.createPixel("tree_branch", 24, 9, {naturalVegetation: true, treeLineage: "audited-tree"});
+    const branch = harness.createPixel("wood", 24, 8, {naturalVegetation: true, treeLineage: "audited-tree"});
+    const leaf = harness.createPixel("plant", 24, 7, {naturalVegetation: true, treeLineage: "audited-tree"});
+    harness.sandbox.pixelTicks = 30;
+    harness.everyTickCallbacks[0]();
+    const beforeAudit = harness.sandbox.HumanSociety.getDebugSnapshot().indexAudit;
+
+    harness.sandbox.pixelTicks = 330;
+    harness.everyTickCallbacks[0]();
+    const afterAudit = harness.sandbox.HumanSociety.getDebugSnapshot().indexAudit;
+
+    assert.equal(afterAudit.trees, beforeAudit.trees);
+    assert.equal(afterAudit.resourceNodes, beforeAudit.resourceNodes);
+    const result = harness.sandbox.HumanSociety.fellTreeAt(root.x, root.y);
+    assert.equal(result.removedPixels, 3);
+    assert.equal(root.del, true);
+    assert.equal(branch.del, true);
+    assert.equal(leaf.del, true);
 });
 
 test("civilized humans have bounded natural lifespans and never acquire hunger state", () => {
@@ -423,6 +537,313 @@ test("directed adults climb one-block steps without a separate vertical pause", 
     assert.equal(body.x, 9);
     assert.equal(body.y, 8);
     assert.equal(body.pathStage, "step");
+});
+
+test("collectible resources allow free horizontal travel without forcing a climb", () => {
+    const resourceOverlay = {x: 8, y: 9, element: "civ_stone_resource", _civCollectible: true};
+    const harness = createHarness({relationMovement: true, overlayPixels: [resourceOverlay], overlapElements: ["civ_stone_resource"]});
+    for (let x = 1; x <= 20; x++) harness.createPixel("rock", x, 10);
+    harness.createPixel("civilized_human", 8, 8);
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    const body = harness.currentPixels.find((pixel) => pixel.element === "civ_body");
+    assert.equal(api.issuePersonCommandAt(body.humanId, 2, 14, 9).accepted, true);
+    body.targetY = 8;
+    body.playerOrder.y = 8;
+
+    const moveTick = (2 - ((0 + body.humanId) % 2)) % 2;
+    harness.sandbox.pixelTicks = moveTick;
+    harness.elements.civ_body.tick(body);
+
+    assert.equal(body.x, 9);
+    assert.equal(body.y, 9);
+    assert.equal(body.pathStage, "flat");
+});
+
+test("a same-column target climbs vertically through a collectible resource", () => {
+    const resourceOverlay = {x: 8, y: 9, element: "civ_stone_resource", _civCollectible: true};
+    const harness = createHarness({relationMovement: true, overlayPixels: [resourceOverlay], overlapElements: ["civ_stone_resource"]});
+    for (let x = 1; x <= 20; x++) harness.createPixel("rock", x, 10);
+    harness.createPixel("civilized_human", 8, 8);
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    const body = harness.currentPixels.find((pixel) => pixel.element === "civ_body");
+    assert.equal(api.issuePersonCommandAt(body.humanId, 2, 14, 9).accepted, true);
+    body.targetX = 8;
+    body.targetY = 7;
+    body.playerOrder.x = 8;
+    body.playerOrder.y = 7;
+
+    const moveTick = (2 - ((0 + body.humanId) % 2)) % 2;
+    harness.sandbox.pixelTicks = moveTick;
+    harness.elements.civ_body.tick(body);
+
+    assert.equal(body.x, 8);
+    assert.equal(body.y, 8);
+    assert.equal(body.pathStage, "climb");
+    assert.ok(body.climbHoldUntil >= moveTick + 2);
+});
+
+test("an overlap-compatible resource never triggers the stalled-route tunnel fallback", () => {
+    const harness = createHarness({relationMovement: true, overlapElements: ["civ_stone_resource"]});
+    for (let x = 1; x <= 20; x++) harness.createPixel("rock", x, 10);
+    const resource = harness.createPixel("civ_stone_resource", 9, 9);
+    harness.createPixel("civilized_human", 8, 8);
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    const body = harness.currentPixels.find((pixel) => pixel.element === "civ_body");
+    assert.equal(api.issuePersonCommandAt(body.humanId, 2, 14, 9).accepted, true);
+
+    let moveTick = (2 - ((0 + body.humanId) % 2)) % 2;
+    for (let attempt = 0; attempt < 20; attempt++, moveTick += 2) {
+        harness.sandbox.pixelTicks = moveTick;
+        harness.elements.civ_body.tick(body);
+    }
+
+    assert.equal(resource.element, "civ_stone_resource");
+    assert.notEqual(body.pathStage, "tunnel");
+    assert.notEqual(body.pathCache && body.pathCache.forceTunnel, true);
+    assert.equal(harness.currentPixels.some((pixel) => !pixel.del && pixel.element === "civ_tunnel"), false);
+});
+
+test("six-cell walls are climbed while seven-cell walls make every role carve a tunnel", () => {
+    function prepare(height) {
+        const harness = createHarness({relationMovement: true});
+        for (let x = 1; x <= 20; x++) harness.createPixel("rock", x, 10);
+        for (let y = 9; y >= 10 - height; y--) harness.createPixel("rock", 9, y);
+        harness.createPixel("civilized_human", 8, 8);
+        const api = harness.sandbox.HumanSociety;
+        api.forceReindex();
+        const body = harness.currentPixels.find((pixel) => pixel.element === "civ_body");
+        body.role = "food";
+        assert.equal(api.issuePersonCommandAt(body.humanId, 2, 12, 9).accepted, true);
+        const tick = (2 - ((0 + body.humanId) % 2)) % 2;
+        for (let attempt = 0; attempt < 20; attempt++) {
+            harness.sandbox.pixelTicks = tick + attempt * 2;
+            harness.elements.civ_body.tick(body);
+            if (body.pathStage === "climb" || harness.getPixel(9, 9).element === "civ_tunnel") break;
+        }
+        return {harness, body};
+    }
+
+    const six = prepare(6);
+    assert.equal(six.harness.getPixel(9, 9).element, "rock");
+    assert.equal(six.body.pathStage, "climb");
+
+    const seven = prepare(7);
+    assert.equal(seven.harness.getPixel(9, 9).element, "civ_tunnel");
+    assert.equal(seven.harness.getPixel(9, 8).element, "civ_tunnel");
+    assert.equal(seven.body.pathCache.searchMode, "tunnel");
+    assert.equal(seven.body.carry.stone, undefined, "non-miners destroy traversal material without collecting it");
+});
+
+test("directed adults crest a six-cell wall and descend onto the ground behind it", () => {
+    const harness = createHarness({relationMovement: true});
+    for (let x = 1; x <= 24; x++) harness.createPixel("rock", x, 12);
+    for (let y = 11; y >= 6; y--) harness.createPixel("rock", 10, y);
+    harness.createPixel("civilized_human", 8, 10);
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    const body = harness.currentPixels.find((pixel) => pixel.element === "civ_body");
+    assert.equal(api.issuePersonCommandAt(body.humanId, 2, 15, 11).accepted, true);
+
+    for (let tick = 1; tick <= 180 && body.x < 14; tick++) {
+        harness.sandbox.pixelTicks = tick;
+        harness.elements.civ_body.tick(body);
+    }
+
+    assert.ok(body.x >= 14, `expected the person beyond the wall, got (${body.x}, ${body.y})`);
+    assert.ok(body.y >= 10, `expected the person to descend toward the ground, got y=${body.y}`);
+});
+
+test("a controlled adult follows a far multi-turn route across several walls", () => {
+    const harness = createHarness({relationMovement: true});
+    for (let x = 1; x <= 52; x++) harness.createPixel("rock", x, 16);
+    for (let y = 15; y >= 13; y--) harness.createPixel("rock", 16, y);
+    for (let y = 15; y >= 12; y--) harness.createPixel("rock", 31, y);
+    harness.createPixel("civilized_human", 8, 14);
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    const body = harness.currentPixels.find((pixel) => pixel.element === "civ_body");
+    assert.equal(api.issuePersonCommandAt(body.humanId, 2, 46, 15).accepted, true);
+
+    let sawClimb = false;
+    let sawDescent = false;
+    for (let tick = 1; tick <= 600 && body.playerOrder; tick++) {
+        harness.sandbox.pixelTicks = tick;
+        harness.elements.civ_body.tick(body);
+        if (body.pathStage === "climb" || body.pathStage === "top") sawClimb = true;
+        if (body.pathStage === "down" || body.pathStage === "ledge") sawDescent = true;
+    }
+
+    assert.ok(body.x >= 45, `expected the person near the far goal, got (${body.x}, ${body.y})`);
+    assert.equal(body.playerOrder, undefined);
+    assert.equal(sawClimb, true);
+    assert.equal(sawDescent, true);
+    assert.equal(harness.currentPixels.some((pixel) => !pixel.del && pixel.element === "civ_tunnel"), false);
+});
+
+test("an invalidated next edge is rejected and replanned instead of retried forever", () => {
+    const harness = createHarness({relationMovement: true});
+    for (let x = 1; x <= 32; x++) harness.createPixel("rock", x, 12);
+    harness.createPixel("civilized_human", 8, 10);
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    const body = harness.currentPixels.find((pixel) => pixel.element === "civ_body");
+    const command = api.issuePersonCommandAt(body.humanId, 2, 25, 11);
+    assert.equal(command.accepted, true);
+
+    let tick = (2 - ((0 + body.humanId) % 2)) % 2;
+    harness.sandbox.pixelTicks = tick;
+    harness.elements.civ_body.tick(body);
+    const next = body.pathCache.path[body.pathCache.pathIndex];
+    assert.ok(next);
+    harness.createPixel("rock", next.x, next.y);
+
+    tick += 2;
+    harness.sandbox.pixelTicks = tick;
+    harness.elements.civ_body.tick(body);
+    assert.equal(body.pathCache.replanReason, "next_edge_invalid");
+    assert.ok(body.pathCache.lastInvalidStep);
+
+    for (let attempt = 0; attempt < 240 && body.playerOrder; attempt++) {
+        tick += 2;
+        harness.sandbox.pixelTicks = tick;
+        harness.elements.civ_body.tick(body);
+    }
+    assert.equal(body.playerOrder, undefined);
+    assert.ok(body.x > next.x, `expected replanning to pass the new obstacle, got (${body.x}, ${body.y})`);
+    const history = api.getPersonHistory(body.humanId, {limit: 20}).entries;
+    assert.ok(history.some((entry) => entry.task === "move" && entry.status === "completed" && entry.reason === "destination_reached"));
+});
+
+test("person snapshots expose the active A* route and its remaining work", () => {
+    const harness = createHarness({relationMovement: true});
+    for (let x = 1; x <= 24; x++) harness.createPixel("rock", x, 12);
+    harness.createPixel("civilized_human", 8, 10);
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    const body = harness.currentPixels.find((pixel) => pixel.element === "civ_body");
+    assert.equal(api.issuePersonCommandAt(body.humanId, 2, 15, 11).accepted, true);
+    const tick = (2 - ((0 + body.humanId) % 2)) % 2;
+    harness.sandbox.pixelTicks = tick;
+    harness.elements.civ_body.tick(body);
+
+    const route = api.getPersonSnapshot(body.humanId).route;
+    assert.equal(body.pathCache.version, 4);
+    assert.equal(route.phase, "outbound");
+    assert.deepEqual(JSON.parse(JSON.stringify(route.goal)), {x: 15, y: 11, radius: 1, task: "move", targetId: null, targetKind: "command_destination"});
+    assert.equal(route.mode, "astar");
+    assert.ok(route.nextAction);
+    assert.ok(route.remainingSteps > 0);
+});
+
+test("gatherers batch the same resource, return their real trail, and unload", () => {
+    const harness = createHarness({relationMovement: true});
+    for (let x = 1; x <= 32; x++) harness.createPixel("rock", x, 10);
+    harness.createPixel("civilized_human", 8, 8);
+    harness.createPixel("civilized_human", 13, 8);
+    for (const tick of [30, 60, 90]) {
+        harness.sandbox.pixelTicks = tick;
+        harness.everyTickCallbacks[0]();
+    }
+    const body = harness.getPixel(8, 9);
+    const banner = harness.currentPixels.find((pixel) => !pixel.del && pixel.element === "civ_banner" && pixel.settlementId === body.settlementId);
+    const initialFood = banner.stock.food;
+    for (const x of [1, 3, 5, 7]) harness.createPixel("apple", x, 9);
+    body.role = "food";
+    body.task = "planning";
+    harness.sandbox.HumanSociety.forceReindex();
+
+    for (let tick = 100; tick <= 1200 && banner.stock.food < initialFood + 4; tick++) {
+        harness.sandbox.pixelTicks = tick;
+        harness.elements.civ_body.tick(body);
+    }
+
+    assert.equal(banner.stock.food, initialFood + 4);
+    assert.equal(body.carry.food || 0, 0);
+    assert.ok(body.x >= 8, `expected a return toward the settlement, got x=${body.x}`);
+    const history = harness.sandbox.HumanSociety.getPersonHistory(body.humanId, {limit: 50}).entries;
+    assert.ok(history.some((entry) => entry.type === "return_started"));
+    assert.ok(history.some((entry) => entry.type === "resources_unloaded"));
+});
+
+test("a blocked recorded return path immediately switches to a repair route", () => {
+    const harness = createHarness({relationMovement: true});
+    for (let x = 1; x <= 24; x++) harness.createPixel("rock", x, 12);
+    harness.createPixel("civilized_human", 10, 10);
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    const body = harness.currentPixels.find((pixel) => pixel.element === "civ_body");
+    body.task = "deliver";
+    body.targetX = 4;
+    body.targetY = 11;
+    body.targetKind = "civ_banner";
+    body.workTrip = {version: 1, resourceKind: "stone", phase: "return", trail: [[8, 11], [9, 11], [10, 11]], returning: true, returnCursor: 1};
+    harness.createPixel("rock", 9, 11);
+    const tick = (2 - ((0 + body.humanId) % 2)) % 2;
+    harness.sandbox.pixelTicks = tick;
+    harness.elements.civ_body.tick(body);
+
+    const route = api.getPersonSnapshot(body.humanId).route;
+    assert.equal(body.workTrip.returning, false);
+    assert.equal(route.blockedReason, "recorded_return_path_blocked");
+    assert.equal(route.phase, "return");
+});
+
+test("a low target uses a planned shaft and miners keep excavated stone", () => {
+    const harness = createHarness({relationMovement: true});
+    for (let x = 1; x <= 24; x++) harness.createPixel("rock", x, 10);
+    harness.createPixel("civilized_human", 8, 8);
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    const body = harness.currentPixels.find((pixel) => pixel.element === "civ_body");
+    body.role = "miner";
+    assert.equal(api.issuePersonCommandAt(body.humanId, 2, 14, 15).accepted, true);
+    const tick = (2 - ((0 + body.humanId) % 2)) % 2;
+    for (let attempt = 0; attempt < 80 && !harness.currentPixels.some((pixel) => !pixel.del && pixel.element === "civ_tunnel"); attempt++) {
+        harness.sandbox.pixelTicks = tick + attempt * 2;
+        harness.elements.civ_body.tick(body);
+    }
+
+    const route = api.getPersonSnapshot(body.humanId).route;
+    assert.equal(route.mode, "astar");
+    assert.equal(route.searchMode, "tunnel");
+    assert.equal(route.nextAction.action, "tunnel");
+    assert.ok(harness.currentPixels.some((pixel) => !pixel.del && pixel.element === "civ_tunnel"));
+    assert.equal(body.carry.stone, 1);
+    assert.equal(societySource.includes('createPixel("civ_tunnel"'), false, "empty cells must never create tunnel pixels");
+});
+
+test("floating high resources remain unassigned until continuous climb support exists", () => {
+    const harness = createHarness({relationMovement: true});
+    for (let x = 1; x <= 28; x++) harness.createPixel("rock", x, 10);
+    harness.createPixel("civilized_human", 8, 8);
+    harness.createPixel("civilized_human", 13, 8);
+    for (const tick of [30, 60, 90]) {
+        harness.sandbox.pixelTicks = tick;
+        harness.everyTickCallbacks[0]();
+    }
+    const body = harness.getPixel(8, 9);
+    const apple = harness.createPixel("apple", 18, 4);
+    body.role = "food";
+    body.task = "planning";
+    harness.sandbox.HumanSociety.forceReindex();
+    let tick = 100 + ((10 - ((100 + body.humanId) % 10)) % 10);
+    harness.sandbox.pixelTicks = tick;
+    harness.elements.civ_body.tick(body);
+    assert.notEqual(body.targetKey, "apple@18,4");
+
+    for (let y = 5; y <= 9; y++) harness.createPixel("rock", 18, y);
+    body.task = "planning";
+    body.lastPlanTick = -1;
+    harness.sandbox.HumanSociety.forceReindex();
+    tick += 10;
+    harness.sandbox.pixelTicks = tick;
+    harness.elements.civ_body.tick(body);
+    assert.equal(body.task, "harvest");
+    assert.equal(body.targetKey, "apple@18,4");
+    assert.equal(apple.del, undefined);
 });
 
 test("technology boot registers the expanded structures as static civilization elements", () => {
@@ -740,6 +1161,95 @@ test("role changes are recorded once and stable role assignments add no duplicat
     assert.equal(secondRoleEvents.length, firstRoleEvents.length);
 });
 
+test("role reassignment cancels incompatible work and delivers existing cargo without resuming the old job", () => {
+    const harness = createHarness();
+    const banner = harness.createPixel("civ_banner", 40, 8, {
+        factionId: 7,
+        settlementId: 17,
+        factionColor: "#336699"
+    });
+    const actor = harness.createPixel("civ_body", 8, 8, {
+        humanId: 100,
+        factionId: 7,
+        settlementId: 17,
+        factionColor: "#336699",
+        role: "miner",
+        task: "harvest",
+        targetX: 20,
+        targetY: 8,
+        targetKind: "rock",
+        harvestX: 20,
+        harvestY: 8,
+        reservedResourceKey: "rock@20,8",
+        carry: {stone: 2},
+        workTrip: {version: 1, resourceKind: "stone", suspendedTask: {task: "harvest"}, resuming: true},
+        resumeAfterDelivery: {task: "harvest", resourceKind: "stone"},
+        hp: 100,
+        maxHp: 100
+    });
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+
+    harness.sandbox.pixelTicks = api.config.CIVILIZATION_INTERVAL;
+    harness.everyTickCallbacks[0]();
+
+    assert.notEqual(actor.role, "miner");
+    assert.equal(actor.task, "deliver");
+    assert.equal(actor.targetId, banner.buildingId);
+    assert.equal(actor.carry.stone, 2);
+    assert.equal(actor.resumeAfterDelivery, undefined);
+    assert.equal(actor.reservedResourceKey, undefined);
+    assert.equal(actor.workTrip, undefined);
+    const history = api.getPersonHistory(actor.humanId, {limit: 20}).entries;
+    assert.ok(history.some((entry) => entry.task === "harvest" && entry.reason === "job_reassigned"));
+});
+
+test("stable food is preferred over rotten meat and failed rotten meat targets enter category backoff", () => {
+    const harness = createHarness();
+    harness.elements.rotten_meat.isFood = true;
+    for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
+    harness.createPixel("civilized_human", 8, 8);
+    harness.createPixel("civilized_human", 14, 8);
+    for (const tick of [30, 60, 90]) {
+        harness.sandbox.pixelTicks = tick;
+        harness.everyTickCallbacks[0]();
+    }
+    harness.createPixel("rotten_meat", 16, 9);
+    harness.createPixel("apple", 18, 9);
+    const body = harness.getPixel(8, 9);
+    body.role = "food";
+    body.task = "planning";
+    harness.sandbox.HumanSociety.registerResource("rotten_meat", {kind: "food", yield: 1, harvestTicks: 6});
+    harness.sandbox.HumanSociety.forceReindex();
+
+    let tick = 100 + ((10 - ((100 + body.humanId) % 10)) % 10);
+    harness.sandbox.pixelTicks = tick;
+    harness.elements.civ_body.tick(body);
+    assert.equal(body.harvestX, 18, "stable food should win even when rotten meat is closer");
+
+    const apple = harness.getPixel(18, 9);
+    harness.changePixel(apple, "dirt");
+    const firstRotten = harness.getPixel(16, 9);
+    body.task = "planning";
+    harness.sandbox.HumanSociety.forceReindex();
+    tick += 10;
+    harness.sandbox.pixelTicks = tick;
+    harness.elements.civ_body.tick(body);
+    assert.equal(body.targetKind, "rotten_meat");
+
+    harness.changePixel(firstRotten, "dirt");
+    harness.createPixel("rotten_meat", 20, 9);
+    harness.sandbox.HumanSociety.forceReindex();
+    tick += 10;
+    harness.sandbox.pixelTicks = tick;
+    harness.elements.civ_body.tick(body);
+
+    assert.notEqual(body.task, "harvest");
+    assert.equal(body.blockedResourceKey, "16,9:rotten_meat");
+    assert.equal(body.blockedResourceCategory, "rotten_meat");
+    assert.ok(body.blockedResourceCategoryUntil - tick >= 590);
+});
+
 test("a legacy child's activity history remains attached after unified-worker conversion", () => {
     const harness = createHarness();
     for (let x = 1; x <= 90; x++) harness.createPixel("rock", x, 12);
@@ -950,6 +1460,75 @@ test("a camp researches technologies and advances only after six of eight era te
     assert.equal(banner.eraId, "stone");
 });
 
+test("agriculture keeps generating knowledge and autonomously completes six technologies", () => {
+    const harness = createHarness({techData: true});
+    for (let x = 1; x <= 50; x++) harness.createPixel("rock", x, 15);
+    harness.createPixel("wheat_seed", 55, 12);
+    harness.createPixel("corn_seed", 57, 12);
+    harness.createPixel("sapling", 59, 12);
+    harness.createPixel("water", 61, 12);
+    for (const x of [8, 12, 16, 20]) harness.createPixel("civilized_human", x, 13);
+    for (const tick of [30, 60, 90]) {
+        harness.sandbox.pixelTicks = tick;
+        harness.everyTickCallbacks[0]();
+    }
+    const api = harness.sandbox.HumanSociety;
+    const banner = harness.currentPixels.find((pixel) => !pixel.del && pixel.element === "civ_banner");
+    const factionId = banner.factionId;
+    for (const eraId of ["tribal", "stone"]) {
+        const era = TechData.ERAS.find((candidate) => candidate.id === eraId);
+        era.techIds.slice(0, 6).forEach((techId) => assert.equal(api.setTechnologyState(factionId, techId, "researched"), true));
+    }
+    assert.equal(banner.eraId, "agriculture");
+    api.setSettlementResources(factionId, banner.settlementId, {food: 200, wood: 200, stone: 200});
+    api.forceReindex();
+    const seedSelection = api.getFactionSnapshot(factionId, banner.settlementId).technologies.find((tech) => tech.id === "seed_selection");
+    const seedCondition = seedSelection.conditionStates.find((state) => state.condition.type === "resource_encountered" && state.condition.resource === "seed");
+    assert.ok(seedCondition.current >= 2, "standalone seed pixels must satisfy the seed discovery condition");
+
+    for (let tick = 120; tick <= 2400 && banner.eraId === "agriculture"; tick += 30) {
+        harness.sandbox.pixelTicks = tick;
+        harness.everyTickCallbacks[0]();
+    }
+    const snapshot = api.getFactionSnapshot(factionId, banner.settlementId);
+    assert.ok(snapshot.totalKnowledgeGenerated > 0);
+    assert.ok(snapshot.knowledgeGain > 0);
+    assert.equal(snapshot.technologies.filter((tech) => tech.eraId === "agriculture" && tech.unlocked).length >= 6, true);
+    assert.equal(banner.eraId, "bronze");
+});
+
+test("a 900-tick mineral blocker converts only owned rock into the missing ore", () => {
+    const harness = createHarness({techData: true});
+    for (let x = 1; x <= 90; x++) harness.createPixel("rock", x, 15);
+    for (const x of [8, 12, 16, 20]) harness.createPixel("civilized_human", x, 13);
+    for (const tick of [30, 60, 90]) {
+        harness.sandbox.pixelTicks = tick;
+        harness.everyTickCallbacks[0]();
+    }
+    const api = harness.sandbox.HumanSociety;
+    const banner = harness.currentPixels.find((pixel) => !pixel.del && pixel.element === "civ_banner");
+    const factionId = banner.factionId;
+    for (const eraId of ["tribal", "stone", "agriculture"]) {
+        const era = TechData.ERAS.find((candidate) => candidate.id === eraId);
+        era.techIds.slice(0, 6).forEach((techId) => assert.equal(api.setTechnologyState(factionId, techId, "researched"), true));
+    }
+    assert.equal(banner.eraId, "bronze");
+    api.setSettlementResources(factionId, banner.settlementId, {food: 200, wood: 200, stone: 200});
+    api.forceReindex();
+
+    let deposits = [];
+    for (let tick = 120; tick <= 3000 && deposits.length === 0; tick += 30) {
+        harness.sandbox.pixelTicks = tick;
+        harness.everyTickCallbacks[0]();
+        deposits = harness.currentPixels.filter((pixel) => !pixel.del && (pixel.element === "copper" || pixel.element === "tin" || pixel.element === "iron"));
+    }
+
+    assert.ok(deposits.length >= 3, "the blocked civilization should discover an ore deposit");
+    deposits.forEach((pixel) => assert.equal(api.territoryOwnerAt(pixel.x, pixel.y).factionId, factionId));
+    assert.equal(banner.element, "civ_banner", "the town center must not be converted");
+    assert.equal(harness.currentPixels.some((pixel) => pixel.element === "copper" && api.territoryOwnerAt(pixel.x, pixel.y) === null), false);
+});
+
 test("resource editing, irreversible forced research, condition progress, and real-time logs are public", () => {
     const harness = createHarness({techData: true});
     for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
@@ -1151,8 +1730,92 @@ test("the first-resource chronicle entry is written when a block is harvested, b
     assert.ok(snapshot.chronicle.some((event) => event.type === "first_resource" && event.resource === "food"));
 });
 
-test("felling a civilization-planted tree removes every component and drops one resource per woody cell", () => {
+test("surface-mined non-food and non-wood resource sources become clean dirt", () => {
     const harness = createHarness();
+    for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
+    harness.createPixel("civilized_human", 8, 8);
+    const copper = harness.createPixel("copper", 9, 9);
+    const body = harness.getPixel(8, 9);
+    harness.sandbox.HumanSociety.forceReindex();
+    body.role = "miner";
+    body.task = "harvest";
+    body.targetX = 8;
+    body.targetY = 9;
+    body.harvestX = 9;
+    body.harvestY = 9;
+    body.targetKind = "copper";
+
+    let tick = 100 + ((10 - ((100 + body.humanId) % 10)) % 10);
+    for (let attempt = 0; attempt < 6 && copper.element === "copper"; attempt++, tick += 10) {
+        harness.sandbox.pixelTicks = tick;
+        harness.elements.civ_body.tick(body);
+    }
+
+    assert.equal(copper.element, "dirt");
+    assert.equal(copper._civCollectible, undefined);
+    assert.equal(copper._civResourceDrop, undefined);
+    assert.equal(body.carry.copper, 1);
+});
+
+test("underground natural stone and ores leave faction-marked tunnels when harvested", () => {
+    for (const [elementName, resourceKind] of [["rock", "stone"], ["copper", "copper"], ["tin", "tin"], ["iron", "raw_iron"]]) {
+        const harness = createHarness();
+        for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
+        harness.createPixel("civilized_human", 8, 8);
+        harness.createPixel("dirt", 9, 8);
+        const mineral = harness.createPixel(elementName, 9, 9);
+        const body = harness.getPixel(8, 9);
+        harness.sandbox.HumanSociety.forceReindex();
+        body.role = "miner";
+        body.task = "harvest";
+        body.targetX = 8;
+        body.targetY = 9;
+        body.harvestX = 9;
+        body.harvestY = 9;
+        body.targetKind = elementName;
+
+        let tick = 100 + ((10 - ((100 + body.humanId) % 10)) % 10);
+        for (let attempt = 0; attempt < 8 && mineral.element === elementName; attempt++, tick += 10) {
+            harness.sandbox.pixelTicks = tick;
+            harness.elements.civ_body.tick(body);
+        }
+
+        assert.equal(mineral.element, "civ_tunnel", `${elementName} should leave a tunnel below cover`);
+        assert.equal(mineral.dugByFactionId, body.factionId);
+        assert.equal(mineral.dugByHumanId, body.humanId);
+        assert.equal(mineral._civCollectible, undefined);
+        assert.equal(body.carry[resourceKind], 1);
+    }
+});
+
+test("adults interrupt ordinary work to extinguish fires and record the response", () => {
+    const harness = createHarness({relationMovement: true});
+    for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
+    harness.createPixel("civilized_human", 8, 8);
+    harness.createPixel("civilized_human", 12, 8);
+    for (const tick of [30, 60, 90]) {
+        harness.sandbox.pixelTicks = tick;
+        harness.everyTickCallbacks[0]();
+    }
+    const fire = harness.createPixel("fire", 9, 9);
+    const body = harness.getPixel(8, 9);
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    body.task = "patrol";
+
+    const tick = 100 + ((10 - ((100 + body.humanId) % 10)) % 10);
+    harness.sandbox.pixelTicks = tick;
+    harness.elements.civ_body.tick(body);
+
+    assert.equal(fire.element, "smoke");
+    const history = api.getPersonHistory(body.humanId, {limit: 20}).entries;
+    assert.ok(history.some((entry) => entry.task === "extinguish" && entry.reason === "fire_extinguished" && entry.metrics.firesExtinguished === 1));
+    const snapshot = api.getFactionSnapshot(body.factionId, body.settlementId);
+    assert.ok(snapshot.chronicle.some((event) => event.type === "fire_extinguished" && event.humanId === body.humanId));
+});
+
+test("felling a civilization-planted tree halves wood, drops one sapling per woody cell, and satisfies seed selection", () => {
+    const harness = createHarness({techData: true});
     for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
     harness.createPixel("civilized_human", 8, 8);
     harness.createPixel("civilized_human", 14, 8);
@@ -1180,9 +1843,57 @@ test("felling a civilization-planted tree removes every component and drops one 
     assert.equal(seed.del, true);
     assert.equal(legacyLeaf.del, true);
     const woodDrops = harness.currentPixels.filter((pixel) => !pixel.del && pixel.element === "civ_wood_resource");
-    assert.equal(woodDrops.length, 2);
-    assert.ok(woodDrops.every((drop) => drop.treeSapling === "sapling"));
+    const saplingDrops = harness.currentPixels.filter((pixel) => !pixel.del && pixel.element === "civ_tree_sapling_resource");
+    assert.equal(woodDrops.length, 1);
+    assert.equal(saplingDrops.length, 2);
+    assert.ok(saplingDrops.every((drop) => drop.treeSapling === "sapling"));
+    assert.equal(woodDrops[0].y, trunkTop.y, "wood should begin falling from a woody tree cell");
+    assert.ok(saplingDrops.every((drop) => drop.y === root.y), "saplings should appear along the former base, not in the canopy");
     assert.equal(body.carry.wood, undefined);
+    const seedSelection = harness.sandbox.HumanSociety.getFactionSnapshot(body.factionId, body.settlementId).technologies.find((tech) => tech.id === "seed_selection");
+    const seedCondition = seedSelection.conditionStates.find((state) => state.condition.resource === "seed");
+    assert.ok(seedCondition.current >= 2);
+});
+
+test("felling refreshes live tree membership after indexing and removes detached same-lineage growth", () => {
+    const harness = createHarness();
+    for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
+    const root = harness.createPixel("tree_branch", 9, 9, {naturalVegetation: true, treeLineage: "growing-tree"});
+    const initialLeaf = harness.createPixel("plant", 9, 8, {naturalVegetation: true, treeLineage: "growing-tree"});
+    harness.sandbox.HumanSociety.forceReindex();
+
+    const lateBranch = harness.createPixel("tree_branch", 10, 8, {naturalVegetation: true, treeLineage: "growing-tree"});
+    const lateLeaf = harness.createPixel("plant", 11, 7, {naturalVegetation: true, treeLineage: "growing-tree"});
+    const detachedLeaf = harness.createPixel("plant", 18, 4, {naturalVegetation: true, treeLineage: "growing-tree"});
+    const result = harness.sandbox.HumanSociety.fellTreeAt(detachedLeaf.x, detachedLeaf.y);
+
+    assert.equal(result.removedPixels, 5);
+    assert.equal(result.woodDrops, 1);
+    assert.equal(result.saplingDrops, 2);
+    assert.ok([root, initialLeaf, lateBranch, lateLeaf, detachedLeaf].every((pixel) => pixel.del === true));
+    harness.sandbox.HumanSociety.forceReindex();
+    assert.equal(harness.sandbox.HumanSociety.getTreeAt(root.x, root.y), null);
+});
+
+test("legacy untagged canopies are attached to closure instead of leaving leaves beyond two cells", () => {
+    const harness = createHarness();
+    for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
+    const root = harness.createPixel("tree_branch", 18, 9, {naturalVegetation: true});
+    const canopy = [
+        harness.createPixel("plant", 18, 8),
+        harness.createPixel("plant", 19, 7),
+        harness.createPixel("plant", 20, 6),
+        harness.createPixel("plant", 21, 5),
+        harness.createPixel("plant", 22, 4)
+    ];
+    harness.sandbox.HumanSociety.forceReindex();
+    const result = harness.sandbox.HumanSociety.fellTreeAt(root.x, root.y);
+
+    assert.equal(result.removedPixels, 6);
+    assert.equal(result.woodDrops, 1);
+    assert.equal(result.saplingDrops, 1);
+    assert.equal(root.del, true);
+    assert.ok(canopy.every((pixel) => pixel.del === true));
 });
 
 test("legacy root networks directly below a recognized tree are converted back to dirt", () => {
@@ -1197,7 +1908,7 @@ test("legacy root networks directly below a recognized tree are converted back t
     assert.equal(fiber.element, "dirt");
 });
 
-test("collecting a wood resource can award the matching abstract tree sapling", () => {
+test("collecting a tree sapling resource preserves its species for planting", () => {
     const harness = createHarness();
     for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
     harness.createPixel("civilized_human", 8, 8);
@@ -1206,12 +1917,11 @@ test("collecting a wood resource can award the matching abstract tree sapling", 
         harness.sandbox.pixelTicks = tick;
         harness.everyTickCallbacks[0]();
     }
-    const drop = harness.createPixel("civ_wood_resource", 9, 9, {treeSapling: "pinecone"});
+    const drop = harness.createPixel("civ_tree_sapling_resource", 9, 9, {treeSapling: "pinecone"});
     const body = harness.getPixel(8, 9);
     harness.sandbox.HumanSociety.forceReindex();
     body.role = "wood";
     body.task = "planning";
-    harness.sandbox.Math.random = () => 0;
 
     const tick = 100 + ((10 - ((100 + body.humanId) % 10)) % 10);
     harness.sandbox.pixelTicks = tick;
@@ -1219,12 +1929,61 @@ test("collecting a wood resource can award the matching abstract tree sapling", 
 
     const snapshot = harness.sandbox.HumanSociety.getFactionSnapshot(body.factionId, body.settlementId);
     assert.equal(drop.del, true);
-    assert.equal(snapshot.stock.wood + (body.carry.wood || 0), 1);
+    assert.equal(snapshot.stock.wood + (body.carry.wood || 0), 0);
     assert.equal((snapshot.stock.treeSaplings.pinecone || 0) + (body.carry["tree_sapling:pinecone"] || 0), 1);
     assert.equal(snapshot.stock.treeSaplings.sapling || 0, 0);
 });
 
-test("only permanent miners carve navigation tunnels and collect stone", () => {
+test("legacy truncated tree sapling inventory keys migrate once into valid species", () => {
+    const harness = createHarness();
+    const banner = harness.createPixel("civ_banner", 40, 8, {
+        factionId: 7,
+        settlementId: 17,
+        factionColor: "#336699",
+        stock: {
+            food: 0,
+            wood: 0,
+            stone: 0,
+            materials: {},
+            seeds: {},
+            treeSaplings: {apling: 724, sapling: 2, inecone: 3, amboo_plant: 4}
+        }
+    });
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    api.forceReindex();
+
+    const stock = api.getFactionSnapshot(banner.factionId, banner.settlementId).stock.treeSaplings;
+    assert.deepEqual(JSON.parse(JSON.stringify(stock)), {sapling: 726, pinecone: 3, bamboo_plant: 4});
+});
+
+test("delivered tree saplings can be planted by a forester", () => {
+    const harness = createHarness({relationMovement: true});
+    for (let x = 1; x <= 30; x++) harness.createPixel("dirt", x, 10);
+    harness.createPixel("civilized_human", 8, 8);
+    harness.createPixel("civilized_human", 14, 8);
+    for (const tick of [30, 60, 90]) {
+        harness.sandbox.pixelTicks = tick;
+        harness.everyTickCallbacks[0]();
+    }
+    const body = harness.getPixel(14, 9);
+    const banner = harness.currentPixels.find((pixel) => !pixel.del && pixel.element === "civ_banner" && pixel.settlementId === body.settlementId);
+    banner.stock.treeSaplings.sapling = 1;
+    body.role = "forester";
+    body.task = "planning";
+    harness.sandbox.HumanSociety.forceReindex();
+
+    for (let tick = 100; tick <= 500 && banner.stock.treeSaplings.sapling > 0; tick++) {
+        harness.sandbox.pixelTicks = tick;
+        harness.elements.civ_body.tick(body);
+    }
+
+    const planted = harness.currentPixels.find((pixel) => !pixel.del && pixel.element === "sapling" && Number.isFinite(pixel.civPlantedTreeId));
+    assert.ok(planted, "the abstract sapling stock should create a plantable sapling pixel");
+    assert.equal(banner.stock.treeSaplings.sapling, 0);
+});
+
+test("every role can carve traversal tunnels but only permanent miners collect stone", () => {
     function prepare(role) {
         const harness = createHarness({relationMovement: true});
         for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
@@ -1234,8 +1993,7 @@ test("only permanent miners carve navigation tunnels and collect stone", () => {
             harness.sandbox.pixelTicks = tick;
             harness.everyTickCallbacks[0]();
         }
-        harness.createPixel("rock", 8, 7);
-        harness.createPixel("rock", 9, 7);
+        for (let y = 7; y >= 3; y--) harness.createPixel("rock", 9, y);
         const wallHead = harness.createPixel("rock", 9, 8);
         const wallBody = harness.createPixel("rock", 9, 9);
         const targetX = harness.getPixel(12, 9) ? 13 : 12;
@@ -1253,17 +2011,21 @@ test("only permanent miners carve navigation tunnels and collect stone", () => {
 
     const workerCase = prepare("food");
     let tick = 100 + ((10 - ((100 + workerCase.body.humanId) % 10)) % 10);
-    workerCase.harness.sandbox.pixelTicks = tick;
-    workerCase.harness.elements.civ_body.tick(workerCase.body);
-    assert.equal(workerCase.wallHead.element, "rock");
-    assert.equal(workerCase.wallBody.element, "rock");
+    for (let attempt = 0; attempt < 20 && workerCase.wallHead.element !== "civ_tunnel"; attempt++) {
+        workerCase.harness.sandbox.pixelTicks = tick + attempt * 10;
+        workerCase.harness.elements.civ_body.tick(workerCase.body);
+    }
+    assert.equal(workerCase.wallHead.element, "civ_tunnel");
+    assert.equal(workerCase.wallBody.element, "civ_tunnel");
     assert.equal(workerCase.body.role, "food");
     assert.equal(workerCase.body.carry.stone, undefined);
 
     const minerCase = prepare("miner");
     tick = 100 + ((10 - ((100 + minerCase.body.humanId) % 10)) % 10);
-    minerCase.harness.sandbox.pixelTicks = tick;
-    minerCase.harness.elements.civ_body.tick(minerCase.body);
+    for (let attempt = 0; attempt < 20 && minerCase.wallHead.element !== "civ_tunnel"; attempt++) {
+        minerCase.harness.sandbox.pixelTicks = tick + attempt * 10;
+        minerCase.harness.elements.civ_body.tick(minerCase.body);
+    }
     assert.equal(minerCase.wallHead.element, "civ_tunnel");
     assert.equal(minerCase.wallBody.element, "civ_tunnel");
     assert.equal(minerCase.body.role, "miner");
@@ -1323,13 +2085,17 @@ test("a persistent unreachable resource eventually triggers no-progress blacklis
     const body = harness.getPixel(8, 9);
     harness.sandbox.HumanSociety.forceReindex();
 
+    let failureTick = null;
     for (let attempt = 0; attempt < 30; attempt++) {
         harness.sandbox.pixelTicks = 9 + attempt * 60;
         harness.elements.civ_body.tick(body);
+        if (body.blockedResourceKey) {
+            failureTick = harness.sandbox.pixelTicks;
+            break;
+        }
     }
-    harness.sandbox.pixelTicks += 360;
-    harness.elements.civ_body.tick(body);
 
+    assert.ok(Number.isFinite(failureTick));
     assert.notEqual(body.task, "harvest");
     assert.equal(body.blockedResourceKey, "18,9:apple");
     assert.ok(body.blockedResourceUntil > harness.sandbox.pixelTicks);
@@ -1489,6 +2255,7 @@ test("person commands select adults, move them, and preserve exact carry snapsho
     actor.carry = {wood: 2, food: 1};
     const selected = api.setCommandPerson(actor.humanId);
     assert.equal(selected.accepted, true);
+    assert.equal(api.getInteractionMode(), "control");
     assert.equal(api.getPersonCommandState().humanId, actor.humanId);
     const move = api.issuePersonCommandAt(actor.humanId, 2, 14, 8);
     assert.equal(move.accepted, true);
@@ -1501,14 +2268,49 @@ test("person commands select adults, move them, and preserve exact carry snapsho
     assert.equal(snapshot.playerOrder.type, "move");
     api.cancelPersonCommand();
     assert.equal(api.getPersonCommandState().active, false);
+    assert.equal(api.setInteractionMode("place"), "place");
+});
+
+test("task speech is exposed live and the persistent setting clears it", () => {
+    const harness = createHarness({relationMovement: true});
+    for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
+    harness.createPixel("civilized_human", 8, 8);
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    const actor = harness.currentPixels.find((pixel) => pixel.element === "civ_body");
+    assert.equal(api.issuePersonCommandAt(actor.humanId, 2, 14, 9).accepted, true);
+    assert.match(api.getPersonSnapshot(actor.humanId).speech.text, /On my way|我这就过去/);
+
+    harness.sandbox.settings.humanSocietySpeech = false;
+    harness.sandbox.pixelTicks = 2;
+    harness.elements.civ_body.tick(actor);
+    assert.equal(api.getPersonSnapshot(actor.humanId).speech, null);
+});
+
+test("control mode right-click selects a person and consumes the placement input", () => {
+    const harness = createHarness({dom: true, relationMovement: true});
+    for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
+    harness.createPixel("civilized_human", 8, 8);
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    const actor = harness.currentPixels.find((pixel) => pixel.element === "civ_body");
+    api.setInteractionMode("control");
+
+    const select = dispatchCanvasMouseDown(harness, 2, actor.x, actor.y);
+    assert.equal(select.defaultPrevented, true);
+    assert.equal(select.propagationStopped, true);
+    assert.equal(api.getPersonCommandState().humanId, actor.humanId);
+
+    const move = dispatchCanvasMouseDown(harness, 2, 14, 9);
+    assert.equal(move.defaultPrevented, true);
+    assert.equal(actor.playerOrder.type, "move");
 });
 
 test("buildingVisualAt resolves the whole 3x3 banner sprite and is not masked by overlapping humans", () => {
     const harness = createHarness();
     const banner = harness.createPixel("civ_banner", 40, 8, {factionId: 7, settlementId: 17, factionColor: "#336699"});
-    // A civilized human overlaps a non-core sprite cell; in the live engine it sits on top of the
-    // banner in getPixelsAt() order, which used to mask the banner's onClicked. buildingVisualAt()
-    // resolves the sprite from the manager index instead, so the overlap must not hide the banner.
+    // A civilized human overlaps a non-core sprite cell. buildingVisualAt() resolves the sprite
+    // from the manager index, so the overlap must not hide it from erase, command, or render tools.
     harness.createPixel("civ_body", 39, 7, {humanId: 9001, factionId: 7});
     const api = harness.sandbox.HumanSociety;
     api.forceReindex();
@@ -1561,7 +2363,7 @@ function dispatchCanvasTouchStart(harness, clientX, clientY) {
     return event;
 }
 
-test("a single left click anywhere on the banner sprite opens the civilization panel once", () => {
+test("clicking or touching a banner never opens the civilization panel", () => {
     const harness = createHarness({dom: true, techData: true});
     harness.createPixel("civ_banner", 40, 8, {factionId: 7, settlementId: 17, factionColor: "#336699"});
     harness.createPixel("civ_body", 39, 7, {humanId: 9001, factionId: 7});
@@ -1569,54 +2371,18 @@ test("a single left click anywhere on the banner sprite opens the civilization p
     api.forceReindex();
     const parent = harness.domDocument.getElementById("civilizationParent");
     parent.style.display = "none";
-    // Click a non-core sprite cell (top-left of the 3x3), the case that used to do nothing.
-    const event = dispatchCanvasMouseDown(harness, 0, 39, 6);
-    assert.equal(event.defaultPrevented, true, "the banner handler consumes the event");
-    assert.equal(event.propagationStopped, true, "the engine mouse chain is blocked");
-    assert.equal(parent.style.display, "block", "the civilization panel is shown");
-});
+    assert.equal(harness.elements.civ_banner.onClicked, undefined, "the logical core has no click callback");
 
-test("a touch tap on the banner sprite opens the civilization panel (mobile path)", () => {
-    const harness = createHarness({dom: true, techData: true});
-    harness.createPixel("civ_banner", 40, 8, {factionId: 7, settlementId: 17, factionColor: "#336699"});
-    const api = harness.sandbox.HumanSociety;
-    api.forceReindex();
-    const parent = harness.domDocument.getElementById("civilizationParent");
-    parent.style.display = "none";
-    const event = dispatchCanvasTouchStart(harness, 41, 6);
-    assert.equal(event.propagationStopped, true, "the engine touch placement chain is blocked");
-    assert.equal(parent.style.display, "block", "the civilization panel opens on tap");
-    // A tap off any banner is left for the engine.
-    parent.style.display = "none";
-    const miss = dispatchCanvasTouchStart(harness, 5, 5);
-    assert.equal(miss.propagationStopped, false);
+    const mouse = dispatchCanvasMouseDown(harness, 0, 39, 6);
+    assert.equal(mouse.defaultPrevented, false, "the normal engine click path remains available");
+    assert.equal(mouse.propagationStopped, false);
     assert.equal(parent.style.display, "none");
+
+    const touch = dispatchCanvasTouchStart(harness, 41, 6);
+    assert.equal(touch.defaultPrevented, false);
+    assert.equal(touch.propagationStopped, false);
+    assert.equal(parent.style.display, "none");
+
+    assert.equal(api.openCivilizationPanel(7), true, "the toolbar/API path remains available");
+    assert.equal(parent.style.display, "block");
 });
-
-test("banner clicks are ignored in person-command mode and for non-left buttons", () => {
-    const harness = createHarness({dom: true, techData: true});
-    harness.createPixel("civ_banner", 40, 8, {factionId: 7, settlementId: 17, factionColor: "#336699"});
-    harness.createPixel("civilized_human", 8, 8);
-    const api = harness.sandbox.HumanSociety;
-    api.forceReindex();
-    const parent = harness.domDocument.getElementById("civilizationParent");
-
-    // Right click on the banner is not the panel gesture.
-    parent.style.display = "none";
-    const right = dispatchCanvasMouseDown(harness, 2, 40, 8);
-    assert.equal(right.defaultPrevented, false);
-    assert.equal(parent.style.display, "none", "right click does not open the panel");
-
-    // In command mode the banner handler defers to person-command handling.
-    const actor = harness.currentPixels.find((pixel) => pixel.element === "civ_body");
-    api.setCommandPerson(actor.humanId);
-    parent.style.display = "none";
-    dispatchCanvasMouseDown(harness, 0, 40, 8);
-    assert.equal(parent.style.display, "none", "command mode clicks do not open the panel");
-
-    // Left click off any building leaves the event for the engine.
-    api.cancelPersonCommand();
-    const empty = dispatchCanvasMouseDown(harness, 0, 5, 5);
-    assert.equal(empty.defaultPrevented, false, "clicks off a banner are not consumed");
-});
-

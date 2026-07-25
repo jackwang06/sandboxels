@@ -51,6 +51,12 @@ function createEngineHarness() {
             blocking_overlay: {color: "#f00", state: "solid", alwaysOverlay: true},
             late_building: {color: "#c84", state: "solid"},
             protected_primary: {color: "#555", state: "solid", eraseProtected: true}
+            , civ_tunnel: {color: "#765", state: "solid", supportsPowder: true, overlapLocked: true},
+            wood: {color: "#753", state: "solid"},
+            dark_wood: {color: "#432", state: "solid"},
+            wooden_plank: {color: "#975", state: "solid"},
+            wool: {color: "#eee", state: "solid"}
+            , civ_food_resource: {color: "#b65", state: "solid", movable: true, humanCollectible: true, properties: {_civResourceDrop: true, _civCollectible: true}}
         },
         pixelMap: Array.from({length: size}, () => []),
         overlapMap: [],
@@ -70,6 +76,8 @@ function createEngineHarness() {
             gas: {gas: true}
         },
         outOfBounds(x, y) { return x < 0 || y < 0 || x >= size || y >= size; },
+        looksLikeCreatureElement(element, info) { return !!(info && info.isCreature); },
+        looksLikePassableVegetationElement(element, info) { return !!(info && info.passableVegetation); },
         isCreaturePixel(pixel) { return !!(pixel && context.elements[pixel.element] && context.elements[pixel.element].isCreature); },
         isPassableVegetationPixel(pixel) { return !!(pixel && context.elements[pixel.element] && context.elements[pixel.element].passableVegetation); },
         pixelColorPick() { return "rgb(0,0,0)"; },
@@ -84,10 +92,17 @@ function createEngineHarness() {
     };
     vm.createContext(context);
     const functionNames = [
+        "addPixelLifecycleListener",
+        "removePixelLifecycleListener",
+        "emitPixelLifecycleEvent",
         "elementFlag",
-        "normalizeElementInteractionMode",
-        "normalizeElementInteractionList",
-        "getElementInteractionSettings",
+        "isLockedOverlapElement",
+        "isCivilizedHumanElement",
+        "defaultElementsCanOverlap",
+        "ensureElementOverlapEntry",
+        "setCatalogPair",
+        "initializeElementOverlapCatalog",
+        "getElementOverlapDirectory",
         "interactionOverlapMode",
         "interactionRenderLayer",
         "interactionSameElementMode",
@@ -98,6 +113,7 @@ function createEngineHarness() {
         "isEraseProtectedPixel",
         "isCivilizedHumanPixel",
         "civilizedHumansCanOverlap",
+        "isCivilizationCollectiblePixel",
         "pixelsCanOverlap",
         "requiresOverlayStorageElement",
         "requiresOverlayStoragePixel",
@@ -108,6 +124,7 @@ function createEngineHarness() {
         "refreshOverlayExclusiveConflicts",
         "getOverlapCell",
         "getOverlayPixels",
+        "orderOverlappingPixelsForDisplay",
         "getPixelsAt",
         "getTopErasablePixelAt",
         "getProtectedEraseActionPixelAt",
@@ -127,9 +144,6 @@ function createEngineHarness() {
         "reconcilePixelStorageAfterChange",
         "pixelHasInteractionConflict",
         "movePixelOrRelationToNearestValid",
-        "reconcileElementInteractionSettings",
-        "setElementInteractionSettings",
-        "resetElementInteractionSettings",
         "isPixelStored",
         "deletePixelObject",
         "erasePixelObject",
@@ -137,6 +151,8 @@ function createEngineHarness() {
         "deletePixelsAt",
         "isEmpty",
         "canMove",
+        "cellSupportsPowder",
+        "tryGravityMove",
         "movePixel",
         "applyInitialPixelProperties",
         "createPixel",
@@ -153,6 +169,7 @@ function createEngineHarness() {
         "applyRelationGravity"
     ];
     const source = [
+        "elementOverlapCatalog = null; elementOverlapCatalogInitializing = false; pixelLifecycleListeners = [];",
         extractBlock("class Pixel"),
         ...functionNames.map((name) => extractBlock(`function ${name}(`)),
         `globalThis.engine = { Pixel, ${functionNames.join(", ")} };`
@@ -174,6 +191,25 @@ test("engine provides a persisted creature overlap layer for passable vegetation
     }
     assert.match(html, /looksLikePassableVegetationElement/);
     assert.match(html, /naturalVegetation\s*=\s*true/);
+});
+
+test("pixel lifecycle listeners receive low-frequency create, change, and delete events", () => {
+    const {engine} = createEngineHarness();
+    const events = [];
+    const listener = (event) => events.push(event);
+    assert.equal(engine.addPixelLifecycleListener(listener), true);
+    assert.equal(engine.addPixelLifecycleListener(listener), false);
+
+    const pixel = engine.createPixel("rock", 1, 1);
+    engine.changePixel(pixel, "sand");
+    engine.movePixel(pixel, 2, 1);
+    engine.deletePixelObject(pixel);
+
+    assert.deepEqual(Array.from(events, (event) => event.type), ["create", "change", "delete"]);
+    assert.equal(events[1].old.element, "rock");
+    assert.equal(events[2].old.element, "sand");
+    assert.equal(engine.removePixelLifecycleListener(listener), true);
+    assert.equal(engine.removePixelLifecycleListener(listener), false);
 });
 
 test("always-overlay and non-blocking objects are created atomically without replacing the base", () => {
@@ -374,55 +410,63 @@ test("changePixel reconciles primary and overlay storage in both directions", ()
     assert.ok(engine.getOverlayPixels(4, 7).includes(existingCore));
 });
 
-test("per-element interaction overrides allow overlap, block it with relocation, and persist render order", () => {
+test("collectible resources always overlap civilization humans", () => {
     const {context, engine} = createEngineHarness();
-    const rock = engine.createPixel("rock", 3, 3);
-    const sand = engine.createPixel("sand", 2, 3);
+    const body = {element: "civ_body"};
+    const head = {element: "civ_head"};
+    const resource = {element: "civ_food_resource", _civResourceDrop: true};
+    const markedRockDrop = {element: "rock", _civCollectible: true};
 
-    assert.equal(engine.setElementInteractionSettings("sand", {overlap: "allow", renderLayer: "top"}), true);
-    assert.deepEqual(
-        JSON.parse(JSON.stringify(engine.getElementInteractionSettings("sand"))),
-        {overlap: "allow", renderLayer: "top", sameElement: "default", allowWith: []}
-    );
-    assert.equal(engine.isAlwaysOverlayPixel(sand), true);
-    assert.equal(engine.movePixel(sand, 3, 3), true);
-    assert.ok(engine.getPixelsAt(3, 3).includes(rock));
-    assert.ok(engine.getPixelsAt(3, 3).includes(sand));
+    assert.equal(engine.pixelsCanOverlap(body, resource), true);
+    assert.equal(engine.pixelsCanOverlap(resource, head), true);
+    assert.equal(engine.pixelsCanOverlap(body, markedRockDrop), true);
+    assert.ok(engine.getElementOverlapDirectory("civ_food_resource").includes("civ_body"));
 
-    assert.equal(engine.setElementInteractionSettings("rock", {overlap: "block"}), true);
-    assert.notEqual(`${rock.x},${rock.y}`, `${sand.x},${sand.y}`, "the configured blocking element is moved to the nearest legal cell");
-    assert.equal(engine.pixelsCanOverlap(rock, sand), false);
+    const humanFirst = engine.createPixel("civ_body", 1, 7, {humanId: 10});
+    const resourceSecond = engine.createPixel("civ_food_resource", 1, 7);
+    assert.equal(context.pixelMap[1][7], humanFirst, "storage may retain placement order");
+    assert.equal(engine.getPixelsAt(1, 7).at(-1), humanFirst, "human is visually topmost when placed first");
+    assert.equal(engine.getPixelsAt(1, 7)[0], resourceSecond);
 
-    assert.equal(engine.setElementInteractionSettings("sand", {renderLayer: "normal"}), true);
-    assert.equal(engine.isAlwaysOverlayPixel(sand), false);
-    assert.equal(context.settings.elementInteractions.sand.renderLayer, "normal");
-    assert.equal(engine.resetElementInteractionSettings("sand"), true);
-    assert.equal(context.settings.elementInteractions.sand, undefined);
+    const resourceFirst = engine.createPixel("civ_food_resource", 2, 7);
+    const humanSecond = engine.createPixel("civ_body", 2, 7, {humanId: 11});
+    assert.equal(context.pixelMap[2][7], resourceFirst);
+    assert.equal(engine.getPixelsAt(2, 7).at(-1), humanSecond, "human is visually topmost when placed second");
+    assert.match(html, /isCivilizationCollectiblePixel\(pixel\).*getPixelsAt\(pixel\.x,pixel\.y\)\.some\(isCivilizedHumanPixel\).*pixelsUnderlay\.push\(pixel\)/s);
 });
 
-test("same-element and multi-element allowlists obey explicit block priority", () => {
+test("tunnels remain universal while overlap settings are absent", () => {
     const {context, engine} = createEngineHarness();
-    const firstSand = engine.createPixel("sand", 1, 1);
-    assert.equal(engine.createPixel("sand", 1, 1), null);
+    const tunnel = {element: "civ_tunnel"};
+    for (const element of Object.keys(context.elements)) {
+        assert.equal(engine.pixelsCanOverlap(tunnel, {element}), true, `tunnel should overlap ${element}`);
+    }
+    assert.ok(engine.getElementOverlapDirectory("sand").includes("civ_tunnel"));
+    assert.doesNotMatch(html, /id="elementInteractionSetting"/);
+    assert.doesNotMatch(html, /elementInteractionDatalist/);
+    assert.doesNotMatch(html, /function setElementInteractionSettings\(/);
+    assert.doesNotMatch(html, /"elementInteractionsVersion"/);
+});
 
-    assert.equal(engine.setElementInteractionSettings("sand", {sameElement: "allow", allowWith: ["rock", "water", "rock", "missing_mod_element"]}), true);
-    assert.deepEqual(Array.from(engine.getElementInteractionSettings("sand").allowWith), ["rock", "water", "missing_mod_element"]);
-    const secondSand = engine.createPixel("sand", 1, 1);
-    assert.ok(secondSand);
-    assert.ok(engine.getOverlayPixels(1, 1).includes(secondSand));
+test("tunnels support passive powder without blocking deliberate movement", () => {
+    const {context, engine} = createEngineHarness();
+    const tunnel = engine.createPixel("civ_tunnel", 4, 4);
+    const powder = engine.createPixel("sand", 4, 3);
 
-    const rock = engine.createPixel("rock", 2, 1);
-    assert.equal(engine.movePixel(firstSand, 2, 1), true);
-    assert.ok(engine.getPixelsAt(2, 1).includes(rock));
-    assert.ok(engine.getPixelsAt(2, 1).includes(firstSand));
+    assert.equal(engine.cellSupportsPowder(powder, 4, 4), true);
+    assert.equal(engine.tryGravityMove(powder, 4, 4), false, "powder must not fall into a tunnel");
+    assert.equal(context.pixelMap[4][3], powder);
+    assert.equal(context.pixelMap[4][4], tunnel);
 
-    assert.equal(engine.setElementInteractionSettings("rock", {overlap: "block"}), true);
-    assert.equal(engine.pixelsCanOverlap(firstSand, rock), false);
-    assert.notEqual(`${firstSand.x},${firstSand.y}`, `${rock.x},${rock.y}`);
+    const human = engine.createPixel("civ_body", 5, 3, {humanId: 21});
+    const secondTunnel = engine.createPixel("civ_tunnel", 5, 4);
+    assert.equal(engine.tryMove(human, 5, 4), true, "humans must still enter tunnel cells");
+    assert.ok(engine.getPixelsAt(5, 4).includes(human));
+    assert.ok(engine.getPixelsAt(5, 4).includes(secondTunnel));
 
-    assert.equal(engine.setElementInteractionSettings("sand", {overlap: "allow", sameElement: "block"}), true);
-    assert.equal(engine.pixelsCanOverlap({element: "sand"}, {element: "sand"}), false);
-    assert.equal(context.settings.elementInteractions.sand.sameElement, "block");
+    const deliberatelyPlacedPowder = engine.createPixel("sand", 6, 4);
+    const thirdTunnel = engine.createPixel("civ_tunnel", 6, 4);
+    assert.ok(deliberatelyPlacedPowder && thirdTunnel, "explicit overlap remains permitted");
 });
 
 test("generic erase and replace preserve protected objects while explicit deletion can remove them", () => {
@@ -637,13 +681,21 @@ test("simulation speed cycles through 1x, 2x, 3x, and 5x with a hard 5x cap", ()
     assert.match(html, /SIMULATION_SPEEDS\s*=\s*\[30,60,90,150\]/);
     assert.match(html, /id="speedButton"[^>]*>1×<\/button>/);
     assert.match(html, /function cycleSimulationSpeed\(\)/);
+    assert.match(html, /SIMULATION_PULSE_MS\s*=\s*1000\/30/);
+    assert.match(html, /SIMULATION_MAX_TICKS_PER_PULSE\s*=\s*10/);
+    assert.match(html, /SIMULATION_WORK_BUDGET_MS\s*=\s*12/);
+    assert.match(html, /SIMULATION_MAX_BACKLOG_TICKS\s*=\s*15/);
+    assert.match(html, /while \(simulationTickDebt >= 1 && completed < SIMULATION_MAX_TICKS_PER_PULSE/);
+    assert.match(html, /actual: \"\+simulationActualTPS\.toFixed\(1\)\+\" TPS/);
+    assert.doesNotMatch(html, /setInterval\(tick,\s*1000\/(?:new)?tps\)/);
 });
 
 test("technology data loads between the core rules and browser adapter", () => {
     const core = html.indexOf('src="scripts/human_society_core.js');
     const data = html.indexOf('src="scripts/human_society_tech_data.js');
+    const pathfinding = html.indexOf('src="scripts/human_society_pathfinding.js');
     const adapter = html.indexOf('src="scripts/human_society.js');
-    assert.ok(core >= 0 && data > core && adapter > data);
+    assert.ok(core >= 0 && data > core && pathfinding > data && adapter > pathfinding);
 });
 
 test("tree growth no longer creates roots and propagates whole-tree identity", () => {
