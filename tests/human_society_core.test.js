@@ -114,6 +114,71 @@ test("construction refund returns half of only the unplaced materials", () => {
     assert.deepEqual(Core.constructionRefund({ wood: 12 }, 1), { wood: 0 });
 });
 
+test("weapon catalog exposes the complete canonical loadout and legacy aliases", () => {
+    const expected = {
+        fists: {range: 1, damage: 5, cost: {}},
+        club: {range: 2, damage: 10, cost: {wood: 1}},
+        stone_spear: {range: 3, damage: 20, cost: {wood: 2, stone: 1}},
+        bow: {range: 25, damage: 15, cost: {wood: 10}, ranged: true},
+        bronze_spear: {range: 3, damage: 25, cost: {wood: 2, bronze: 1}},
+        bronze_sword: {range: 2, damage: 35, cost: {wood: 1, bronze: 2}},
+        iron_spear: {range: 3, damage: 35, cost: {wood: 2, iron: 1}},
+        iron_sword: {range: 2, damage: 50, cost: {wood: 1, iron: 2}},
+        steel_blade: {
+            range: 2,
+            damage: 100,
+            cost: {wood: 1, bronze: 1, iron: 1, steel: 2}
+        },
+        steel_spear: {
+            range: 4,
+            damage: 70,
+            cost: {wood: 2, bronze: 1, iron: 1, steel: 1}
+        },
+        crossbow: {range: 30, damage: 40, cost: {wood: 10, steel: 1}, ranged: true}
+    };
+
+    Object.entries(expected).forEach(([id, stats]) => {
+        const weapon = Core.WEAPONS[id];
+        assert.equal(weapon.id, id);
+        assert.equal(weapon.range, stats.range);
+        assert.equal(weapon.damage, stats.damage);
+        assert.equal(weapon.hitChance, 0.5);
+        assert.equal(weapon.knockback, 1);
+        assert.equal(weapon.ranged === true, stats.ranged === true);
+        assert.deepEqual(weapon.cost, stats.cost);
+    });
+
+    assert.strictEqual(Core.WEAPONS.fist, Core.WEAPONS.fists);
+    assert.strictEqual(Core.WEAPONS.spear, Core.WEAPONS.stone_spear);
+    assert.equal(Core.WEAPONS.spear.id, "stone_spear");
+});
+
+test("armor catalog exposes immutable HP bonuses and material costs", () => {
+    assert.deepEqual(Object.keys(Core.ARMORS), ["none", "rattan", "iron", "steel"]);
+    assert.deepEqual(Core.ARMORS, {
+        none: {id: "none", hpBonus: 0, cost: {}},
+        rattan: {id: "rattan", hpBonus: 100, cost: {wood: 4}},
+        iron: {id: "iron", hpBonus: 220, cost: {iron: 4}},
+        steel: {id: "steel", hpBonus: 420, cost: {steel: 4}}
+    });
+    assert.equal(Object.isFrozen(Core.ARMORS), true);
+    Object.values(Core.ARMORS).forEach((armor) => {
+        assert.equal(Object.isFrozen(armor), true);
+        assert.equal(Object.isFrozen(armor.cost), true);
+    });
+});
+
+test("armorFor resolves ids and descriptors with a safe unarmored fallback", () => {
+    assert.strictEqual(Core.armorFor("rattan"), Core.ARMORS.rattan);
+    assert.strictEqual(Core.armorFor({armor: "iron"}), Core.ARMORS.iron);
+    assert.strictEqual(Core.armorFor({armor: {id: "steel"}}), Core.ARMORS.steel);
+    assert.strictEqual(Core.armorFor({id: "rattan"}), Core.ARMORS.rattan);
+    assert.strictEqual(Core.armorFor({armor: {id: "unknown", hpBonus: 999}}), Core.ARMORS.none);
+    assert.strictEqual(Core.armorFor({armor: "unknown"}), Core.ARMORS.none);
+    assert.strictEqual(Core.armorFor({}), Core.ARMORS.none);
+    assert.strictEqual(Core.armorFor(null), Core.ARMORS.none);
+});
+
 test("attack intents aggregate same-tick damage and allow mutual kills", () => {
     const actors = new Map([
         ["red", {
@@ -134,6 +199,9 @@ test("attack intents aggregate same-tick damage and allow mutual kills", () => {
     assert.equal(actors.get("blue").hp, 0);
     assert.deepEqual(new Set(outcome.deaths), new Set(["red", "blue"]));
     assert.equal(outcome.results.every((result) => result.valid), true);
+    assert.equal(outcome.results.every((result) => result.damage === 5), true);
+    assert.deepEqual(outcome.results[0].knockback, {dx: 1, dy: 0});
+    assert.deepEqual(outcome.results[1].knockback, {dx: -1, dy: 0});
     assert.equal(actors.get("red").attackReadyTick, 10);
 });
 
@@ -145,7 +213,7 @@ test("attack validation allows child targets and attackers, ignores cooldowns, a
         },
         ally: { id: "ally", factionId: "a", x: 1, y: 0, hp: 100 },
         child: { id: "child", factionId: "b", x: 1, y: 0, hp: 100, isChild: true },
-        distant: { id: "distant", factionId: "b", x: 3, y: 0, hp: 100 }
+        distant: { id: "distant", factionId: "b", x: 4, y: 0, hp: 100 }
     };
     const outcome = Core.resolveAttackIntents([
         { attackerId: "attacker", targetId: "ally", tick: 20 },
@@ -160,9 +228,241 @@ test("attack validation allows child targets and attackers, ignores cooldowns, a
     assert.equal(outcome.results[2].reason, "out_of_range");
     assert.equal(outcome.results[3].valid, true);
     assert.equal(outcome.results[3].hit, true);
-    assert.ok(Math.abs(actors.child.hp - 98.2) < 1e-12);
-    assert.ok(Math.abs(actors.attacker.hp - 99.2) < 1e-12);
+    assert.equal(outcome.results[0].weapon, "stone_spear");
+    assert.equal(actors.child.hp, 80);
+    assert.equal(actors.attacker.hp, 95);
     assert.equal(actors.distant.hp, 100);
+});
+
+test("weapon ranges are centered Chebyshev squares driven by descriptor range", () => {
+    const actors = {
+        archer: {id: "archer", factionId: "a", x: 10, y: 10, hp: 100, weapon: "bow"},
+        edge: {id: "edge", factionId: "b", x: -15, y: 35, hp: 100},
+        outside: {id: "outside", factionId: "b", x: 36, y: 10, hp: 100},
+        clubber: {
+            id: "clubber", factionId: "a", x: 0, y: 0, hp: 100, weapon: "club", dir: 1
+        },
+        behindDiagonal: {id: "behindDiagonal", factionId: "b", x: -2, y: 2, hp: 100}
+    };
+    const outcome = Core.resolveAttackIntents([
+        {attackerId: "archer", targetId: "edge", tick: 1},
+        {attackerId: "archer", targetId: "outside", tick: 2},
+        {attackerId: "clubber", targetId: "behindDiagonal", tick: 3}
+    ], actors, () => 0);
+
+    assert.equal(outcome.results[0].valid, true);
+    assert.equal(outcome.results[0].damage, 15);
+    assert.equal(outcome.results[1].reason, "out_of_range");
+    assert.equal(outcome.results[2].valid, true);
+    assert.equal(outcome.results[2].damage, 10);
+    assert.deepEqual(outcome.results[2].knockback, {dx: -1, dy: 1});
+});
+
+test("attack resolution uses a fixed fifty-percent threshold and full weapon damage", () => {
+    const missActors = {
+        attacker: {id: "attacker", factionId: "a", x: 0, y: 0, hp: 100, weapon: "steel_blade"},
+        target: {id: "target", factionId: "b", x: 2, y: 2, hp: 150}
+    };
+    const miss = Core.resolveAttackIntents([
+        {attackerId: "attacker", targetId: "target", tick: 1}
+    ], missActors, () => 0.5);
+    assert.equal(miss.results[0].hit, false);
+    assert.equal(miss.results[0].damage, 0);
+    assert.equal(missActors.target.hp, 150);
+
+    const hit = Core.resolveAttackIntents([
+        {attackerId: "attacker", targetId: "target", tick: 2}
+    ], missActors, () => 0.499999);
+    assert.equal(hit.results[0].hit, true);
+    assert.equal(hit.results[0].damage, 100);
+    assert.equal(missActors.target.hp, 50);
+    assert.deepEqual(hit.results[0].knockback, {dx: 1, dy: 1});
+});
+
+test("military power uses actual weapon damage with health and role multipliers", () => {
+    const power = Core.computeMilitaryPower([
+        {hp: 100, maxHp: 100, role: "warrior", weapon: "steel_blade"},
+        {hp: 50, maxHp: 100, role: "guard", weapon: "bow"},
+        {hp: 25, maxHp: 100, role: "worker", weapon: {id: "custom", damage: 12, range: 1}},
+        {hp: 100, maxHp: 100, role: "warrior", weapon: "iron_sword", dead: true},
+        {hp: 100, maxHp: 100, role: "warrior", weapon: "crossbow", isChild: true}
+    ]);
+
+    assert.equal(power, 136.25);
+});
+
+test("military power scores armor HP against base HP without capping its benefit", () => {
+    assert.equal(Core.computeMilitaryPower([
+        {hp: 100, maxHp: 100, weapon: "fists"}
+    ]), 5);
+    assert.equal(Core.computeMilitaryPower([
+        {hp: 200, maxHp: 200, baseMaxHp: 100, armor: "rattan", weapon: "fists"}
+    ]), 10);
+    assert.equal(Core.computeMilitaryPower([
+        {hp: 160, maxHp: 320, armor: {id: "iron"}, weapon: "fists"}
+    ]), 8);
+    assert.equal(Core.computeMilitaryPower([
+        {hp: 999, maxHp: 200, baseMaxHp: 100, armor: "rattan", weapon: "fists"}
+    ]), 10, "current HP is capped at maxHp before comparing it with base HP");
+    assert.equal(Core.computeMilitaryPower([
+        {hp: 200, baseMaxHp: 100, armor: "rattan", weapon: "fists"},
+        {hp: 200, maxHp: 200, baseMaxHp: 100, armor: "rattan", weapon: "fists", dead: true},
+        {hp: 320, maxHp: 320, baseMaxHp: 100, armor: "iron", weapon: "fists", isChild: true}
+    ]), 10);
+});
+
+test("technology effects compile all supported capabilities from a technology object", () => {
+    const technology = {
+        id: "complete-example",
+        effects: [
+            {type: "unlock", target: "building", id: "hut"},
+            {type: "unlock", target: "weapon", id: "bow"},
+            {type: "unlock", target: "armor", id: "rattan"},
+            {type: "unlock", target: "role", id: "farmer"},
+            {type: "unlock", target: "resource", id: "stone"},
+            {type: "unlock", target: "recipe", id: "bronze"},
+            {type: "modifier", stat: "carryCapacity", operation: "add", value: 2},
+            {
+                type: "modifier",
+                stat: "harvestDurationMultiplier",
+                operation: "multiply",
+                value: 0.8
+            },
+            {type: "set", stat: "constructionSlots", value: 2},
+            {type: "enable", feature: "hearthHealing"},
+            {type: "enable", feature: "deliveryKnowledge"},
+            {type: "enable", feature: "treePlanting"}
+        ]
+    };
+
+    assert.deepEqual(Core.compileTechnologyEffects(technology), {
+        unlocks: {
+            building: ["hut"],
+            weapon: ["bow"],
+            armor: ["rattan"],
+            role: ["farmer"],
+            resource: ["stone"],
+            recipe: ["bronze"]
+        },
+        modifiers: {
+            carryCapacity: {operation: "add", value: 2},
+            harvestDurationMultiplier: {operation: "multiply", value: 0.8},
+            constructionSlots: {operation: "set", value: 2}
+        },
+        features: ["hearthHealing", "deliveryKnowledge", "treePlanting"]
+    });
+    assert.equal(Core.validateTechnologyEffects(technology.effects), true);
+});
+
+test("technology effect compilation deduplicates and combines effects deterministically", () => {
+    const effects = [
+        {type: "unlock", target: "building", id: "hut"},
+        {type: "unlock", target: "building", id: "hut"},
+        {type: "unlock", target: "weapon", id: "bow"},
+        {type: "modifier", stat: "carryCapacity", operation: "add", value: 2},
+        {type: "modifier", stat: "carryCapacity", operation: "add", value: -1},
+        {
+            type: "modifier",
+            stat: "incomingDamageMultiplier",
+            operation: "multiply",
+            value: 0.8
+        },
+        {
+            type: "modifier",
+            stat: "incomingDamageMultiplier",
+            operation: "multiply",
+            value: 0.5
+        },
+        {type: "set", stat: "peacetimeWarriors", value: 2},
+        {type: "set", stat: "peacetimeWarriors", value: 2},
+        {type: "enable", feature: "treePlanting"},
+        {type: "enable", feature: "treePlanting"}
+    ];
+    const capabilities = Core.compileTechnologyEffects(effects);
+
+    assert.deepEqual(capabilities.unlocks.building, ["hut"]);
+    assert.deepEqual(capabilities.unlocks.weapon, ["bow"]);
+    assert.deepEqual(capabilities.modifiers, {
+        carryCapacity: {operation: "add", value: 1},
+        incomingDamageMultiplier: {operation: "multiply", value: 0.4},
+        peacetimeWarriors: {operation: "set", value: 2}
+    });
+    assert.deepEqual(capabilities.features, ["treePlanting"]);
+    assert.throws(() => Core.compileTechnologyEffects([
+        {type: "set", stat: "constructionSlots", value: 1},
+        {type: "set", stat: "constructionSlots", value: 2}
+    ]), /Conflicting set values/);
+});
+
+test("legacy technology modifier aliases compile to canonical runtime fields", () => {
+    const capabilities = Core.compileTechnologyEffects([
+        {type: "modifier", stat: "harvestSpeed", operation: "multiply", value: 1.25},
+        {type: "modifier", stat: "woodHarvestSpeed", operation: "multiply", value: 2},
+        {type: "modifier", stat: "stoneHarvestSpeed", operation: "multiply", value: 2},
+        {type: "modifier", stat: "stoneYield", operation: "multiply", value: 4},
+        {type: "modifier", stat: "buildSpeed", operation: "multiply", value: 5},
+        {type: "modifier", stat: "roleWorkSpeed", operation: "multiply", value: 1.2},
+        {type: "modifier", stat: "knowledgeGain", operation: "multiply", value: 1.1},
+        {type: "modifier", stat: "milestoneKnowledge", operation: "multiply", value: 1.25},
+        {type: "modifier", stat: "hutHousing", operation: "add", value: 2},
+        {type: "modifier", stat: "incomingDamage", operation: "multiply", value: 0.85},
+        {type: "modifier", stat: "structureDamage", operation: "multiply", value: 1.5},
+        {type: "set", stat: "oldTechDiscount", value: 0.25}
+    ]);
+
+    assert.deepEqual(capabilities.modifiers, {
+        harvestDurationMultiplier: {operation: "multiply", value: 0.8},
+        woodHarvestDurationMultiplier: {operation: "multiply", value: 0.5},
+        stoneHarvestDurationMultiplier: {operation: "multiply", value: 0.125},
+        buildDurationMultiplier: {operation: "multiply", value: 0.2},
+        roleWorkRateMultiplier: {operation: "multiply", value: 1.2},
+        knowledgeRateMultiplier: {operation: "multiply", value: 1.1},
+        milestoneKnowledgeMultiplier: {operation: "multiply", value: 1.25},
+        hutHousingBonus: {operation: "add", value: 2},
+        incomingDamageMultiplier: {operation: "multiply", value: 0.85},
+        structureDamageMultiplier: {operation: "multiply", value: 1.5},
+        oldTechCostMultiplier: {operation: "multiply", value: 0.75}
+    });
+});
+
+test("technology effect compiler rejects unsupported or malformed effects", () => {
+    const invalidEffects = [
+        [{type: "mystery"}, /Unknown technology effect type/],
+        [{type: "unlock", target: "trade", id: "basic"}, /Unknown technology unlock target/],
+        [{type: "unlock", target: "weapon", id: "  "}, /unlock id must be a non-empty string/],
+        [{type: "modifier", stat: "farmPlots", operation: "add", value: 2}, /Unknown technology modifier stat/],
+        [{type: "modifier", stat: "carryCapacity", operation: "multiply", value: 2}, /Invalid operation/],
+        [{type: "modifier", stat: "carryCapacity", operation: "add", value: Infinity}, /value must be finite/],
+        [{type: "enable", feature: "bronzeAlloying"}, /Unknown technology feature/]
+    ];
+
+    invalidEffects.forEach(([effect, error]) => {
+        assert.throws(() => Core.compileTechnologyEffects(effect), error);
+        assert.throws(() => Core.validateTechnologyEffects([effect]), error);
+    });
+});
+
+test("technology effect compilation does not mutate source effects or technology objects", () => {
+    const technology = {
+        id: "immutable-source",
+        effects: [
+            {type: "unlock", target: "weapon", id: " bow "},
+            {type: "modifier", stat: "harvestSpeed", operation: "multiply", value: 2},
+            {type: "enable", feature: "treePlanting"}
+        ]
+    };
+    const before = JSON.parse(JSON.stringify(technology));
+
+    Core.compileTechnologyEffects(technology);
+    assert.deepEqual(technology, before);
+
+    const technologies = [technology, {
+        id: "second",
+        effects: [{type: "unlock", target: "armor", id: "rattan"}]
+    }];
+    const combined = Core.compileTechnologyEffects(technologies);
+    assert.deepEqual(combined.unlocks.weapon, ["bow"]);
+    assert.deepEqual(combined.unlocks.armor, ["rattan"]);
 });
 
 test("life constants and lifespan rolls use an inclusive uniform 50-60 year range", () => {
@@ -257,9 +557,8 @@ test("era constants expose six eras, population targets, and semantic job weight
         wood: 2,
         miner: 4,
         builder: 2,
-        forester: 1,
-        artisan_trade: 2,
-        industry: 2,
+        forester: 2,
+        artisan_trade: 3,
         scholar: 2,
         military: 3
     });

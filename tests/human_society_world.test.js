@@ -1,12 +1,54 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const World = require("../scripts/human_society_world.js");
 
-test("building sprites use a bottom-middle core and require two clear rows or columns", () => {
-    assert.deepEqual(World.buildingSpriteRect(10, 20), {left: 9, right: 11, top: 18, bottom: 20, width: 3, height: 3, coreX: 10, coreY: 20});
-    assert.equal(World.buildingSpacingValid({x: 10, y: 20}, {x: 14, y: 20}), false);
-    assert.equal(World.buildingSpacingValid({x: 10, y: 20}, {x: 15, y: 20}), true);
-    assert.equal(World.buildingSpacingValid({x: 10, y: 20}, {x: 10, y: 25}), true);
+test("building sprites preserve aspect ratio around a bottom-middle one-cell core", () => {
+    assert.deepEqual(World.buildingSpriteRect(10, 20), {left: 9, right: 12, top: 18, bottom: 21, width: 3, height: 3, coreX: 10, coreY: 20});
+    assert.deepEqual(World.buildingSpriteRect(10, 20, 4, 2, 100), {left: 9, right: 12, top: 19.5, bottom: 21, width: 3, height: 1.5, coreX: 10, coreY: 20});
+    assert.deepEqual(World.buildingSpriteRect(10, 20, 4, 1, 50), {left: 8.5, right: 12.5, top: 20, bottom: 21, width: 4, height: 1, coreX: 10, coreY: 20});
+    assert.equal(World.buildingSpacingValid({x: 10, y: 20}, {x: 10, y: 20}), false);
+    assert.equal(World.buildingSpacingValid({x: 10, y: 20}, {x: 11, y: 20}), true);
+    assert.equal(World.buildingSpacingValid({x: 10, y: 20}, {x: 10, y: 21}), true);
+});
+
+test("building sprite assets follow the current era and normalize logical building aliases", () => {
+    assert.deepEqual(World.buildingSpriteDescriptor("civ_banner", "bronze"), {
+        type: "town_center",
+        eraId: "bronze",
+        fileName: "building_bronze_town_center.png"
+    });
+    assert.deepEqual(World.buildingSpriteDescriptor("palisade", "castle"), {
+        type: "gate",
+        eraId: "castle",
+        fileName: "building_castle_gate.png"
+    });
+    assert.equal(World.buildingSpriteDescriptor("civ_foundry_core", "bronze").eraId, "bronze");
+    assert.equal(World.buildingSpriteDescriptor("civ_kiln_core", "bronze").eraId, "iron");
+    assert.equal(World.buildingSpriteDescriptor("civ_forge_core", "iron").eraId, "castle");
+    assert.equal(World.buildingSpriteDescriptor("civ_farm_marker", "castle"), null);
+    assert.equal(World.buildingSpriteDescriptor("civ_granary_core", "castle"), null);
+    assert.equal(World.buildingSpriteDescriptor("civ_library_core", "tribal").eraId, "castle");
+    assert.equal(World.buildingSpriteDescriptor("unknown", "castle"), null);
+});
+
+test("every declared building sprite has a 64x64 RGBA runtime asset while legacy assets may remain", () => {
+    const assetDirectory = path.join(__dirname, "../assets/civilization/buildings");
+    const expected = Object.keys(World.BUILDING_SPRITE_ERAS).flatMap((type) =>
+        World.BUILDING_SPRITE_ERAS[type].map((eraId) => "building_" + eraId + "_" + type + ".png")
+    ).sort();
+    const actual = fs.readdirSync(assetDirectory).filter((fileName) => fileName.endsWith(".png")).sort();
+    assert.equal(expected.length, 54);
+    expected.forEach((fileName) => {
+        assert.ok(actual.includes(fileName), fileName + " should exist");
+        const png = fs.readFileSync(path.join(assetDirectory, fileName));
+        assert.equal(png.toString("hex", 0, 8), "89504e470d0a1a0a", fileName + " should be a PNG");
+        assert.equal(png.readUInt32BE(16), 64, fileName + " should be 64 pixels wide");
+        assert.equal(png.readUInt32BE(20), 64, fileName + " should be 64 pixels high");
+        assert.equal(png[24], 8, fileName + " should use 8-bit channels");
+        assert.equal(png[25], 6, fileName + " should use RGBA color");
+    });
 });
 
 test("territory is infinite vertically, first claim wins foreign columns, and later claims fill released columns", () => {

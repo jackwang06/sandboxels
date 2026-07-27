@@ -126,8 +126,7 @@
             miner: 3,
             builder: 2,
             forester: 1,
-            artisan: 1,
-            industry: 1,
+            artisan: 2,
             scholar: 1,
             military: 1
         }),
@@ -137,8 +136,7 @@
             miner: 4,
             builder: 2,
             forester: 1,
-            artisan: 1,
-            industry: 2,
+            artisan: 3,
             scholar: 1,
             military: 2
         }),
@@ -147,9 +145,8 @@
             wood: 2,
             miner: 4,
             builder: 2,
-            forester: 1,
-            artisan_trade: 2,
-            industry: 2,
+            forester: 2,
+            artisan_trade: 3,
             scholar: 2,
             military: 3
         })
@@ -163,33 +160,211 @@
 
     var FIST_WEAPON = Object.freeze({
         id: "fists",
-        damage: 8,
+        damage: 5,
         range: 1,
-        cooldown: 20,
-        power: 1,
+        hitChance: 0.5,
+        knockback: 1,
         cost: Object.freeze({})
     });
+    var STONE_SPEAR_WEAPON = Object.freeze({
+        id: "stone_spear",
+        damage: 20,
+        range: 3,
+        hitChance: 0.5,
+        knockback: 1,
+        cost: Object.freeze({ wood: 2, stone: 1 })
+    });
     var WEAPONS = Object.freeze({
-        // Keep both spellings so engine adapters and saved actors can use either.
+        // Keep legacy spellings so engine adapters and saved actors can migrate lazily.
         fist: FIST_WEAPON,
         fists: FIST_WEAPON,
         club: Object.freeze({
             id: "club",
-            damage: 14,
-            range: 1,
-            cooldown: 18,
-            power: 1.75,
-            cost: Object.freeze({ wood: 2 })
-        }),
-        spear: Object.freeze({
-            id: "spear",
-            damage: 18,
+            damage: 10,
             range: 2,
-            cooldown: 22,
-            power: 2.25,
-            cost: Object.freeze({ wood: 1, stone: 1 }),
-            upgradeFrom: "club"
+            hitChance: 0.5,
+            knockback: 1,
+            cost: Object.freeze({ wood: 1 })
+        }),
+        stone_spear: STONE_SPEAR_WEAPON,
+        spear: STONE_SPEAR_WEAPON,
+        bow: Object.freeze({
+            id: "bow",
+            damage: 15,
+            range: 25,
+            hitChance: 0.5,
+            knockback: 1,
+            ranged: true,
+            cost: Object.freeze({ wood: 10 })
+        }),
+        bronze_spear: Object.freeze({
+            id: "bronze_spear",
+            damage: 25,
+            range: 3,
+            hitChance: 0.5,
+            knockback: 1,
+            cost: Object.freeze({ wood: 2, bronze: 1 })
+        }),
+        bronze_sword: Object.freeze({
+            id: "bronze_sword",
+            damage: 35,
+            range: 2,
+            hitChance: 0.5,
+            knockback: 1,
+            cost: Object.freeze({ wood: 1, bronze: 2 })
+        }),
+        iron_spear: Object.freeze({
+            id: "iron_spear",
+            damage: 35,
+            range: 3,
+            hitChance: 0.5,
+            knockback: 1,
+            cost: Object.freeze({ wood: 2, iron: 1 })
+        }),
+        iron_sword: Object.freeze({
+            id: "iron_sword",
+            damage: 50,
+            range: 2,
+            hitChance: 0.5,
+            knockback: 1,
+            cost: Object.freeze({ wood: 1, iron: 2 })
+        }),
+        steel_blade: Object.freeze({
+            id: "steel_blade",
+            damage: 100,
+            range: 2,
+            hitChance: 0.5,
+            knockback: 1,
+            cost: Object.freeze({ wood: 1, bronze: 1, iron: 1, steel: 2 })
+        }),
+        steel_spear: Object.freeze({
+            id: "steel_spear",
+            damage: 70,
+            range: 4,
+            hitChance: 0.5,
+            knockback: 1,
+            cost: Object.freeze({ wood: 2, bronze: 1, iron: 1, steel: 1 })
+        }),
+        crossbow: Object.freeze({
+            id: "crossbow",
+            damage: 40,
+            range: 30,
+            hitChance: 0.5,
+            knockback: 1,
+            ranged: true,
+            cost: Object.freeze({ wood: 10, steel: 1 })
         })
+    });
+    var ARMORS = Object.freeze({
+        none: Object.freeze({
+            id: "none",
+            hpBonus: 0,
+            cost: Object.freeze({})
+        }),
+        rattan: Object.freeze({
+            id: "rattan",
+            hpBonus: 100,
+            cost: Object.freeze({ wood: 4 })
+        }),
+        iron: Object.freeze({
+            id: "iron",
+            hpBonus: 220,
+            cost: Object.freeze({ iron: 4 })
+        }),
+        steel: Object.freeze({
+            id: "steel",
+            hpBonus: 420,
+            cost: Object.freeze({ steel: 4 })
+        })
+    });
+
+    var TECHNOLOGY_UNLOCK_TARGETS = Object.freeze({
+        building: true,
+        weapon: true,
+        armor: true,
+        role: true,
+        resource: true,
+        recipe: true
+    });
+    var TECHNOLOGY_MODIFIER_OPERATIONS = Object.freeze({
+        carryCapacity: "add",
+        harvestDurationMultiplier: "multiply",
+        woodHarvestDurationMultiplier: "multiply",
+        stoneHarvestDurationMultiplier: "multiply",
+        foodHarvestDurationMultiplier: "multiply",
+        buildDurationMultiplier: "multiply",
+        roleWorkRateMultiplier: "multiply",
+        knowledgeRateMultiplier: "multiply",
+        milestoneKnowledgeMultiplier: "multiply",
+        hutHousingBonus: "add",
+        constructionSlots: "set",
+        peacetimeWarriors: "set",
+        wartimeWarriorRatio: "set",
+        incomingDamageMultiplier: "multiply",
+        oldTechCostMultiplier: "multiply",
+        structureDamageMultiplier: "multiply"
+    });
+    var TECHNOLOGY_MODIFIER_ALIASES = Object.freeze({
+        harvestSpeed: Object.freeze({
+            stat: "harvestDurationMultiplier",
+            operation: "multiply",
+            transform: "reciprocal"
+        }),
+        woodHarvestSpeed: Object.freeze({
+            stat: "woodHarvestDurationMultiplier",
+            operation: "multiply",
+            transform: "reciprocal"
+        }),
+        stoneHarvestSpeed: Object.freeze({
+            stat: "stoneHarvestDurationMultiplier",
+            operation: "multiply",
+            transform: "reciprocal"
+        }),
+        stoneYield: Object.freeze({
+            stat: "stoneHarvestDurationMultiplier",
+            operation: "multiply",
+            transform: "reciprocal"
+        }),
+        buildSpeed: Object.freeze({
+            stat: "buildDurationMultiplier",
+            operation: "multiply",
+            transform: "reciprocal"
+        }),
+        roleWorkSpeed: Object.freeze({
+            stat: "roleWorkRateMultiplier",
+            operation: "multiply"
+        }),
+        knowledgeGain: Object.freeze({
+            stat: "knowledgeRateMultiplier",
+            operation: "multiply"
+        }),
+        milestoneKnowledge: Object.freeze({
+            stat: "milestoneKnowledgeMultiplier",
+            operation: "multiply"
+        }),
+        hutHousing: Object.freeze({
+            stat: "hutHousingBonus",
+            operation: "add"
+        }),
+        incomingDamage: Object.freeze({
+            stat: "incomingDamageMultiplier",
+            operation: "multiply"
+        }),
+        structureDamage: Object.freeze({
+            stat: "structureDamageMultiplier",
+            operation: "multiply"
+        }),
+        oldTechDiscount: Object.freeze({
+            stat: "oldTechCostMultiplier",
+            operation: "set",
+            outputOperation: "multiply",
+            transform: "discount"
+        })
+    });
+    var TECHNOLOGY_FEATURES = Object.freeze({
+        hearthHealing: true,
+        deliveryKnowledge: true,
+        treePlanting: true
     });
 
     var HOSTILITY_BY_EVENT = Object.freeze({
@@ -222,6 +397,164 @@
     function finiteNumber(value, fallback) {
         value = Number(value);
         return Number.isFinite(value) ? value : fallback;
+    }
+
+    function technologyEffectList(source) {
+        var effects = [];
+
+        function append(item) {
+            if (item && typeof item === "object" && !Array.isArray(item) &&
+                    item.type === undefined && Object.prototype.hasOwnProperty.call(item, "effects")) {
+                if (!Array.isArray(item.effects)) {
+                    throw new TypeError("Technology effects must be an array");
+                }
+                for (var nestedIndex = 0; nestedIndex < item.effects.length; nestedIndex++) {
+                    effects.push(item.effects[nestedIndex]);
+                }
+                return;
+            }
+            effects.push(item);
+        }
+
+        if (Array.isArray(source)) {
+            for (var index = 0; index < source.length; index++) append(source[index]);
+        } else if (source && typeof source === "object") {
+            append(source);
+        } else {
+            throw new TypeError("Technology effects must be an effect, array, or technology object");
+        }
+        return effects;
+    }
+
+    function normalizedTechnologyModifier(effect) {
+        var stat = effect.stat;
+        if (typeof stat !== "string" || stat.length === 0) {
+            throw new TypeError("Technology modifier stat must be a non-empty string");
+        }
+
+        var operation = effect.type === "set" ? "set" : effect.operation;
+        var alias = Object.prototype.hasOwnProperty.call(TECHNOLOGY_MODIFIER_ALIASES, stat) ?
+            TECHNOLOGY_MODIFIER_ALIASES[stat] : null;
+        if (alias) {
+            if (operation !== alias.operation) {
+                throw new TypeError("Invalid operation for technology modifier " + stat +
+                    ": expected " + alias.operation);
+            }
+            stat = alias.stat;
+        } else {
+            if (!Object.prototype.hasOwnProperty.call(TECHNOLOGY_MODIFIER_OPERATIONS, stat)) {
+                throw new TypeError("Unknown technology modifier stat: " + stat);
+            }
+            var requiredOperation = TECHNOLOGY_MODIFIER_OPERATIONS[stat];
+            if (operation !== requiredOperation) {
+                throw new TypeError("Invalid operation for technology modifier " + stat +
+                    ": expected " + requiredOperation);
+            }
+        }
+
+        var value = effect.value;
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+            throw new TypeError("Technology modifier value must be finite for " + stat);
+        }
+        if (alias && alias.transform === "reciprocal") value = 1 / value;
+        if (alias && alias.transform === "discount") value = 1 - value;
+        if (!Number.isFinite(value)) {
+            throw new TypeError("Technology modifier value must be finite for " + stat);
+        }
+
+        return {
+            stat: stat,
+            operation: alias && alias.outputOperation || operation,
+            value: value
+        };
+    }
+
+    /** Compiles declarative technology effects into runtime-ready capabilities. */
+    function compileTechnologyEffects(source) {
+        var effects = technologyEffectList(source);
+        var capabilities = {
+            unlocks: {
+                building: [],
+                weapon: [],
+                armor: [],
+                role: [],
+                resource: [],
+                recipe: []
+            },
+            modifiers: {},
+            features: []
+        };
+        var unlocked = {
+            building: Object.create(null),
+            weapon: Object.create(null),
+            armor: Object.create(null),
+            role: Object.create(null),
+            resource: Object.create(null),
+            recipe: Object.create(null)
+        };
+        var enabledFeatures = Object.create(null);
+
+        for (var index = 0; index < effects.length; index++) {
+            var effect = effects[index];
+            if (!effect || typeof effect !== "object" || Array.isArray(effect)) {
+                throw new TypeError("Technology effect must be an object at index " + index);
+            }
+
+            if (effect.type === "unlock") {
+                var target = effect.target;
+                if (!Object.prototype.hasOwnProperty.call(TECHNOLOGY_UNLOCK_TARGETS, target)) {
+                    throw new TypeError("Unknown technology unlock target: " + target);
+                }
+                if (typeof effect.id !== "string" || effect.id.trim().length === 0) {
+                    throw new TypeError("Technology unlock id must be a non-empty string");
+                }
+                var unlockId = effect.id.trim();
+                if (!unlocked[target][unlockId]) {
+                    unlocked[target][unlockId] = true;
+                    capabilities.unlocks[target].push(unlockId);
+                }
+                continue;
+            }
+
+            if (effect.type === "modifier" || effect.type === "set") {
+                var modifier = normalizedTechnologyModifier(effect);
+                var existing = capabilities.modifiers[modifier.stat];
+                if (!existing) {
+                    capabilities.modifiers[modifier.stat] = {
+                        operation: modifier.operation,
+                        value: modifier.value
+                    };
+                } else if (modifier.operation === "add") {
+                    existing.value += modifier.value;
+                } else if (modifier.operation === "multiply") {
+                    existing.value *= modifier.value;
+                } else if (!Object.is(existing.value, modifier.value)) {
+                    throw new TypeError("Conflicting set values for technology modifier " + modifier.stat);
+                }
+                continue;
+            }
+
+            if (effect.type === "enable") {
+                var feature = effect.feature;
+                if (!Object.prototype.hasOwnProperty.call(TECHNOLOGY_FEATURES, feature)) {
+                    throw new TypeError("Unknown technology feature: " + feature);
+                }
+                if (!enabledFeatures[feature]) {
+                    enabledFeatures[feature] = true;
+                    capabilities.features.push(feature);
+                }
+                continue;
+            }
+
+            throw new TypeError("Unknown technology effect type: " + effect.type);
+        }
+
+        return capabilities;
+    }
+
+    function validateTechnologyEffects(source) {
+        compileTechnologyEffects(source);
+        return true;
     }
 
     /**
@@ -476,29 +809,39 @@
 
     function weaponFor(actor) {
         if (actor && actor.weapon && typeof actor.weapon === "object") {
+            var descriptor = actor.weapon;
+            var registered = WEAPONS[descriptor.id] || WEAPONS.fists;
+            var damage = Number(descriptor.damage);
+            var range = Number(descriptor.range);
             return {
-                id: actor.weapon.id || "custom",
-                damage: Number(actor.weapon.damage) || WEAPONS.fist.damage,
-                range: Number(actor.weapon.range) || WEAPONS.fist.range,
-                cooldown: Number(actor.weapon.cooldown) || WEAPONS.fist.cooldown,
-                power: Number(actor.weapon.power) || 1
+                id: descriptor.id || "custom",
+                damage: Number.isFinite(damage) ? damage : registered.damage,
+                range: Number.isFinite(range) ? range : registered.range,
+                hitChance: 0.5,
+                knockback: 1,
+                ranged: descriptor.ranged === true || registered.ranged === true
             };
         }
         var weaponId = actor && actor.weapon;
-        return WEAPONS[weaponId] || WEAPONS.fist;
+        return WEAPONS[weaponId] || WEAPONS.fists;
+    }
+
+    function armorFor(actor) {
+        var descriptor = actor;
+        if (actor && typeof actor === "object" &&
+                Object.prototype.hasOwnProperty.call(actor, "armor")) {
+            descriptor = actor.armor;
+        }
+        var armorId = descriptor && typeof descriptor === "object" ? descriptor.id : descriptor;
+        return typeof armorId === "string" &&
+            Object.prototype.hasOwnProperty.call(ARMORS, armorId) ? ARMORS[armorId] : ARMORS.none;
     }
 
     function targetInWeaponBox(attacker, target, weapon) {
         var dx = Number(target.x) - Number(attacker.x);
         var dy = Number(target.y) - Number(attacker.y);
         if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
-        var id = weapon && weapon.id || "fists";
-        if (id === "fist" || id === "fists") return Math.abs(dx) <= 1 && Math.abs(dy) <= 1;
-        if (id === "club" || id === "iron_sword" || id === "bronze_sword") {
-            var direction = Number(attacker.dir) < 0 ? -1 : 1;
-            return dy >= -2 && dy <= 1 && (direction < 0 ? dx >= -2 && dx <= 1 : dx >= -1 && dx <= 2);
-        }
-        var radius = id === "crossbow" ? 5 : (id === "bow" ? 4 : Math.max(1, Number(weapon.range) || 1));
+        var radius = Math.max(0, Number(weapon && weapon.range) || 0);
         return Math.abs(dx) <= radius && Math.abs(dy) <= radius;
     }
 
@@ -513,14 +856,31 @@
         var total = 0;
         for (var index = 0; index < actors.length; index++) {
             var actor = actors[index];
-            if (!actor || actor.isChild || actor.dead || Number(actor.hp) <= 0) {
+            var currentHp = actor && Number(actor.hp);
+            if (!actor || actor.isChild || actor.dead ||
+                    !Number.isFinite(currentHp) || currentHp <= 0) {
                 continue;
             }
-            var maximumHp = Number(actor.maxHp) || CONFIG.ADULT_MAX_HP;
-            var health = clamp(Number(actor.hp) / maximumHp, 0, 1);
+            var armor = armorFor(actor);
+            var maximumHp = Number(actor.maxHp);
+            var baseMaximumHp = Number(actor.baseMaxHp);
+            if (!Number.isFinite(baseMaximumHp) || baseMaximumHp <= 0) {
+                var derivedBaseHp = maximumHp - armor.hpBonus;
+                if (Number.isFinite(maximumHp) && maximumHp > 0 && derivedBaseHp > 0) {
+                    baseMaximumHp = derivedBaseHp;
+                } else if (armor === ARMORS.none && Number.isFinite(maximumHp) && maximumHp > 0) {
+                    baseMaximumHp = maximumHp;
+                } else {
+                    baseMaximumHp = CONFIG.ADULT_MAX_HP;
+                }
+            }
+            if (!Number.isFinite(maximumHp) || maximumHp <= 0) {
+                maximumHp = baseMaximumHp + armor.hpBonus;
+            }
+            var health = Math.min(currentHp, maximumHp) / baseMaximumHp;
             var roleMultiplier = actor.role === "warrior" ? 1.25 :
                 (actor.role === "guard" ? 1.1 : 1);
-            total += weaponFor(actor).power * health * roleMultiplier;
+            total += weaponFor(actor).damage * health * roleMultiplier;
         }
         return total;
     }
@@ -1232,7 +1592,8 @@
                         var dx = Math.sign(Number(target.x) - Number(attacker.x));
                         var dy = Math.sign(Number(target.y) - Number(attacker.y));
                         var hit = clamp(rng(), 0, 1) < 0.5;
-                        var damage = hit ? Math.max(0.1, weapon.damage * 0.1) : 0;
+                        var damage = hit ? Math.max(0, Number(weapon.damage) || 0) : 0;
+                        var knockback = Math.max(0, Number(weapon.knockback) || 0);
                         result = {
                             tick: tick,
                             attackerId: intent.attackerId,
@@ -1243,7 +1604,7 @@
                             hit: hit,
                             damage: damage,
                             blood: hit && clamp(rng(), 0, 1) < CONFIG.BLOOD_CHANCE,
-                            knockback: { dx: dx, dy: dy }
+                            knockback: { dx: dx * knockback, dy: dy * knockback }
                         };
                         if (damage > 0) groupDamage.set(
                             intent.targetId,
@@ -1287,6 +1648,7 @@
     return Object.freeze({
         CONFIG: CONFIG,
         WEAPONS: WEAPONS,
+        ARMORS: ARMORS,
         FUEL_VALUES: FUEL_VALUES,
         TICKS_PER_YEAR: TICKS_PER_YEAR,
         ADULT_AGE_YEARS: ADULT_AGE_YEARS,
@@ -1308,6 +1670,7 @@
         chooseFaction: chooseFaction,
         applyHostility: applyHostility,
         stepDiplomacy: stepDiplomacy,
+        armorFor: armorFor,
         computeMilitaryPower: computeMilitaryPower,
         stepSurrender: stepSurrender,
         canReproduce: canReproduce,
@@ -1326,6 +1689,8 @@
         researchCost: researchCost,
         selectFocusedResearch: selectFocusedResearch,
         mergeConquestResearch: mergeConquestResearch,
+        compileTechnologyEffects: compileTechnologyEffects,
+        validateTechnologyEffects: validateTechnologyEffects,
         selectFuelCombination: selectFuelCombination,
         bresenhamLine: bresenhamLine,
         lineOfSightTransparency: lineOfSightTransparency,

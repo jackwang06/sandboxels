@@ -29,10 +29,10 @@
         EXTENDED_RESOURCE_RADIUS: 20,
         FIRE_RESPONSE_RADIUS: 32,
         FIRE_SCAN_INTERVAL: 10,
+        MAX_FIRE_RESPONDERS_PER_SETTLEMENT: 2,
         ADULT_HP: 100,
         CHILD_HP: 50,
         BIRTH_COOLDOWN: 0,
-        GRANARY_BIRTH_COOLDOWN: 0,
         CHILD_GROW_TICKS: 0,
         BIRTH_FOOD_COST: 2,
         AUTONOMOUS_POPULATION_CAP: 120,
@@ -64,8 +64,8 @@
         RESEARCH_DOMAIN_DISCOUNT_MAX: 0.25,
         RESEARCH_STEP_INTERVAL: 30,
         KNOWLEDGE_PER_ADULT_STEP: 0.65,
-        TREE_PLANT_SPACING: 4,
-        TREE_PLANT_SEARCH_RADIUS: 20,
+        WORKSHOP_PROCESS_INTERVAL: 30,
+        TREE_ROOT_HORIZONTAL_CLEARANCE: 2,
         TREE_SEED_GUARANTEE: 5,
         WOOD_FOOD_BONUS_CHANCE: 0.5,
         RANGED_PROJECTILE_STEP_TICKS: 2,
@@ -81,6 +81,7 @@
     ];
     const SKIN_COLORS = ["#f3e7db", "#f7ead0", "#eadaba", "#d7bd96", "#a07e56", "#825c43", "#604134", "#3a312a"];
     const ACTOR_ELEMENTS = new Set(["civ_body", "civ_child"]);
+    const LEGACY_REMOVED_STRUCTURE_CORES = new Set(["civ_farm_marker", "civ_granary_core"]);
     const STRUCTURE_CORES = new Set([
         "civ_banner", "civ_hut_core", "civ_farm_marker", "civ_workshop_core", "civ_hearth_core",
         "civ_quarry_core", "civ_granary_core", "civ_kiln_core", "civ_foundry_core", "civ_forge_core",
@@ -95,6 +96,14 @@
     const ERA_ORDER = (TechData.ERAS || []).map((era) => era.id);
     const ERA_INDEX = new Map(ERA_ORDER.map((id, index) => [id, index]));
     const DEFAULT_ERA_ID = ERA_ORDER[0] || "tribal";
+    const WOOD_SMELTING_RESERVE_BY_ERA = Object.assign({
+        tribal: 8,
+        stone: 16,
+        agriculture: 32,
+        bronze: 48,
+        iron: 64,
+        castle: 96
+    }, TechData.WOOD_SMELTING_RESERVE_BY_ERA || {});
     const TECH_BY_ID = new Map((TechData.TECHNOLOGIES || []).map((tech) => [tech.id, tech]));
     const TECHS_BY_ERA = new Map();
     (TechData.TECHNOLOGIES || []).forEach((tech) => {
@@ -102,10 +111,13 @@
         if (!TECHS_BY_ERA.has(eraId)) TECHS_BY_ERA.set(eraId, []);
         TECHS_BY_ERA.get(eraId).push(tech);
     });
-    const FUEL_VALUES = Object.assign({tree_branch: 2, bamboo: 3, wood: 4, charcoal: 10}, TechData.FUELS || {});
-    const MATERIAL_KEYS = ["tree_branch", "bamboo", "wood", "stone", "charcoal", "copper", "tin", "bronze", "raw_iron", "iron", "steel"];
-    const STOCK_KEYS = ["food", "wood", "stone", "charcoal", "copper", "tin", "bronze", "raw_iron", "iron", "steel"];
-    const NONRENEWABLE_KINDS = new Set(["stone", "copper", "tin", "raw_iron"]);
+    const FUEL_VALUES = Object.keys(TechData.FUELS || {}).length ? Object.assign({}, TechData.FUELS) : {wood: 1};
+    const MATERIAL_KEYS = ["tree_branch", "bamboo", "wood", "stone", "copper", "bronze", "raw_iron", "iron", "steel"];
+    const STOCK_KEYS = ["food", "wood", "stone", "copper", "bronze", "raw_iron", "iron", "steel", "sapling"];
+    const NONRENEWABLE_KINDS = new Set(["stone", "copper", "raw_iron"]);
+    const RESOURCE_SCHEMA_VERSION = 3;
+    const EQUIPMENT_SCHEMA_VERSION = 3;
+    const RESEARCH_SCHEMA_VERSION = 3;
     const DIRECT_FIRE_ELEMENTS = new Set(["fire", "plasma", "ember", "fw_ember", "torch"]);
     const EXTINGUISHED_FIRE_ELEMENTS = {fire: "smoke", plasma: "smoke", ember: "ash", fw_ember: "smoke", torch: "wood"};
     const TREE_SEEDS = {
@@ -116,6 +128,9 @@
     };
     const TREE_SAPLING_ELEMENTS = new Set(["sapling", "pinecone", "bamboo_plant"]);
     const TREE_SAPLING_PREFIX = "tree_sapling:";
+    const BUILDING_SPRITE_ROOT = "assets/civilization/buildings/";
+    const BUILDING_SPRITE_VERSION = "20260726a";
+    const buildingSpriteAssets = new Map();
     const NAVIGATION_SCHEMA_VERSION = 4;
     const RESOURCE_FAILURE_COOLDOWN = 300;
     const ROTTEN_MEAT_FAILURE_COOLDOWN = 600;
@@ -125,14 +140,54 @@
     const PLANTED_TREE_SEEDS = new Set(["sapling", "pinecone", "bamboo_plant"]);
     const CARRIED_RESOURCE_KINDS = {
         civ_food_resource: "food", civ_stone_resource: "stone", civ_copper_resource: "copper",
-        civ_tin_resource: "tin", civ_raw_iron_resource: "raw_iron", civ_charcoal_resource: "charcoal"
+        civ_raw_iron_resource: "raw_iron"
     };
     const FALLING_RESOURCE_ELEMENTS = {
         wood: "civ_wood_resource", food: "civ_food_resource", stone: "civ_stone_resource",
-        copper: "civ_copper_resource", tin: "civ_tin_resource", raw_iron: "civ_raw_iron_resource", charcoal: "civ_charcoal_resource"
+        copper: "civ_copper_resource", raw_iron: "civ_raw_iron_resource", sapling: "civ_tree_sapling_resource"
     };
+    const LEGACY_WEAPON_IDS = {spear: "stone_spear"};
+    const LEGACY_WEAPON_COSTS = {
+        club: {wood: 2},
+        spear: {wood: 1, stone: 1},
+        bow: {wood: 3},
+        bronze_spear: {wood: 1, bronze: 2},
+        iron_sword: {iron: 2},
+        crossbow: {wood: 2, steel: 1}
+    };
+    const WEAPON_TECH_REQUIREMENTS = {
+        stone_spear: "polished_axes",
+        bow: "bowmaking",
+        bronze_spear: "bronze_weapons",
+        bronze_sword: "bronze_weapons",
+        iron_spear: "iron_weapons",
+        iron_sword: "iron_weapons",
+        steel_blade: "carburizing_tempering",
+        steel_spear: "carburizing_tempering",
+        crossbow: "crossbow"
+    };
+    const ARMOR_TECH_REQUIREMENTS = {
+        rattan: "rattan_armor",
+        iron: "iron_armor",
+        steel: "steel_armor"
+    };
+    const ARMOR_ERA_REQUIREMENTS = {rattan: "agriculture", iron: "iron", steel: "castle"};
+    const LEGACY_TECH_ID_MIGRATIONS = {
+        stone_spearheads: "polished_axes",
+        seed_selection: "food_preservation",
+        irrigation: "rattan_armor",
+        forge: "iron_weapons",
+        crop_rotation: "supply_logistics"
+    };
+    const LEGACY_REMOVED_TECH_IDS = new Set([
+        "hunting_cooperation", "artisan_shed", "granary", "barter", "tin_prospecting",
+        "charcoal_kiln", "coinage", "codified_law", "siege_workshop", "guild_market"
+    ]);
     const OBSCURING_ELEMENTS = new Set(["smoke", "steam", "fog", "cloud", "rain_cloud", "dust", "sandstorm", "ash", "acid_gas"]);
-    if (typeof settings !== "undefined" && settings.humanSocietySpeech === undefined) settings.humanSocietySpeech = true;
+    if (typeof settings !== "undefined") {
+        if (settings.humanSocietySpeech === undefined) settings.humanSocietySpeech = true;
+        if (settings.humanSocietyBuildingScale === undefined) settings.humanSocietyBuildingScale = 100;
+    }
 
     const manager = {
         actors: new Set(),
@@ -157,6 +212,8 @@
         resourceReservations: World.ResourceReservations ? new World.ResourceReservations() : null,
         territory: null,
         treeById: new Map(),
+        treeRootColumns: new Set(),
+        treeRootColumnsTick: -Infinity,
         treePixelsByLineage: new Map(),
         dirtyTreeLineages: new Set(),
         archivedChronicles: [],
@@ -169,6 +226,7 @@
         visualProjectiles: new Set(),
         resources: new Map(),
         weapons: new Map(),
+        armors: new Map(),
         technologies: new Map(TECH_BY_ID),
         eras: new Map((TechData.ERAS || []).map((era) => [era.id, era])),
         nextHumanId: 1,
@@ -499,6 +557,8 @@
             dc: actor.deathCause || "injury",
             r: actor.role || (actor.element === "civ_child" ? "child" : "worker"),
             w: actor.weapon || "fists",
+            ar: actor.armor || "none",
+            ab: Math.max(0, safeNumber(actor.armorBonusHp, 0)),
             wr: actor.warRole || null,
             hp: Math.max(0, safeNumber(actor.hp, 0)),
             mh: Math.max(1, safeNumber(actor.maxHp, actor.element === "civ_child" ? C.CHILD_HP : C.ADULT_HP)),
@@ -527,13 +587,13 @@
         return true;
     }
 
-    function ensureStock(banner) {
-        if (!banner) return null;
-        if (!banner.stock || typeof banner.stock !== "object") banner.stock = {};
-        const stock = banner.stock;
-        stock.food = Math.max(0, safeNumber(stock.food, 0));
-        stock.wood = Math.max(0, safeNumber(stock.wood, 0));
-        stock.stone = Math.max(0, safeNumber(stock.stone, 0));
+    function treeSaplingTotal(stock) {
+        if (!stock || !stock.treeSaplings) return 0;
+        return Array.from(TREE_SAPLING_ELEMENTS).reduce((sum, seed) => sum + Math.max(0, safeNumber(stock.treeSaplings[seed], 0)), 0);
+    }
+
+    function migrateLegacyStock(stock) {
+        if (!stock || safeNumber(stock.resourceSchemaVersion, 0) >= RESOURCE_SCHEMA_VERSION) return;
         if (!stock.materials || typeof stock.materials !== "object") stock.materials = {};
         if (!stock.seeds || typeof stock.seeds !== "object") stock.seeds = {};
         if (!stock.treeSaplings || typeof stock.treeSaplings !== "object") stock.treeSaplings = {};
@@ -545,20 +605,52 @@
             delete stock.treeSaplings[legacyKey];
         });
         TREE_SAPLING_ELEMENTS.forEach((seed) => {
-            const legacy = Math.max(0, safeNumber(stock.seeds[seed], 0));
-            stock.treeSaplings[seed] = Math.max(0, safeNumber(stock.treeSaplings[seed], 0)) + legacy;
-            if (legacy) delete stock.seeds[seed];
+            const amount = Math.max(0, safeNumber(stock.seeds[seed], 0));
+            stock.treeSaplings[seed] = Math.max(0, safeNumber(stock.treeSaplings[seed], 0)) + amount;
+            delete stock.seeds[seed];
         });
+        const cropSeedFood = Object.keys(stock.seeds).reduce((sum, seed) => sum + Math.max(0, safeNumber(stock.seeds[seed], 0)), 0);
+        const legacyTin = Math.max(0, safeNumber(stock.tin, 0), safeNumber(stock.materials.tin, 0));
+        const legacyCharcoal = Math.max(0, safeNumber(stock.charcoal, 0), safeNumber(stock.materials.charcoal, 0));
+        const existingCopper = Math.max(0, safeNumber(stock.copper, 0), safeNumber(stock.materials.copper, 0));
+        const detailedWood = Math.max(0, safeNumber(stock.materials.tree_branch, 0)) + Math.max(0, safeNumber(stock.materials.bamboo, 0)) + Math.max(0, safeNumber(stock.materials.wood, 0));
+        const existingWood = Math.max(0, safeNumber(stock.wood, 0), detailedWood);
+        const missingWoodDetail = Math.max(0, existingWood - detailedWood);
+        stock.food = Math.max(0, safeNumber(stock.food, 0)) + cropSeedFood;
+        stock.wood = existingWood + legacyCharcoal * 3;
+        stock.materials.wood = Math.max(0, safeNumber(stock.materials.wood, 0)) + missingWoodDetail + legacyCharcoal * 3;
+        stock.copper = existingCopper + legacyTin;
+        stock.materials.copper = stock.copper;
+        stock.seeds = {};
+        delete stock.tin;
+        delete stock.charcoal;
+        delete stock.materials.tin;
+        delete stock.materials.charcoal;
+        stock.resourceSchemaVersion = RESOURCE_SCHEMA_VERSION;
+    }
+
+    function ensureStock(banner) {
+        if (!banner) return null;
+        if (!banner.stock || typeof banner.stock !== "object") banner.stock = {};
+        const stock = banner.stock;
+        if (!stock.materials || typeof stock.materials !== "object") stock.materials = {};
+        if (!stock.seeds || typeof stock.seeds !== "object") stock.seeds = {};
+        if (!stock.treeSaplings || typeof stock.treeSaplings !== "object") stock.treeSaplings = {};
+        migrateLegacyStock(stock);
+        stock.food = Math.max(0, safeNumber(stock.food, 0));
+        stock.wood = Math.max(0, safeNumber(stock.wood, 0));
+        stock.stone = Math.max(0, safeNumber(stock.stone, 0));
+        TREE_SAPLING_ELEMENTS.forEach((seed) => { stock.treeSaplings[seed] = Math.max(0, safeNumber(stock.treeSaplings[seed], 0)); });
         MATERIAL_KEYS.forEach((key) => { stock.materials[key] = Math.max(0, safeNumber(stock.materials[key], 0)); });
-        // Old saves and tests use flat wood/stone fields. Keep them authoritative
-        // until material detail is actually present, then maintain both views.
         const detailedWood = stock.materials.tree_branch + stock.materials.bamboo + stock.materials.wood;
         if (detailedWood > stock.wood) stock.wood = detailedWood;
         if (stock.materials.stone > stock.stone) stock.stone = stock.materials.stone;
-        ["charcoal", "copper", "tin", "bronze", "raw_iron", "iron", "steel"].forEach((key) => {
+        ["copper", "bronze", "raw_iron", "iron", "steel"].forEach((key) => {
             stock[key] = Math.max(0, safeNumber(stock[key], stock.materials[key]));
             if (stock.materials[key] < stock[key]) stock.materials[key] = stock[key];
         });
+        stock.sapling = treeSaplingTotal(stock);
+        stock.resourceSchemaVersion = RESOURCE_SCHEMA_VERSION;
         return stock;
     }
 
@@ -567,6 +659,7 @@
         if (key === "food") return Math.max(0, safeNumber(stock.food, 0));
         if (key === "wood") return Math.max(0, safeNumber(stock.wood, 0));
         if (key === "stone") return Math.max(0, safeNumber(stock.stone, 0));
+        if (key === "sapling") return treeSaplingTotal(stock);
         return Math.max(0, safeNumber(stock[key], stock.materials && stock.materials[key] || 0));
     }
 
@@ -585,6 +678,11 @@
         else if (key === "stone") {
             stock.materials.stone = safeNumber(stock.materials.stone, 0) + amount;
             stock.stone = safeNumber(stock.stone, 0) + amount;
+        }
+        else if (key === "sapling") {
+            if (!stock.treeSaplings || typeof stock.treeSaplings !== "object") stock.treeSaplings = {};
+            stock.treeSaplings.sapling = safeNumber(stock.treeSaplings.sapling, 0) + amount;
+            stock.sapling = treeSaplingTotal(stock);
         }
         else {
             stock.materials[key] = safeNumber(stock.materials[key], 0) + amount;
@@ -612,6 +710,16 @@
             stock.stone -= amount;
             if (stock.materials) stock.materials.stone = Math.max(0, safeNumber(stock.materials.stone, 0) - amount);
         }
+        else if (key === "sapling") {
+            let remaining = amount;
+            ["sapling", "pinecone", "bamboo_plant"].forEach((seed) => {
+                if (!remaining) return;
+                const used = Math.min(remaining, safeNumber(stock.treeSaplings && stock.treeSaplings[seed], 0));
+                stock.treeSaplings[seed] -= used;
+                remaining -= used;
+            });
+            stock.sapling = treeSaplingTotal(stock);
+        }
         else {
             stock[key] = Math.max(0, safeNumber(stock[key], 0) - amount);
             if (stock.materials) stock.materials[key] = Math.max(0, safeNumber(stock.materials[key], 0) - amount);
@@ -619,12 +727,51 @@
         return true;
     }
 
+    function migrateLegacyResearchState(research) {
+        if (!research || safeNumber(research.schemaVersion, 0) >= RESEARCH_SCHEMA_VERSION) return research;
+        let refundedKnowledge = 0;
+        const moveTechnologyState = (sourceId, targetId) => {
+            const sourceProgress = Math.max(0, safeNumber(research.progress[sourceId], 0));
+            const sourceForced = !!research.forcedUnlocked[sourceId];
+            const targetAlreadyPresent = !!research.unlocked[targetId] || safeNumber(research.progress[targetId], 0) > 0;
+            if (research.unlocked[sourceId]) research.unlocked[targetId] = true;
+            if (sourceForced) research.forcedUnlocked[targetId] = true;
+            if (sourceProgress > 0) {
+                if (targetAlreadyPresent && !sourceForced) refundedKnowledge += sourceProgress;
+                else research.progress[targetId] = Math.max(safeNumber(research.progress[targetId], 0), sourceProgress);
+            }
+            delete research.unlocked[sourceId];
+            delete research.progress[sourceId];
+            delete research.forcedUnlocked[sourceId];
+        };
+        Object.keys(LEGACY_TECH_ID_MIGRATIONS).forEach((sourceId) => {
+            moveTechnologyState(sourceId, LEGACY_TECH_ID_MIGRATIONS[sourceId]);
+        });
+        LEGACY_REMOVED_TECH_IDS.forEach((techId) => {
+            if (!research.forcedUnlocked[techId]) refundedKnowledge += Math.max(0, safeNumber(research.progress[techId], 0));
+            delete research.unlocked[techId];
+            delete research.progress[techId];
+            delete research.forcedUnlocked[techId];
+        });
+        const mappedId = (techId) => LEGACY_TECH_ID_MIGRATIONS[techId] || techId;
+        ["focusTechId", "activeTechId", "blockedTechId", "lastUnlockedTechId"].forEach((field) => {
+            if (!research[field]) return;
+            const nextId = mappedId(research[field]);
+            if (manager.technologies.has(nextId)) research[field] = nextId;
+            else delete research[field];
+        });
+        if (Array.isArray(research.priorityQueue)) research.priorityQueue = research.priorityQueue.map(mappedId);
+        research.knowledge = Math.max(0, safeNumber(research.knowledge, 0)) + refundedKnowledge;
+        research.migrationKnowledgeRefund = safeNumber(research.migrationKnowledgeRefund, 0) + refundedKnowledge;
+        research.schemaVersion = RESEARCH_SCHEMA_VERSION;
+        return research;
+    }
+
     function ensureResearchState(banner) {
         if (!banner) return null;
         if (!banner.eraId || !ERA_INDEX.has(banner.eraId)) banner.eraId = DEFAULT_ERA_ID;
         if (!banner.research || typeof banner.research !== "object") banner.research = {};
         const research = banner.research;
-        research.schemaVersion = 2;
         research.knowledge = Math.max(0, safeNumber(research.knowledge, 0));
         research.lastKnowledgeGain = Math.max(0, safeNumber(research.lastKnowledgeGain, 0));
         research.totalKnowledgeGenerated = Math.max(research.knowledge, safeNumber(research.totalKnowledgeGenerated, research.knowledge));
@@ -634,11 +781,13 @@
         });
         if (!research.unlocked || typeof research.unlocked !== "object") research.unlocked = {};
         if (!research.progress || typeof research.progress !== "object") research.progress = {};
+        if (!research.forcedUnlocked || typeof research.forcedUnlocked !== "object") research.forcedUnlocked = {};
+        migrateLegacyResearchState(research);
         if (!research.discoveries || typeof research.discoveries !== "object") research.discoveries = {};
         if (!research.milestones || typeof research.milestones !== "object") research.milestones = {};
         if (!Array.isArray(research.priorityQueue)) research.priorityQueue = research.focusTechId ? [research.focusTechId] : [];
         research.priorityQueue = research.priorityQueue.filter((techId, index, array) => manager.technologies.has(techId) && array.indexOf(techId) === index && !research.unlocked[techId]);
-        if (!research.forcedUnlocked || typeof research.forcedUnlocked !== "object") research.forcedUnlocked = {};
+        research.schemaVersion = RESEARCH_SCHEMA_VERSION;
         if (!Number.isFinite(research.lastStepTick)) research.lastStepTick = pixelTicks;
         return research;
     }
@@ -653,73 +802,125 @@
         return ERA_INDEX.has(banner && banner.eraId) ? ERA_INDEX.get(banner.eraId) : 0;
     }
 
-    function computeTechModifiers(faction) {
-        const mods = {
-            carryCapacity: C.BASE_CARRY_CAPACITY,
-            harvestSpeed: 1,
-            woodHarvestSpeed: 1,
-            stoneHarvestSpeed: 1,
-            buildSpeed: 1,
-            woodStructureHp: 1,
-            knowledgeRate: 1,
-            milestoneKnowledge: 1,
-            roleWorkSpeed: 1,
-            farmYield: 1,
-            farmPlots: 0,
-            birthFoodCost: C.BIRTH_FOOD_COST,
-            constructionSlots: 1,
-            wartimeWarriorRatio: C.WARTIME_WARRIOR_RATIO,
-            peacetimeWarriors: 0,
-            damageReduction: 0,
-            hostilityDecayMultiplier: 1,
-            structureDamageMultiplier: 1,
-            oldTechDiscount: 0
+    function fallbackCompileTechnologyEffects(technologies) {
+        const unlocks = {building: [], weapon: [], armor: [], role: [], resource: [], recipe: []};
+        const modifiers = {};
+        const features = [];
+        (technologies || []).forEach((tech) => (tech.effects || []).forEach((effect) => {
+            if (effect.type === "unlock" && unlocks[effect.target]) unlocks[effect.target].push(effect.id);
+            else if ((effect.type === "modifier" || effect.type === "set") && effect.stat) {
+                if (!modifiers[effect.stat]) modifiers[effect.stat] = {add: 0, multiply: 1};
+                if (effect.type === "set") modifiers[effect.stat].set = effect.value;
+                else if (effect.operation === "add") modifiers[effect.stat].add += safeNumber(effect.value, 0);
+                else if (effect.operation === "multiply") modifiers[effect.stat].multiply *= safeNumber(effect.value, 1);
+            }
+            else if (effect.type === "enable" && effect.feature) features.push(effect.feature);
+        }));
+        return {unlocks, modifiers, features};
+    }
+
+    function compiledModifierValue(compiled, name, fallback) {
+        const modifier = compiled && compiled.modifiers && compiled.modifiers[name];
+        if (!modifier) return fallback;
+        if (modifier.operation === "set") return safeNumber(modifier.value, fallback);
+        if (modifier.operation === "add") return fallback + safeNumber(modifier.value, 0);
+        if (modifier.operation === "multiply") return fallback * safeNumber(modifier.value, 1);
+        let value = modifier.set === undefined ? fallback : safeNumber(modifier.set, fallback);
+        value += safeNumber(modifier.add, 0);
+        value *= safeNumber(modifier.multiply, 1);
+        return value;
+    }
+
+    function computeTechCapabilities(faction) {
+        const unlockedTechnologies = faction && faction.settlements && faction.settlements[0]
+            ? allTechnologies().filter((tech) => hasTech(faction, tech.id)) : [];
+        let compiled;
+        try {
+            compiled = Core.compileTechnologyEffects ? Core.compileTechnologyEffects(unlockedTechnologies) : fallbackCompileTechnologyEffects(unlockedTechnologies);
+        }
+        catch (error) {
+            if (root.console && console.error) console.error("Human Society technology effect error", error);
+            compiled = fallbackCompileTechnologyEffects(unlockedTechnologies);
+        }
+        const unlocks = {};
+        ["building", "weapon", "armor", "role", "resource", "recipe"].forEach((target) => {
+            unlocks[target] = new Set(compiled && compiled.unlocks && compiled.unlocks[target] || []);
+        });
+        const features = new Set(compiled && compiled.features || []);
+        return {
+            unlocks,
+            features,
+            modifiers: {
+                carryCapacity: Math.max(C.BASE_CARRY_CAPACITY, compiledModifierValue(compiled, "carryCapacity", C.BASE_CARRY_CAPACITY)),
+                harvestDurationMultiplier: Math.max(0.1, compiledModifierValue(compiled, "harvestDurationMultiplier", 1)),
+                woodHarvestDurationMultiplier: Math.max(0.1, compiledModifierValue(compiled, "woodHarvestDurationMultiplier", 1)),
+                stoneHarvestDurationMultiplier: Math.max(0.1, compiledModifierValue(compiled, "stoneHarvestDurationMultiplier", 1)),
+                foodHarvestDurationMultiplier: Math.max(0.1, compiledModifierValue(compiled, "foodHarvestDurationMultiplier", 1)),
+                buildDurationMultiplier: Math.max(0.1, compiledModifierValue(compiled, "buildDurationMultiplier", 1)),
+                roleWorkRateMultiplier: Math.max(0.1, compiledModifierValue(compiled, "roleWorkRateMultiplier", 1)),
+                knowledgeRateMultiplier: Math.max(0.1, compiledModifierValue(compiled, "knowledgeRateMultiplier", 1)),
+                milestoneKnowledgeMultiplier: Math.max(0.1, compiledModifierValue(compiled, "milestoneKnowledgeMultiplier", 1)),
+                hutHousingBonus: Math.max(0, compiledModifierValue(compiled, "hutHousingBonus", 0)),
+                constructionSlots: Math.max(1, Math.floor(compiledModifierValue(compiled, "constructionSlots", 1))),
+                peacetimeWarriors: Math.max(0, Math.floor(compiledModifierValue(compiled, "peacetimeWarriors", 0))),
+                wartimeWarriorRatio: Math.max(0, Math.min(1, compiledModifierValue(compiled, "wartimeWarriorRatio", C.WARTIME_WARRIOR_RATIO))),
+                incomingDamageMultiplier: Math.max(0.1, Math.min(1, compiledModifierValue(compiled, "incomingDamageMultiplier", 1))),
+                oldTechCostMultiplier: Math.max(0.1, Math.min(1, compiledModifierValue(compiled, "oldTechCostMultiplier", 1))),
+                structureDamageMultiplier: Math.max(0.1, compiledModifierValue(compiled, "structureDamageMultiplier", 1))
+            }
         };
-        if (!faction) return mods;
-        if (hasTech(faction, "organized_gathering")) { mods.carryCapacity = C.ORGANIZED_CARRY_CAPACITY; mods.harvestSpeed *= 0.9; }
-        if (hasTech(faction, "woodworking")) { mods.buildSpeed *= 0.8; mods.woodStructureHp *= 1.2; }
-        if (hasTech(faction, "clan_council")) mods.knowledgeRate *= 1.1;
-        if (hasTech(faction, "oral_tradition")) mods.milestoneKnowledge *= 1.25;
-        if (hasTech(faction, "polished_axes")) mods.woodHarvestSpeed *= 0.8;
-        if (hasTech(faction, "quarrying")) mods.stoneHarvestSpeed *= 0.75;
-        if (hasTech(faction, "craft_specialization")) mods.roleWorkSpeed *= 1.15;
-        if (hasTech(faction, "granary")) mods.birthFoodCost = C.BIRTH_FOOD_COST;
-        if (hasTech(faction, "irrigation")) { mods.farmYield *= 1.25; mods.farmPlots += 2; }
-        if (hasTech(faction, "militia")) { mods.peacetimeWarriors = 1; mods.wartimeWarriorRatio = 0.5; }
-        if (hasTech(faction, "writing")) mods.knowledgeRate *= 1.2;
-        if (hasTech(faction, "administration")) mods.constructionSlots = 2;
-        if (hasTech(faction, "shield_formation")) mods.damageReduction = Math.max(mods.damageReduction, 0.15);
-        if (hasTech(faction, "iron_smelting")) { mods.harvestSpeed *= 0.8; mods.buildSpeed *= 0.8; }
-        if (hasTech(faction, "codified_law")) mods.hostilityDecayMultiplier *= 1.5;
-        if (hasTech(faction, "iron_armor")) mods.damageReduction = Math.max(mods.damageReduction, 0.25);
-        if (hasTech(faction, "crop_rotation")) { mods.farmYield *= 1.4; mods.farmPlots += 2; }
-        if (hasTech(faction, "library")) { mods.knowledgeRate *= 1.4; mods.oldTechDiscount = 0.2; }
-        if (hasTech(faction, "siege_engineering")) mods.structureDamageMultiplier = 2;
-        return mods;
+    }
+
+    function computeTechModifiers(faction) {
+        const capabilities = computeTechCapabilities(faction);
+        if (faction) faction.techCapabilities = capabilities;
+        const mods = capabilities.modifiers;
+        return {
+            carryCapacity: mods.carryCapacity,
+            harvestSpeed: mods.harvestDurationMultiplier,
+            woodHarvestSpeed: mods.woodHarvestDurationMultiplier,
+            stoneHarvestSpeed: mods.stoneHarvestDurationMultiplier,
+            foodHarvestSpeed: mods.foodHarvestDurationMultiplier,
+            buildSpeed: mods.buildDurationMultiplier,
+            knowledgeRate: mods.knowledgeRateMultiplier,
+            milestoneKnowledge: mods.milestoneKnowledgeMultiplier,
+            roleWorkSpeed: mods.roleWorkRateMultiplier,
+            hutHousingBonus: mods.hutHousingBonus,
+            constructionSlots: mods.constructionSlots,
+            wartimeWarriorRatio: mods.wartimeWarriorRatio,
+            peacetimeWarriors: mods.peacetimeWarriors,
+            incomingDamageMultiplier: mods.incomingDamageMultiplier,
+            structureDamageMultiplier: mods.structureDamageMultiplier,
+            oldTechDiscount: 1 - mods.oldTechCostMultiplier
+        };
+    }
+
+    function factionHasUnlock(faction, target, id) {
+        if (!faction) return false;
+        if (!faction.techCapabilities) faction.techModifiers = computeTechModifiers(faction);
+        return !!(faction.techCapabilities && faction.techCapabilities.unlocks[target] && faction.techCapabilities.unlocks[target].has(id));
+    }
+
+    function factionHasFeature(faction, feature) {
+        if (!faction) return false;
+        if (!hasTechnologyData()) return true;
+        if (!faction.techCapabilities) faction.techModifiers = computeTechModifiers(faction);
+        return !!(faction.techCapabilities && faction.techCapabilities.features.has(feature));
     }
 
     function unlockedBuilding(faction, type) {
         if (type === "lumberyard") return true;
-        if (type === "hut") return hasTech(faction, "simple_shelters") || !hasTechnologyData();
-        if (type === "hearth") return hasTech(faction, "controlled_fire");
-        if (type === "workshop") return hasTech(faction, "artisan_shed") || !hasTechnologyData();
-        if (type === "quarry") return hasTech(faction, "quarrying");
-        if (type === "farm") return hasTech(faction, "seed_selection") || !hasTechnologyData();
-        if (type === "granary") return hasTech(faction, "granary");
-        if (type === "kiln") return hasTech(faction, "charcoal_kiln");
-        if (type === "foundry") return hasTech(faction, "bronze_foundry");
-        if (type === "forge") return hasTech(faction, "forge");
-        if (type === "palisade") return hasTech(faction, "palisade_defense");
-        if (type === "watchtower") return hasTech(faction, "stone_fortifications");
-        if (type === "keep") return hasTech(faction, "castle_building");
-        if (type === "siege_workshop") return hasTech(faction, "siege_workshop");
-        if (type === "library") return hasTech(faction, "library");
-        if (type === "market") return hasTech(faction, "guild_market") || hasTech(faction, "barter");
-        return true;
+        if (!hasTechnologyData()) return type === "hut" || type === "quarry";
+        return factionHasUnlock(faction, "building", type);
     }
 
     function eraDefinition(eraId) {
         return manager.eras.get(eraId) || (TechData.ERAS || []).find((era) => era.id === eraId) || null;
+    }
+
+    function smeltingWoodReserveFor(value) {
+        const eraId = typeof value === "string" ? value : value && value.eraId;
+        return Math.max(0, Math.floor(safeNumber(WOOD_SMELTING_RESERVE_BY_ERA[ERA_INDEX.has(eraId) ? eraId : DEFAULT_ERA_ID], 0)));
     }
 
     function techEraId(tech) {
@@ -728,15 +929,7 @@
 
     function availableFuelStock(stock) {
         ensureStock({stock: stock});
-        const available = {};
-        let detailedWood = 0;
-        ["tree_branch", "bamboo", "wood"].forEach((fuel) => {
-            available[fuel] = Math.max(0, Math.floor(safeNumber(stock.materials && stock.materials[fuel], 0)));
-            detailedWood += available[fuel];
-        });
-        if (safeNumber(stock.wood, 0) > detailedWood) available.wood += Math.floor(stock.wood - detailedWood);
-        available.charcoal = Math.max(0, Math.floor(materialAmount(stock, "charcoal")));
-        return available;
+        return {wood: Math.max(0, Math.floor(materialAmount(stock, "wood")))};
     }
 
     function availableHeat(stock) {
@@ -915,46 +1108,10 @@
     }
 
     function rawBreakthroughResource(resource) {
-        if (resource === "stone" || resource === "copper" || resource === "tin" || resource === "raw_iron") return resource;
+        if (resource === "stone" || resource === "copper" || resource === "raw_iron") return resource;
         if (resource === "iron" || resource === "steel") return "raw_iron";
         if (resource === "bronze") return "copper";
         return null;
-    }
-
-    function breakthroughElement(resource) {
-        if (resource === "stone") return elements.rock ? "rock" : "stone";
-        if (resource === "raw_iron") return elements.iron_ore ? "iron_ore" : "iron";
-        return elements[resource] ? resource : null;
-    }
-
-    function resourceExistsForBreakthrough(resource) {
-        const nodes = manager.resourceIndex.get(resource) || [];
-        return nodes.some(node => node && node.pixel && !node.pixel.del);
-    }
-
-    function createTerritoryMineralDeposit(faction, banner, blocker) {
-        const resource = rawBreakthroughResource(blocker && blocker.resource);
-        const element = breakthroughElement(resource);
-        if (!resource || !element || resourceExistsForBreakthrough(resource)) return 0;
-        const deficit = Math.max(1, Math.ceil(safeNumber(blocker.required, 1)-safeNumber(blocker.current, 0)));
-        const multiplier = blocker.resource === "iron" ? 2 : (blocker.resource === "steel" ? 4 : (blocker.resource === "bronze" ? 3 : 1));
-        const amount = Math.max(3, Math.min(12, deficit*multiplier+1));
-        const candidates = currentPixels.filter(pixel => pixel && !pixel.del && (pixel.element === "rock" || pixel.element === "dirt") &&
-            manager.territory && manager.territory.ownerAt(pixel.x) === faction.id && !pixel.eraseProtected && !getActorFromPixel(pixel) && !isBuildingCorePixel(pixel));
-        candidates.sort((a, b) => (b.y-a.y) || Core.distance(a.x,a.y,banner.x,banner.y)-Core.distance(b.x,b.y,banner.x,banner.y));
-        let changed = 0;
-        for (let i = 0; i < candidates.length && changed < amount; i++) {
-            const pixel = candidates[i];
-            if (pixelsAt(pixel.x,pixel.y).some(other => other !== pixel && (getActorFromPixel(other) || isBuildingCorePixel(other)))) continue;
-            changePixel(pixel, element);
-            pixel.discoveredByFactionId = faction.id;
-            changed++;
-        }
-        if (changed) {
-            rebuildResourceAndTreeIndex();
-            logSettlementEvent(banner, "mineral_breakthrough", "领地内发现矿脉：" + resource, {resource, amount:changed, blockedTechnologyId:blocker.techId});
-        }
-        return changed;
     }
 
     function updateResearchBlocker(faction, banner, tech) {
@@ -976,10 +1133,6 @@
         research.blockedCurrent = safeNumber(blocker.current, 0);
         research.blockedRequired = safeNumber(blocker.required, 0);
         if (!Number.isFinite(research.blockedSinceTick)) research.blockedSinceTick = pixelTicks;
-        if (pixelTicks-research.blockedSinceTick >= 900 && createTerritoryMineralDeposit(faction,banner,blocker) > 0) {
-            research.lastBreakthroughTick = pixelTicks;
-            research.blockedSinceTick = pixelTicks;
-        }
     }
 
     function unlockTechnology(faction, banner, tech) {
@@ -998,6 +1151,7 @@
             settlement.research = research;
             settlement.eraId = banner.eraId;
         });
+        reconcileFactionEquipment(faction);
         logSettlementEvent(banner, "technology", "科技完成：" + (tech.name || tech.id), {technologyId: tech.id, forced: !!research.forcedUnlocked[tech.id]});
         return true;
     }
@@ -1007,9 +1161,10 @@
         if (currentIndex >= ERA_ORDER.length - 1) return false;
         const era = eraDefinition(banner.eraId);
         const eraTechIds = era && era.techIds || (TECHS_BY_ERA.get(banner.eraId) || []).map((tech) => tech.id);
-        const progress = Core.eraResearchProgress ? Core.eraResearchProgress(banner.research.unlocked, eraTechIds, C.RESEARCH_ERA_UNLOCK_COUNT) : {
+        const requiredToAdvance = Math.max(1, safeNumber(era && era.requiredTechsToAdvance, Math.floor(eraTechIds.length * 0.7) + 1));
+        const progress = Core.eraResearchProgress ? Core.eraResearchProgress(banner.research.unlocked, eraTechIds, requiredToAdvance) : {
             completed: eraTechIds.filter((techId) => banner.research.unlocked[techId]).length,
-            canAdvance: eraTechIds.filter((techId) => banner.research.unlocked[techId]).length >= C.RESEARCH_ERA_UNLOCK_COUNT
+            canAdvance: eraTechIds.filter((techId) => banner.research.unlocked[techId]).length >= requiredToAdvance
         };
         banner.research.eraCompleted = progress.completed;
         if (!progress.canAdvance) return false;
@@ -1019,6 +1174,7 @@
         banner.research.milestones.eras = safeNumber(banner.research.milestones.eras, 0) + 1;
         faction.eraId = banner.eraId;
         faction.settlements.forEach((settlement) => { settlement.eraId = banner.eraId; settlement.research = banner.research; });
+        reconcileFactionEquipment(faction);
         logSettlementEvent(banner, "era", "进入时代：" + (eraDefinition(banner.eraId) && eraDefinition(banner.eraId).name || banner.eraId), {eraId: banner.eraId});
         return true;
     }
@@ -1097,12 +1253,32 @@
         return manager.structuresById.get(Number(buildingId)) || null;
     }
 
+    function buildingSpriteScalePercent() {
+        const value = typeof settings !== "undefined" ? safeNumber(settings.humanSocietyBuildingScale, 100) : 100;
+        return Math.max(50, Math.min(200, value));
+    }
+
+    function buildingDisplayRect(building, spriteBounds) {
+        const bounds = spriteBounds || {width: 1, height: 1};
+        if (typeof World.buildingSpriteRect === "function") {
+            return World.buildingSpriteRect(building.x, building.y, bounds.width, bounds.height, buildingSpriteScalePercent());
+        }
+        const scale = 3 * buildingSpriteScalePercent() / 100;
+        return {left: building.x + 0.5 - scale / 2, right: building.x + 0.5 + scale / 2, top: building.y + 1 - scale, bottom: building.y + 1, width: scale, height: scale, coreX: building.x, coreY: building.y};
+    }
+
+    function knownBuildingSpriteBounds(building) {
+        const descriptor = buildingSpriteDescriptor(building);
+        const asset = descriptor && buildingSpriteAssets.get(descriptor.fileName);
+        return asset && asset.bounds || null;
+    }
+
     function buildingVisualAt(x, y) {
         let found = null;
         const inspect = (pixel) => {
             if (!isBuildingCorePixel(pixel) || pixel.buildingState === "destroyed") return;
-            const rect = World.buildingSpriteRect ? World.buildingSpriteRect(pixel.x, pixel.y) : {left: pixel.x - 1, right: pixel.x + 1, top: pixel.y - 2, bottom: pixel.y};
-            if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) found = pixel;
+            const rect = buildingDisplayRect(pixel, knownBuildingSpriteBounds(pixel));
+            if (x + 1 > rect.left && x < rect.right && y + 1 > rect.top && y < rect.bottom) found = pixel;
         };
         manager.settlements.forEach(inspect);
         manager.constructionSites.forEach(inspect);
@@ -1114,7 +1290,10 @@
         if (!pixel) return pixel;
         if (!Number.isFinite(pixel.buildingId)) pixel.buildingId = manager.nextBuildingId++;
         manager.nextBuildingId = Math.max(manager.nextBuildingId, pixel.buildingId + 1);
-        pixel.buildingType = type || pixel.buildingType || (pixel.element === "civ_banner" ? "town_center" : pixel.element.replace(/^civ_|_core$/g, ""));
+        const requestedType = type || pixel.buildingType || pixel.blueprintType || pixel.element;
+        const requestedDescriptor = typeof World.buildingSpriteDescriptor === "function" ? World.buildingSpriteDescriptor(requestedType, DEFAULT_ERA_ID) : null;
+        const elementDescriptor = !requestedDescriptor && typeof World.buildingSpriteDescriptor === "function" ? World.buildingSpriteDescriptor(pixel.element, DEFAULT_ERA_ID) : null;
+        pixel.buildingType = requestedDescriptor && requestedDescriptor.type || elementDescriptor && elementDescriptor.type || requestedType.replace(/^civ_|_core$/g, "");
         if (!pixel.buildingState) pixel.buildingState = pixel.element === "civ_construction" ? "construction" : "complete";
         pixel.isBuildingCore = true;
         pixel.alwaysOverlay = true;
@@ -1126,6 +1305,87 @@
         manager.nextTerritoryClaimOrder = Math.max(manager.nextTerritoryClaimOrder, pixel.territoryClaimOrder + 1);
         manager.structuresById.set(pixel.buildingId, pixel);
         return pixel;
+    }
+
+    function buildingSupportPixel(pixel) {
+        if (!pixel || pixel.del) return false;
+        if (pixel.element === "civ_tunnel" || isBuildingCorePixel(pixel)) return true;
+        if (getActorFromPixel(pixel)) return false;
+        if (typeof isCreaturePixel === "function" && isCreaturePixel(pixel)) return false;
+        if (typeof isPassableVegetationPixel === "function" && isPassableVegetationPixel(pixel)) return false;
+        const info = elements[pixel.element] || {};
+        const descriptor = resourceDescriptor(pixel);
+        if (pixel._civResourceDrop === true || descriptor && (descriptor.resourceDrop || descriptor.kind === "wood" || descriptor.kind === "food")) return false;
+        if (info.state === "liquid" || info.state === "gas" || info.isGas === true) return false;
+        if (typeof isNonBlockingPixel === "function" && isNonBlockingPixel(pixel)) return false;
+        return info.state === "solid";
+    }
+
+    function buildingCellHasSupport(building, x, y) {
+        if (outOfBounds(x, y)) return true;
+        return pixelsAt(x, y).some((pixel) => pixel !== building && buildingSupportPixel(pixel));
+    }
+
+    function syncBuildingPosition(building, oldX, oldY) {
+        const dx = building.x - oldX;
+        const dy = building.y - oldY;
+        if (!dx && !dy) return;
+        if (Number.isFinite(building.originX)) building.originX += dx;
+        if (Number.isFinite(building.originY)) building.originY += dy;
+        if (Array.isArray(building.plots)) {
+            building.plots.forEach((plot) => {
+                if (!plot) return;
+                if (Number.isFinite(plot.x)) plot.x += dx;
+                if (Number.isFinite(plot.y)) plot.y += dy;
+            });
+        }
+        if (dx && building.territoryClaimId) reserveBuildingTerritory(building);
+        manager.derivedIndexesDirty = true;
+    }
+
+    function moveBuildingCore(building, x, y, forceExit) {
+        if (!building || building.del || outOfBounds(x, y) || getBuildingCoreAt(x, y)) return false;
+        if (pixelsAt(x, y).some((pixel) => pixel.element === "civ_tunnel")) return false;
+        const oldX = building.x;
+        const oldY = building.y;
+        let moved = movePixel(building, x, y);
+        if (!moved && forceExit && typeof detachPixelFromGrid === "function" && typeof attachPixelToGrid === "function") {
+            detachPixelFromGrid(building, true);
+            moved = attachPixelToGrid(building, x, y, true);
+            if (!moved) attachPixelToGrid(building, oldX, oldY, true, true);
+        }
+        if (moved) syncBuildingPosition(building, oldX, oldY);
+        return moved;
+    }
+
+    function settleBuildingCore(building) {
+        if (!isBuildingCorePixel(building) || building.buildingState === "destroyed") return false;
+        const targetY = building.y + 1;
+        if (buildingCellHasSupport(building, building.x, targetY)) return false;
+        return moveBuildingCore(building, building.x, targetY, false);
+    }
+
+    function applyBuildingGravity() {
+        const seen = new Set();
+        const settle = (building) => {
+            if (seen.has(building)) return;
+            seen.add(building);
+            settleBuildingCore(building);
+        };
+        manager.settlements.forEach(settle);
+        manager.constructionSites.forEach(settle);
+        manager.structures.forEach(settle);
+    }
+
+    function relocateBuildingAboveTunnel(core) {
+        if (!isBuildingCorePixel(core) || !pixelsAt(core.x, core.y).some((pixel) => pixel !== core && pixel.element === "civ_tunnel")) return false;
+        for (let y = core.y - 1; y >= 0; y--) {
+            const occupants = pixelsAt(core.x, y);
+            if (occupants.some((pixel) => pixel !== core && (pixel.element === "civ_tunnel" || buildingSupportPixel(pixel)))) continue;
+            if (!buildingCellHasSupport(core, core.x, y + 1)) continue;
+            return moveBuildingCore(core, core.x, y, true);
+        }
+        return false;
     }
 
     function rebuildTerritoryIndex() {
@@ -1234,8 +1494,147 @@
         return null;
     }
 
+    function migrateLegacyAmountMap(map) {
+        if (!map || typeof map !== "object") return map;
+        const tin = Math.max(0, safeNumber(map.tin, 0));
+        const charcoal = Math.max(0, safeNumber(map.charcoal, 0));
+        if (tin) map.copper = Math.max(0, safeNumber(map.copper, 0)) + tin;
+        if (charcoal) map.wood = Math.max(0, safeNumber(map.wood, 0)) + charcoal * 3;
+        Object.keys(map).forEach((key) => {
+            if (key.indexOf("seed:") !== 0) return;
+            map.food = Math.max(0, safeNumber(map.food, 0)) + Math.max(0, safeNumber(map[key], 0));
+            delete map[key];
+        });
+        delete map.tin;
+        delete map.charcoal;
+        return map;
+    }
+
+    function migratedResourceKind(kind) {
+        if (kind === "tin") return "copper";
+        if (kind === "charcoal") return "wood";
+        if (String(kind || "").indexOf("seed:") === 0) return "food";
+        return kind;
+    }
+
+    function migrateLegacyResourcePixel(pixel) {
+        if (!pixel || pixel.del || safeNumber(pixel.resourceSchemaVersion, 0) >= RESOURCE_SCHEMA_VERSION) return pixel;
+        pixel.resourceSchemaVersion = RESOURCE_SCHEMA_VERSION;
+        if (pixel.carry && typeof pixel.carry === "object") migrateLegacyAmountMap(pixel.carry);
+        if (pixel.costs && typeof pixel.costs === "object") migrateLegacyAmountMap(pixel.costs);
+        if (pixel.carryKind) pixel.carryKind = migratedResourceKind(pixel.carryKind);
+        if (pixel.workTrip && pixel.workTrip.resourceKind) pixel.workTrip.resourceKind = migratedResourceKind(pixel.workTrip.resourceKind);
+        if (pixel.resumeAfterDelivery && pixel.resumeAfterDelivery.resourceKind) pixel.resumeAfterDelivery.resourceKind = migratedResourceKind(pixel.resumeAfterDelivery.resourceKind);
+        if (pixel.resourceKind) {
+            if (pixel.resourceKind === "charcoal") pixel.resourceAmount = Math.max(1, safeNumber(pixel.resourceAmount, 1)) * 3;
+            pixel.resourceKind = migratedResourceKind(pixel.resourceKind);
+        }
+        if (pixel.resourceMaterial) pixel.resourceMaterial = migratedResourceKind(pixel.resourceMaterial);
+        if (pixel.element === "civ_tin_resource" && elements.civ_copper_resource) changePixel(pixel, "civ_copper_resource");
+        else if (pixel.element === "civ_charcoal_resource" && elements.civ_wood_resource) {
+            changePixel(pixel, "civ_wood_resource");
+        }
+        else if (pixel.element === "civ_seed_resource" && elements.civ_food_resource) changePixel(pixel, "civ_food_resource");
+        return pixel;
+    }
+
+    function copyResourceCost(cost) {
+        const copied = {};
+        Object.keys(cost || {}).forEach((key) => {
+            const amount = Math.max(0, Math.floor(safeNumber(Number(cost[key]), 0)));
+            if (amount) copied[key] = amount;
+        });
+        return copied;
+    }
+
+    function canonicalWeaponId(weaponId) {
+        const id = String(weaponId || "fists");
+        if (id === "fist") return "fists";
+        return LEGACY_WEAPON_IDS[id] || id;
+    }
+
+    function weaponDescriptor(weaponId) {
+        const id = canonicalWeaponId(weaponId);
+        return manager.weapons.get(id) || Core.WEAPONS && (Core.WEAPONS[id] || Core.WEAPONS.fists) || null;
+    }
+
+    function canonicalArmorId(armorId) {
+        const id = String(armorId || "none");
+        return id === "unarmored" ? "none" : id;
+    }
+
+    function armorDescriptor(armorId) {
+        const id = canonicalArmorId(armorId);
+        return manager.armors.get(id) || Core.ARMORS && (Core.ARMORS[id] || Core.ARMORS.none) || {
+            id: "none", bonusHp: 0, cost: {}
+        };
+    }
+
+    function syncActorHealth(actor, equipmentChange) {
+        if (!actor) return actor;
+        const child = actor.element === "civ_child";
+        const baseFallback = child ? C.CHILD_HP : C.ADULT_HP;
+        actor.baseMaxHp = Math.max(1, safeNumber(actor.baseMaxHp, safeNumber(actor.maxHp, baseFallback)));
+        const armor = child ? armorDescriptor("none") : armorDescriptor(actor.armor);
+        actor.armor = child ? "none" : canonicalArmorId(armor.id);
+        actor.armorBonusHp = Math.max(0, safeNumber(armor.bonusHp, 0));
+        if (!Number.isFinite(actor.healthDamage)) {
+            actor.healthDamage = Math.max(0, safeNumber(actor.maxHp, actor.baseMaxHp) - safeNumber(actor.hp, actor.baseMaxHp));
+        }
+        actor.healthDamage = Math.max(0, safeNumber(actor.healthDamage, 0));
+        actor.maxHp = actor.baseMaxHp + actor.armorBonusHp;
+        if (equipmentChange && actor.healthDamage >= actor.maxHp) actor.equipmentSurvivalFloor = true;
+        else if (actor.healthDamage < actor.maxHp) delete actor.equipmentSurvivalFloor;
+        if (actor.dead) actor.hp = 0;
+        else actor.hp = Math.max(actor.equipmentSurvivalFloor ? 1 : 0, actor.maxHp - actor.healthDamage);
+        return actor;
+    }
+
+    function healActor(actor, amount) {
+        if (!actor || actor.del || actor.dead) return false;
+        const healing = Math.max(0, safeNumber(amount, 0));
+        if (!healing || safeNumber(actor.healthDamage, 0) <= 0) return false;
+        actor.healthDamage = Math.max(0, safeNumber(actor.healthDamage, 0) - healing);
+        syncActorHealth(actor, false);
+        return true;
+    }
+
+    function migrateActorEquipment(actor) {
+        if (!actor || actor.del) return actor;
+        const previousSchema = safeNumber(actor.equipmentSchemaVersion, 0);
+        const oldWeaponId = String(actor.weapon || "fists");
+        const weaponId = canonicalWeaponId(oldWeaponId);
+        actor.weapon = weaponId;
+        if (weaponId === "fists" || actor.element === "civ_child") {
+            actor.weapon = "fists";
+            delete actor.weaponPaidCost;
+        }
+        else if (!actor.weaponPaidCost || typeof actor.weaponPaidCost !== "object") {
+            const legacyCost = LEGACY_WEAPON_COSTS[oldWeaponId];
+            const descriptor = weaponDescriptor(weaponId);
+            actor.weaponPaidCost = copyResourceCost(legacyCost || descriptor && descriptor.cost || {});
+        }
+        else actor.weaponPaidCost = copyResourceCost(actor.weaponPaidCost);
+        if (previousSchema < 3) {
+            actor.armor = "none";
+            delete actor.armorPaidCost;
+            actor.baseMaxHp = Math.max(1, safeNumber(actor.maxHp, actor.element === "civ_child" ? C.CHILD_HP : C.ADULT_HP));
+            actor.healthDamage = Math.max(0, actor.baseMaxHp - safeNumber(actor.hp, actor.baseMaxHp));
+        }
+        else {
+            actor.armor = canonicalArmorId(actor.armor);
+            if (actor.armor === "none" || actor.element === "civ_child") delete actor.armorPaidCost;
+            else actor.armorPaidCost = copyResourceCost(actor.armorPaidCost || armorDescriptor(actor.armor).cost || {});
+        }
+        syncActorHealth(actor, previousSchema < EQUIPMENT_SCHEMA_VERSION);
+        actor.equipmentSchemaVersion = EQUIPMENT_SCHEMA_VERSION;
+        return actor;
+    }
+
     function registerPixel(pixel) {
         if (!pixel || pixel.del) return;
+        migrateLegacyResourcePixel(pixel);
+        if (ACTOR_ELEMENTS.has(pixel.element)) migrateActorEquipment(pixel);
         let changed = false;
         if (pixel.element === "civ_body") {
             changed = !manager.actors.has(pixel);
@@ -1281,7 +1680,7 @@
         if (!pixel) return;
         const fields = [
             "humanId", "factionId", "settlementId", "role", "task", "targetX", "targetY", "targetId", "targetKey",
-            "targetKind", "hp", "maxHp", "hunger", "weapon", "carryKind", "carryElement", "carryAmount",
+            "targetKind", "hp", "maxHp", "baseMaxHp", "healthDamage", "equipmentSurvivalFloor", "hunger", "weapon", "weaponPaidCost", "armor", "armorPaidCost", "armorBonusHp", "equipmentSchemaVersion", "carryKind", "carryElement", "carryAmount",
             "attackReadyTick", "lastThinkTick", "lastPlanTick", "lastHungerTick", "lastDamageTick", "resourceScanPhase", "harvestProgress", "stuckCount", "noProgressCount", "bestTaskDistance", "progressTargetX", "progressTargetY", "lastX", "lastY", "underAttackUntil",
             "birthTick", "ageTicks", "lifespanYears", "naturalDeathTick", "deathCause", "factionColor", "buildingId", "structureHp", "structureMaxHp", "harvestX", "harvestY", "blockedResourceKey", "blockedResourceUntil", "blockedResourceCategory", "blockedResourceCategoryUntil",
             "stock", "diplomacy", "housing", "birthReadyTick", "lastBirthTick", "lastHostileTick",
@@ -1413,11 +1812,17 @@
             dead: false,
             dir: opts.dir || (Math.random() < 0.5 ? -1 : 1),
             panic: 0,
-            hp: opts.hp === undefined ? C.ADULT_HP : opts.hp,
-            maxHp: C.ADULT_HP,
+            hp: opts.hp === undefined ? safeNumber(opts.maxHp, C.ADULT_HP) : opts.hp,
+            maxHp: safeNumber(opts.maxHp, C.ADULT_HP),
+            baseMaxHp: safeNumber(opts.baseMaxHp, safeNumber(opts.maxHp, C.ADULT_HP)),
+            healthDamage: opts.healthDamage,
             role: opts.role || "worker",
             task: "planning",
-            weapon: opts.weapon || "fists",
+            weapon: canonicalWeaponId(opts.weapon || "fists"),
+            weaponPaidCost: opts.weaponPaidCost ? copyResourceCost(opts.weaponPaidCost) : undefined,
+            armor: canonicalArmorId(opts.armor || "none"),
+            armorPaidCost: opts.armorPaidCost ? copyResourceCost(opts.armorPaidCost) : undefined,
+            equipmentSchemaVersion: EQUIPMENT_SCHEMA_VERSION,
             carryKind: null,
             carryElement: null,
             carryAmount: 0,
@@ -1430,6 +1835,9 @@
             lastY: body.y,
             underAttackUntil: 0
         });
+        if (body.weapon === "fists") delete body.weaponPaidCost;
+        if (body.armor === "none") delete body.armorPaidCost;
+        syncActorHealth(body, true);
         if (Number.isFinite(opts.birthTick)) body.birthTick = opts.birthTick;
         if (Number.isFinite(opts.lifespanYears)) body.lifespanYears = opts.lifespanYears;
         if (Number.isFinite(opts.naturalDeathTick)) body.naturalDeathTick = opts.naturalDeathTick;
@@ -1528,9 +1936,19 @@
         ["How is the work going?", "活干得怎么样？"], ["The town is growing.", "聚落越来越大了。"],
         ["Stay safe out there.", "出门注意安全。"], ["We should check the supplies.", "该看看库存了。"]
     ];
+    const LEGACY_SPEECH_ZH = Object.create(null);
+    Object.keys(TASK_SPEECH).forEach((task) => { LEGACY_SPEECH_ZH[TASK_SPEECH[task][0]] = TASK_SPEECH[task][1]; });
+    IDLE_CHAT.forEach((entry) => { LEGACY_SPEECH_ZH[entry[0]] = entry[1]; });
+    LEGACY_SPEECH_ZH["Yes, I agree."] = "嗯，说得对。";
 
     function speechText(entry) {
         return entry ? entry[isChineseUi() ? 1 : 0] : "";
+    }
+
+    function localizedSpeechText(text) {
+        const value = String(text || "").trim();
+        if (!value || !isChineseUi() || /[\u3400-\u9fff]/.test(value)) return value;
+        return LEGACY_SPEECH_ZH[value] || "……";
     }
 
     function speakPerson(actor, text, priority, duration) {
@@ -1611,6 +2029,8 @@
         manager.fireTargets.length = 0;
         manager.lastFireScanTick = -Infinity;
         manager.treeById.clear();
+        manager.treeRootColumns.clear();
+        manager.treeRootColumnsTick = -Infinity;
         manager.treePixelsByLineage.clear();
         manager.dirtyTreeLineages.clear();
         manager.pendingResourceDrops.length = 0;
@@ -1647,6 +2067,7 @@
 
     function rebuildIndexes(force) {
         if (!force && manager.lastFullRebuild >= 0 && pixelTicks - manager.lastFullRebuild < C.FULL_REBUILD_INTERVAL) return;
+        manager.treeRootColumnsTick = -Infinity;
         manager.actors.clear();
         manager.heads.clear();
         manager.settlements.clear();
@@ -1668,26 +2089,57 @@
 
     function migrateLegacySocietyPixels() {
         const coresByBuilding = new Map();
-        manager.settlements.forEach((pixel) => { if (Number.isFinite(pixel.buildingId)) coresByBuilding.set(pixel.buildingId, pixel); });
-        manager.constructionSites.forEach((pixel) => { if (Number.isFinite(pixel.buildingId)) coresByBuilding.set(pixel.buildingId, pixel); });
-        manager.structures.forEach((pixel) => { if (STRUCTURE_CORES.has(pixel.element) && Number.isFinite(pixel.buildingId)) coresByBuilding.set(pixel.buildingId, pixel); });
+        const allCores = new Set();
+        manager.settlements.forEach((pixel) => { allCores.add(pixel); if (Number.isFinite(pixel.buildingId)) coresByBuilding.set(pixel.buildingId, pixel); });
+        manager.constructionSites.forEach((pixel) => { allCores.add(pixel); if (Number.isFinite(pixel.buildingId)) coresByBuilding.set(pixel.buildingId, pixel); });
+        manager.structures.forEach((pixel) => { if (STRUCTURE_CORES.has(pixel.element)) { allCores.add(pixel); if (Number.isFinite(pixel.buildingId)) coresByBuilding.set(pixel.buildingId, pixel); } });
         Array.from(manager.structures).forEach((pixel) => {
             if (!pixel || pixel.del || !STRUCTURE_PARTS.has(pixel.element) || !Number.isFinite(pixel.buildingId) || !coresByBuilding.has(pixel.buildingId)) return;
             deleteExactPixel(pixel);
         });
-        coresByBuilding.forEach((core) => {
-            if (!core || core.del || core.societyMigrationVersion >= 2) return;
-            if (Number.isFinite(core.originX) && Number.isFinite(core.originY) && (core.x !== core.originX || core.y !== core.originY) && !getBuildingCoreAt(core.originX, core.originY)) {
-                movePixel(core, core.originX, core.originY);
+        allCores.forEach((core) => {
+            if (!core || core.del) return;
+            if (safeNumber(core.societyMigrationVersion, 0) < 2) {
+                if (Number.isFinite(core.originX) && Number.isFinite(core.originY) && (core.x !== core.originX || core.y !== core.originY) && !getBuildingCoreAt(core.originX, core.originY)) {
+                    moveBuildingCore(core, core.originX, core.originY, false);
+                }
+                if (core.element === "civ_construction" && !Number.isFinite(core.workDone)) {
+                    const blueprint = BLUEPRINTS[core.blueprintType];
+                    core.workRequired = blueprint && blueprint.workRequired || 4;
+                    const oldTotal = Math.max(1, blueprint && blueprint.parts && blueprint.parts.length + 1 || 1);
+                    core.workDone = Math.round(Math.min(1, safeNumber(core.placedParts, 0) / oldTotal) * core.workRequired);
+                }
             }
-            if (core.element === "civ_construction" && !Number.isFinite(core.workDone)) {
-                const blueprint = BLUEPRINTS[core.blueprintType];
-                core.workRequired = blueprint && blueprint.workRequired || 4;
-                const oldTotal = Math.max(1, blueprint && blueprint.parts && blueprint.parts.length + 1 || 1);
-                core.workDone = Math.round(Math.min(1, safeNumber(core.placedParts, 0) / oldTotal) * core.workRequired);
-            }
-            core.societyMigrationVersion = 2;
+            if (safeNumber(core.societyMigrationVersion, 0) < 3) relocateBuildingAboveTunnel(core);
+            core.societyMigrationVersion = 3;
         });
+    }
+
+    function migrateRemovedSocietyContent() {
+        Array.from(manager.constructionSites).forEach((site) => {
+            if (!site || site.del || (site.blueprintType !== "farm" && site.blueprintType !== "granary")) return;
+            cancelConstruction(site, false, {fullRefund: true, reason: "content_removed"});
+        });
+        Array.from(manager.structures).forEach((building) => {
+            if (!building || building.del || !LEGACY_REMOVED_STRUCTURE_CORES.has(building.element)) return;
+            destroyBuilding(building, "content_removed");
+            unregisterPixel(building);
+            cleanupCivilizedFields(building);
+            building.legacyContentMigrationVersion = 1;
+        });
+        for (let i = 0; i < currentPixels.length; i++) {
+            const pixel = currentPixels[i];
+            if (!pixel || pixel.del || pixel.element !== "civ_farm_crop") continue;
+            const mature = pixel.mature === true || pixelTicks >= safeNumber(pixel.matureTick, Infinity);
+            changePixel(pixel, "civ_food_resource");
+            pixel.resourceAmount = mature ? 2 : 1;
+            pixel.resourceKind = "food";
+            pixel._civCollectible = true;
+            pixel._civResourceDrop = true;
+            delete pixel.plantedTick;
+            delete pixel.matureTick;
+            delete pixel.mature;
+        }
     }
 
     function buildWorldIndex(options) {
@@ -1734,8 +2186,20 @@
 
         manager.actors.forEach((actor) => {
             if (!actor || actor.del || actor.dead) return;
+            migrateActorEquipment(actor);
             delete actor.hunger;
             delete actor.lastHungerTick;
+            if (actor.role === "farmer") actor.role = "food";
+            else if (actor.role === "industry") actor.role = "worker";
+            else if (actor.role === "artisan_trade") actor.role = "merchant";
+            if (actor.task === "farm" || actor.role === "worker" && actor.task === "facility") {
+                actor.task = "planning";
+                actor.targetId = undefined;
+                actor.targetKind = undefined;
+                actor.targetX = undefined;
+                actor.targetY = undefined;
+                invalidateNavigation(actor, "legacy_job_removed");
+            }
             if (!actor.task || actor.task === "idle") actor.task = "planning";
             if (!actor.role || actor.role === "child") actor.role = "worker";
             if (!Number.isFinite(actor.humanId)) actor.humanId = manager.nextHumanId++;
@@ -1786,6 +2250,8 @@
             faction.research = banner.research;
         });
 
+        migrateRemovedSocietyContent();
+
         manager.structures.forEach((pixel) => {
             if (!pixel || pixel.del || !Number.isFinite(pixel.factionId)) return;
             maxFactionId = Math.max(maxFactionId, pixel.factionId);
@@ -1822,6 +2288,7 @@
         manager.factionById.forEach((faction) => {
             faction.population = faction.actors.length;
             faction.adultPopulation = faction.adults.length;
+            faction.techModifiers = computeTechModifiers(faction);
             faction.militaryPower = fallbackMilitaryPower(faction.adults);
             const banner = faction.settlements.slice().sort((a, b) => safeNumber(a.foundedTick, a.start || 0) - safeNumber(b.foundedTick, b.start || 0) || a.settlementId - b.settlementId)[0];
             if (banner) {
@@ -1830,7 +2297,7 @@
                     const settlementKeeps = faction.keeps.filter((building) => building.settlementId === settlement.settlementId);
                     const settlementPopulation = faction.actors.filter((actor) => actor.settlementId === settlement.settlementId).length;
                     settlement.population = settlementPopulation;
-                    settlement.housing = 4 + settlementHuts.length * (hasTech(faction, "village_planning") ? 5 : 4) + settlementKeeps.length * 8;
+                    settlement.housing = 4 + settlementHuts.length * (4 + safeNumber(faction.techModifiers.hutHousingBonus, 0)) + settlementKeeps.length * 8;
                     settlement.stage = settlementHuts.length >= 2 ? "village" : (settlementHuts.length ? "hamlet" : "camp");
                     settlement.research = banner.research;
                     settlement.eraId = banner.eraId;
@@ -1838,7 +2305,6 @@
                 faction.eraId = banner.eraId;
                 faction.research = banner.research;
             }
-            faction.techModifiers = computeTechModifiers(faction);
             faction.housing = faction.settlements.reduce((sum, settlement) => sum + Math.max(4, settlement.housing || 4), 0);
         });
 
@@ -1864,13 +2330,14 @@
     }
 
     function fallbackMilitaryPower(adults) {
+        if (Core.computeMilitaryPower) return Core.computeMilitaryPower(adults || []);
         let total = 0;
         for (let i = 0; i < adults.length; i++) {
             const actor = adults[i];
             if (!actor || actor.dead || actor.hp <= 0) continue;
-            const weapon = manager.weapons.get(actor.weapon) || manager.weapons.get("fists") || {power: 1};
+            const weapon = manager.weapons.get(actor.weapon) || manager.weapons.get("fists") || {damage: 5};
             const roleMultiplier = actor.role === "warrior" ? 1.25 : (actor.role === "guard" ? 1.1 : 1);
-            total += (actor.hp / Math.max(1, actor.maxHp || C.ADULT_HP)) * (weapon.power || 1) * roleMultiplier;
+            total += (actor.hp / Math.max(1, actor.baseMaxHp || C.ADULT_HP)) * Math.max(0, safeNumber(weapon.damage, 5)) * roleMultiplier;
         }
         return total;
     }
@@ -1920,6 +2387,7 @@
         if (!elementName || !descriptor || !descriptor.kind) return false;
         manager.resources.set(elementName, Object.assign({yield: 1, harvestTicks: 10}, descriptor));
         if (elements[elementName]) elements[elementName].humanCollectible = true;
+        if (typeof refreshElementPaletteVisibility === "function") refreshElementPaletteVisibility(false);
         return true;
     }
 
@@ -1932,37 +2400,41 @@
 
     function resourceDescriptor(pixel) {
         if (!pixel || pixel.del || !elements[pixel.element]) return null;
+        if (pixel.element === "civ_farm_crop") {
+            if (pixelTicks < safeNumber(pixel.matureTick, safeNumber(pixel.plantedTick, pixelTicks) + C.FARM_GROW_TICKS)) return null;
+            return markCollectibleResource(pixel, {kind: "food", yield: C.FARM_HARVEST_FOOD, harvestTicks: C.THINK_INTERVAL, farmCrop: true});
+        }
         if (pixel.element === "civ_wood_resource") {
-            return markCollectibleResource(pixel, {kind: "wood", material: "wood", yield: 1, harvestTicks: 8, resourceDrop: true});
+            return markCollectibleResource(pixel, {kind: "wood", material: "wood", yield: Math.max(1, safeNumber(pixel.resourceAmount, 1)), harvestTicks: 8, resourceDrop: true});
         }
         if (pixel.element === "civ_tree_sapling_resource") {
             const seed = TREE_SAPLING_ELEMENTS.has(pixel.treeSapling) ? pixel.treeSapling : "sapling";
             return markCollectibleResource(pixel, {kind: "wood", yield: 1, harvestTicks: 6, seed: seed, treeSeed: seed, treeSaplingResource: true, resourceDrop: true});
         }
+        if (TREE_SAPLING_ELEMENTS.has(pixel.element)) {
+            return markCollectibleResource(pixel, {kind: "wood", yield: 1, harvestTicks: 8, treeSeed: pixel.element, treeSaplingResource: true});
+        }
         if (pixel.element === "civ_seed_resource") {
-            const seed = String(pixel.resourceSeed || "wheat_seed");
-            return markCollectibleResource(pixel, {kind: "food", yield: 1, harvestTicks: 6, seed: seed, seedOnly: true, resourceDrop: true});
+            return markCollectibleResource(pixel, {kind: "food", yield: Math.max(1, safeNumber(pixel.resourceAmount, 1)), harvestTicks: 6, resourceDrop: true});
         }
         if (CARRIED_RESOURCE_KINDS[pixel.element]) {
             const kind = CARRIED_RESOURCE_KINDS[pixel.element];
-            return markCollectibleResource(pixel, {kind: kind, material: kind, yield: 1, harvestTicks: 8, resourceDrop: true});
+            return markCollectibleResource(pixel, {kind: kind, material: kind, yield: Math.max(1, safeNumber(pixel.resourceAmount, 1)), harvestTicks: 8, resourceDrop: true});
         }
         if (pixel.element === "civ_resource_drop" && pixel.resourceKind) {
-            return markCollectibleResource(pixel, {kind: pixel.resourceKind, material: pixel.resourceMaterial || pixel.resourceKind, yield: 1, harvestTicks: 8, resourceDrop: true});
+            return markCollectibleResource(pixel, {kind: pixel.resourceKind, material: pixel.resourceMaterial || pixel.resourceKind, yield: Math.max(1, safeNumber(pixel.resourceAmount, 1)), harvestTicks: 8, resourceDrop: true});
         }
         if (pixel.element.indexOf("civ_") === 0) return null;
         if (manager.resources.has(pixel.element)) return markCollectibleResource(pixel, manager.resources.get(pixel.element));
         if (elements[pixel.element].seed === true && !TREE_SAPLING_ELEMENTS.has(pixel.element)) {
-            return markCollectibleResource(pixel, {kind: "food", yield: 1, harvestTicks: 6, seed: pixel.element, seedOnly: true});
+            return markCollectibleResource(pixel, {kind: "food", yield: 1, harvestTicks: 6});
         }
         if (elements[pixel.element].isFood) {
-            const declaredSeed = elements[pixel.element].seed;
-            return markCollectibleResource(pixel, {kind: "food", yield: 1, harvestTicks: 6, seed: declaredSeed === true ? pixel.element : (declaredSeed || null), seedOnly: declaredSeed === true});
+            return markCollectibleResource(pixel, {kind: "food", yield: 1, harvestTicks: 6});
         }
         if (DEFAULT_RESOURCES.wood.has(pixel.element)) return markCollectibleResource(pixel, {kind: "wood", material: pixel.element, yield: 1, harvestTicks: 18, treeSeed: TREE_SEEDS[pixel.element] || "sapling"});
         if (DEFAULT_RESOURCES.stone.has(pixel.element)) return markCollectibleResource(pixel, {kind: "stone", yield: 1, harvestTicks: 28, harvestInto: "dirt"});
         if (pixel.element === "copper") return markCollectibleResource(pixel, {kind: "copper", material: "copper", yield: 1, harvestTicks: 38});
-        if (pixel.element === "tin") return markCollectibleResource(pixel, {kind: "tin", material: "tin", yield: 1, harvestTicks: 38});
         if (pixel.element === "iron" || pixel.element === "iron_ore") return markCollectibleResource(pixel, {kind: "raw_iron", material: "raw_iron", yield: 1, harvestTicks: 48});
         return null;
     }
@@ -1988,7 +2460,7 @@
     function elementMayBeIndexedResource(element, pixel) {
         if (!element) return false;
         if (TREE_COMPONENT_ELEMENTS.has(element) || manager.resources.has(element) || DEFAULT_RESOURCES.wood.has(element) || DEFAULT_RESOURCES.stone.has(element)) return true;
-        if (element === "copper" || element === "tin" || element === "iron" || element === "iron_ore" || element === "civ_resource_drop" || element === "civ_seed_resource" || CARRIED_RESOURCE_KINDS[element]) return true;
+        if (element === "copper" || element === "iron" || element === "iron_ore" || element === "civ_farm_crop" || element === "civ_resource_drop" || element === "civ_seed_resource" || CARRIED_RESOURCE_KINDS[element]) return true;
         const info = elements[element];
         return !!(pixel && (pixel._civResourceDrop || pixel._civCollectible || pixel.resourceKind) || info && (info.isFood || info.seed === true || info.humanCollectible));
     }
@@ -2087,7 +2559,7 @@
         manager.treeById.set(treeId, tree);
         removeIndexedResourcePixel(basePixel);
         const descriptor = resourceDescriptor(basePixel);
-        if (descriptor && descriptor.kind === "wood") {
+        if (tree.woodYield > 0 && descriptor && descriptor.kind === "wood") {
             const treeDescriptor = Object.assign({}, descriptor, {yield: tree.woodYield, treeSapling: tree.seed, treeId: tree.id, wholeTree: true});
             const node = {pixel: basePixel, x: basePixel.x, y: basePixel.y, element: basePixel.element, descriptor: treeDescriptor, kind: "wood", key: basePixel.element + "@" + basePixel.x + "," + basePixel.y, tree};
             if (!manager.resourceIndex.has("wood")) manager.resourceIndex.set("wood", []);
@@ -2113,6 +2585,7 @@
         if (!event || !event.pixel) return;
         const pixel = event.pixel;
         const previous = event.old || {};
+        if (TREE_COMPONENT_ELEMENTS.has(previous.element) || TREE_COMPONENT_ELEMENTS.has(pixel.element)) manager.treeRootColumnsTick = -Infinity;
         if (!manager.resourceNodeByPixel.has(pixel) && !elementMayBeIndexedResource(previous.element, pixel) && !elementMayBeIndexedResource(pixel.element, pixel)) return;
         manager.lifecycleEvents++;
         if (manager.resourceNodeByPixel.has(pixel)) removeIndexedResourcePixel(pixel);
@@ -2148,7 +2621,7 @@
         const descriptor = resourceDescriptor(pixel);
         const indexed = manager.resourceNodeByPixel.get(pixel);
         if (!descriptor || pixelHasTreeIdentity(pixel)) {
-            if (indexed && !pixelHasTreeIdentity(pixel)) removeIndexedResourcePixel(pixel);
+            if (indexed) removeIndexedResourcePixel(pixel);
             return;
         }
         if (!indexed) {
@@ -2344,6 +2817,7 @@
             if (descriptor.kind === "wood" && Number.isFinite(pixel.treeId)) {
                 tree = manager.treeById.get(pixel.treeId);
                 if (!tree || tree.base !== pixel) continue;
+                if (tree.woodYield <= 0) continue;
                 descriptor = Object.assign({}, descriptor, {yield: tree.woodYield, treeSapling: tree.seed, treeId: tree.id, wholeTree: true});
             }
             const node = {pixel, x: pixel.x, y: pixel.y, element: pixel.element, descriptor, kind: descriptor.kind, key: pixel.element + "@" + pixel.x + "," + pixel.y, tree};
@@ -2355,19 +2829,30 @@
 
     function registerWeapon(id, descriptor) {
         if (!id || !descriptor) return false;
-        manager.weapons.set(id, Object.assign({id: id, damage: 8, range: 1, cooldown: 20, power: 1, cost: {}}, descriptor));
+        const normalized = Object.assign({id: id, damage: 5, range: 1, hitChance: 0.5, knockback: 1, cost: {}}, descriptor);
+        normalized.cost = copyResourceCost(normalized.cost);
+        manager.weapons.set(id, normalized);
         return true;
     }
 
-    registerWeapon("fists", Core.WEAPONS && Core.WEAPONS.fists || {damage: 8, range: 1, cooldown: 20, power: 1, cost: {}});
-    registerWeapon("club", Core.WEAPONS && Core.WEAPONS.club || {damage: 14, range: 1, cooldown: 18, power: 1.5, cost: {wood: 2}});
-    registerWeapon("spear", Core.WEAPONS && Core.WEAPONS.spear || {damage: 18, range: 2, cooldown: 22, power: 2, cost: {wood: 1, stone: 1}, upgradeFrom: "club"});
-    registerWeapon("bronze_spear", {damage: 24, range: 2, cooldown: 20, power: 2.7, cost: {wood: 1, bronze: 2}, upgradeFrom: "spear"});
-    registerWeapon("iron_sword", {damage: 31, range: 1.5, cooldown: 17, power: 3.5, cost: {iron: 2}, upgradeFrom: "bronze_spear"});
-    Object.keys(TechData.RANGED_WEAPONS || {}).forEach((weaponId) => {
-        const weapon = TechData.RANGED_WEAPONS[weaponId];
-        registerWeapon(weaponId, Object.assign({cooldown: weaponId === "crossbow" ? 34 : 26, power: weaponId === "crossbow" ? 4 : 2.4, ranged: true, cost: weaponId === "crossbow" ? {wood: 2, steel: 1} : {wood: 3}}, weapon));
-    });
+    Object.keys(Core.WEAPONS || {}).forEach((weaponId) => registerWeapon(weaponId, Core.WEAPONS[weaponId]));
+
+    function registerArmor(id, descriptor) {
+        if (!id || !descriptor) return false;
+        const normalized = Object.assign({id: id, bonusHp: 0, cost: {}}, descriptor);
+        normalized.bonusHp = Math.max(0, safeNumber(descriptor.bonusHp, safeNumber(descriptor.hpBonus, 0)));
+        normalized.cost = copyResourceCost(normalized.cost);
+        manager.armors.set(id, normalized);
+        return true;
+    }
+
+    const BUILTIN_ARMORS = Core.ARMORS || {
+        none: {id: "none", bonusHp: 0, cost: {}},
+        rattan: {id: "rattan", bonusHp: 100, cost: {wood: 4}},
+        iron: {id: "iron", bonusHp: 220, cost: {iron: 4}},
+        steel: {id: "steel", bonusHp: 420, cost: {steel: 4}}
+    };
+    Object.keys(BUILTIN_ARMORS).forEach((armorId) => registerArmor(armorId, BUILTIN_ARMORS[armorId]));
 
     function facilityBlueprint(core, cost, options) {
         const opts = options || {};
@@ -2463,7 +2948,7 @@
         let valid = true;
         const inspect = (pixel) => {
             if (!valid || !isBuildingCorePixel(pixel) || pixel.buildingId === ignoredBuildingId) return;
-            if (World.buildingSpacingValid ? !World.buildingSpacingValid(candidate, pixel, C.BUILDING_SPRITE_GAP) : Math.abs(pixel.x - originX) < 5 && Math.abs(pixel.y - originY) < 5) valid = false;
+            if (World.buildingSpacingValid ? !World.buildingSpacingValid(candidate, pixel) : pixel.x === originX && pixel.y === originY) valid = false;
         };
         manager.settlements.forEach(inspect);
         manager.constructionSites.forEach(inspect);
@@ -2488,7 +2973,7 @@
 
     function findBuildSite(banner, type) {
         const radius = C.BUILD_SEARCH_RADIUS;
-        for (let distance = 5; distance <= radius; distance++) {
+        for (let distance = 1; distance <= radius; distance++) {
             const offsets = distance % 2 ? [distance, -distance] : [-distance, distance];
             for (let i = 0; i < offsets.length; i++) {
                 let x = banner.x + offsets[i];
@@ -2545,11 +3030,23 @@
         };
     }
 
-    function cancelConstruction(site, skipDelete) {
+    function fullConstructionRefund(site) {
+        const blueprint = BLUEPRINTS[site.blueprintType];
+        const costs = site.costs || blueprint && blueprint.cost || {};
+        const refund = {};
+        Object.keys(costs).forEach((resource) => {
+            refund[resource] = Math.max(0, safeNumber(costs[resource], 0));
+        });
+        return refund;
+    }
+
+    function cancelConstruction(site, skipDelete, options) {
         if (!site || site.cancelled || site.completed) return;
+        const opts = options || {};
         site.cancelled = true;
+        if (opts.reason) site.cancellationReason = opts.reason;
         const banner = manager.settlementById.get(site.settlementId);
-        refundStock(banner, constructionRefund(site));
+        refundStock(banner, opts.fullRefund ? fullConstructionRefund(site) : constructionRefund(site));
         unregisterPixel(site);
         if (!skipDelete && !site.del) deleteExactPixel(site);
     }
@@ -2719,20 +3216,146 @@
         return banner;
     }
 
-    function preferredResourceKind(faction, banner) {
-        if (!banner) return "food";
-        const population = Math.max(1, safeNumber(banner.population, faction.population));
+    function addRequirement(requirements, resource, amount) {
+        if (!resource || !(amount > 0)) return;
+        requirements[resource] = safeNumber(requirements[resource], 0) + safeNumber(amount, 0);
+    }
+
+    function requireMinimum(requirements, resource, minimum) {
+        if (!resource || !(minimum > 0)) return;
+        requirements[resource] = Math.max(safeNumber(requirements[resource], 0), safeNumber(minimum, 0));
+    }
+
+    function addCostRequirement(requirements, cost, refundableCost) {
+        Object.keys(cost || {}).forEach((resource) => {
+            addRequirement(requirements, resource, Math.max(0, safeNumber(cost[resource], 0) - safeNumber(refundableCost && refundableCost[resource], 0)));
+        });
+    }
+
+    function pendingTechnologyRequirements(faction, banner, requirements) {
+        const currentEraIndex = eraIndexFor(banner);
+        allTechnologies().forEach((tech) => {
+            if (!tech || hasTech(banner, tech.id) || safeNumber(tech.eraIndex, ERA_INDEX.get(techEraId(tech)) || 0) > currentEraIndex) return;
+            (tech.conditions || []).forEach((condition) => {
+                if (condition.type === "resource_stock") requireMinimum(requirements, condition.resource, condition.minimum);
+                else if (condition.type === "heat_available") {
+                    const woodHeat = Math.max(1, safeNumber(FUEL_VALUES.wood, 1));
+                    requireMinimum(requirements, "wood", Math.ceil(safeNumber(condition.minimum, 0) / woodHeat));
+                }
+            });
+        });
+    }
+
+    function pendingConstructionRequirements(faction, banner, requirements) {
+        if (!faction || !banner || banner.townCenterActive === false) return;
+        const local = (list) => (list || []).filter((building) => building && !building.del && building.settlementId === banner.settlementId);
+        const pendingTypes = new Set((faction.constructionSites || []).filter((site) => site && !site.del && site.settlementId === banner.settlementId).map((site) => site.blueprintType));
         const eraTarget = Core.eraPopulationTarget ? Core.eraPopulationTarget(eraIndexFor(faction)) : (World.populationTarget ? World.populationTarget(eraIndexFor(faction)) : 6);
-        const foodReserve = 2 * Math.ceil(eraTarget / 2);
-        const declining = safeNumber(banner.lastPopulation, population) > population;
-        if (banner.stock.food < foodReserve && (declining || banner.stock.food < Math.ceil(foodReserve / 2))) return "food";
-        if (hasTech(faction, "copper_prospecting") && materialAmount(banner.stock, "copper") < 8) return "copper";
-        if (hasTech(faction, "tin_prospecting") && materialAmount(banner.stock, "tin") < 4) return "tin";
-        if (hasTech(faction, "iron_prospecting") && materialAmount(banner.stock, "raw_iron") < 8) return "raw_iron";
-        if (banner.stock.wood < 20 || (!faction.huts.length && banner.stock.wood < 12)) return "wood";
-        if (hasTechnologyData() && !hasTech(faction, "stone_knapping")) return banner.stock.food < population * 10 ? "food" : "wood";
-        if (banner.stock.stone < 12 || (!faction.workshops.length && banner.stock.stone < 8)) return "stone";
-        return "food";
+        const desired = [];
+        if (banner.housing < Math.min(eraTarget, safeNumber(banner.population, 0) + 2)) desired.push("hut");
+        [
+            ["lumberyard", faction.lumberyards], ["hearth", faction.hearths], ["workshop", faction.workshops],
+            ["quarry", faction.quarries], ["foundry", faction.foundries], ["kiln", faction.kilns], ["forge", faction.forges]
+        ].forEach((entry) => {
+            if (!local(entry[1]).length) desired.push(entry[0]);
+        });
+        desired.forEach((type) => {
+            if (pendingTypes.has(type) || !unlockedBuilding(faction, type) || !BLUEPRINTS[type]) return;
+            addCostRequirement(requirements, BLUEPRINTS[type].cost);
+        });
+    }
+
+    function pendingEquipmentRequirements(faction, banner, requirements) {
+        if (!faction || !banner) return;
+        const soldiers = (faction.adults || []).filter(actorIsSoldier).sort((a, b) => a.humanId - b.humanId);
+        const weaponTargets = resolvedEraWeaponTargets(faction, banner.eraId || faction.eraId || DEFAULT_ERA_ID, soldiers.length);
+        const armorTarget = resolvedEraArmorTarget(faction, banner.eraId || faction.eraId || DEFAULT_ERA_ID);
+        soldiers.forEach((actor, index) => {
+            if (actor.settlementId !== banner.settlementId) return;
+            migrateActorEquipment(actor);
+            const desiredWeapon = weaponTargets[index] || "fists";
+            if (actor.weapon !== desiredWeapon && desiredWeapon !== "fists") {
+                const descriptor = weaponDescriptor(desiredWeapon);
+                addCostRequirement(requirements, descriptor && descriptor.cost, actor.weaponPaidCost);
+            }
+            if (actor.armor !== armorTarget && armorTarget !== "none") {
+                const descriptor = armorDescriptor(armorTarget);
+                addCostRequirement(requirements, descriptor && descriptor.cost, actor.armorPaidCost);
+            }
+        });
+    }
+
+    function recipeProducing(resource) {
+        const recipeIds = Object.keys(TechData.RECIPES || {});
+        for (let i = 0; i < recipeIds.length; i++) {
+            const recipe = TechData.RECIPES[recipeIds[i]];
+            const output = recipe && (recipe.outputs || []).find((entry) => entry.resource === resource);
+            if (output) return {recipe, output};
+        }
+        return null;
+    }
+
+    function expandGatheringRequirements(stock, requirements) {
+        const available = {};
+        STOCK_KEYS.concat(MATERIAL_KEYS).forEach((resource) => { available[resource] = materialAmount(stock, resource); });
+        const raw = {food: 0, wood: 0, stone: 0, copper: 0, raw_iron: 0};
+        const resolving = new Set();
+        const requireResource = (resource, amount) => {
+            let remaining = Math.max(0, safeNumber(amount, 0));
+            const used = Math.min(remaining, Math.max(0, safeNumber(available[resource], 0)));
+            available[resource] = Math.max(0, safeNumber(available[resource], 0) - used);
+            remaining -= used;
+            if (!(remaining > 0)) return;
+            const producer = recipeProducing(resource);
+            if (producer && !resolving.has(resource)) {
+                resolving.add(resource);
+                const batches = Math.ceil(remaining / Math.max(1, safeNumber(producer.output.amount, 1)));
+                (producer.recipe.inputs || []).forEach((input) => requireResource(input.resource, input.amount * batches));
+                if (producer.recipe.heat > 0) {
+                    const woodHeat = Math.max(1, safeNumber(FUEL_VALUES.wood, 1));
+                    requireResource("wood", Math.ceil(producer.recipe.heat * batches / woodHeat));
+                }
+                resolving.delete(resource);
+                return;
+            }
+            if (Object.prototype.hasOwnProperty.call(raw, resource)) raw[resource] += remaining;
+        };
+        Object.keys(requirements || {}).forEach((resource) => requireResource(resource, requirements[resource]));
+        return raw;
+    }
+
+    function settlementGatheringDemand(faction, banner) {
+        if (!banner) return {food: 1, wood: 0, stone: 0, copper: 0, raw_iron: 0};
+        ensureStock(banner);
+        const requirements = {};
+        const localPopulation = Math.max(0, safeNumber(banner.population, faction && faction.population));
+        const eraTarget = Core.eraPopulationTarget ? Core.eraPopulationTarget(eraIndexFor(faction)) : (World.populationTarget ? World.populationTarget(eraIndexFor(faction)) : 6);
+        addRequirement(requirements, "food", Math.max(0, eraTarget - localPopulation) * C.BIRTH_FOOD_COST);
+        requireMinimum(requirements, "wood", smeltingWoodReserveFor(banner));
+        if (resourceUnlockedForFaction(faction, "stone")) requireMinimum(requirements, "stone", 2);
+        pendingTechnologyRequirements(faction, banner, requirements);
+        pendingConstructionRequirements(faction, banner, requirements);
+        pendingEquipmentRequirements(faction, banner, requirements);
+        const raw = expandGatheringRequirements(banner.stock, requirements);
+        banner.resourceDemand = Object.assign({}, raw);
+        return raw;
+    }
+
+    function preferredResourceKind(faction, banner, allowedKinds) {
+        if (!banner) return "food";
+        const demand = settlementGatheringDemand(faction, banner);
+        const allowed = new Set(allowedKinds && allowedKinds.length ? allowedKinds : ["food", "wood", "stone", "copper", "raw_iron"]);
+        const candidates = Object.keys(demand).filter((kind) => allowed.has(kind) && resourceUnlockedForFaction(faction, kind) && (manager.resourceIndex.get(kind) || []).length)
+            .sort((a, b) => safeNumber(demand[b], 0) - safeNumber(demand[a], 0));
+        if (candidates.length && safeNumber(demand[candidates[0]], 0) > 0) return candidates[0];
+        return ["wood", "stone", "food", "copper", "raw_iron"].find((kind) => allowed.has(kind) && resourceUnlockedForFaction(faction, kind) && (manager.resourceIndex.get(kind) || []).length) || "food";
+    }
+
+    function resourceUnlockedForFaction(faction, kind) {
+        if (kind === "food" || kind === "wood" || kind === "sapling" || String(kind || "").indexOf(TREE_SAPLING_PREFIX) === 0) return true;
+        if (!hasTechnologyData()) return true;
+        if (kind === "stone" || kind === "copper" || kind === "raw_iron") return factionHasUnlock(faction, "resource", kind);
+        return true;
     }
 
     function actorCanOccupyAt(actor, x, y) {
@@ -2822,11 +3445,18 @@
             recordPersonLifeEvent(actor, "route_created", {phase: "outbound", resourceKind: resourceKind, targetX: actor.targetX, targetY: actor.targetY});
         }
         actor.workTrip.excavationFrontier = {x: actor.targetX, y: actor.targetY, harvestX: actor.harvestX, harvestY: actor.harvestY, targetKind: actor.targetKind};
-        if (manager.resourceReservations && !manager.resourceReservations.reserve(found, actor.humanId)) {
+        const reservationKey = found.key || (found.pixel.element + "@" + found.pixel.x + "," + found.pixel.y);
+        const reservationTarget = found.key ? found : Object.assign({}, found, {
+            key: reservationKey,
+            element: found.pixel.element,
+            x: found.pixel.x,
+            y: found.pixel.y
+        });
+        if (manager.resourceReservations && !manager.resourceReservations.reserve(reservationTarget, actor.humanId)) {
             clearTask(actor, "interrupted", "resource_reserved_by_other");
             return false;
         }
-        actor.reservedResourceKey = found.key || (found.pixel.element + "@" + found.pixel.x + "," + found.pixel.y);
+        actor.reservedResourceKey = reservationKey;
         if (previousKey === actor.targetKey && (previousApproachX !== actor.targetX || previousApproachY !== actor.targetY)) {
             actor.stuckCount = 0;
             actor.noProgressCount = 0;
@@ -2852,7 +3482,9 @@
     function findResource(actor, wantedKind) {
         const banner = settlementForActor(actor);
         if (!banner) return null;
-        if ((wantedKind === "copper" || wantedKind === "tin" || wantedKind === "raw_iron") && actor.role !== "miner") return null;
+        const faction = manager.factionById.get(actor.factionId);
+        if (!resourceUnlockedForFaction(faction, wantedKind)) return null;
+        if ((wantedKind === "copper" || wantedKind === "raw_iron") && actor.role !== "miner") return null;
         const nodes = (manager.resourceIndex.get(wantedKind) || []).filter((node) => {
             if (!node.pixel || node.pixel.del || pixelsAt(node.x, node.y).indexOf(node.pixel) === -1) return false;
             if (pixelTicks < safeNumber(actor.blockedResourceUntil, 0) && actor.blockedResourceKey === resourceFailureKey(node.x, node.y, node.element)) return false;
@@ -2922,13 +3554,14 @@
         const key = treeSapling ? kind.slice(TREE_SAPLING_PREFIX.length) : (seed ? kind.slice(5) : kind);
         let lists = [];
         if (treeSapling) lists = ["lumberyards"];
-        else if (seed) lists = ["farms", "granaries"];
-        else if (key === "food") lists = ["granaries", "farms"];
+        else if (seed || key === "food") lists = [];
         else if (key === "wood") lists = ["lumberyards"];
         else if (key === "stone") lists = ["quarries"];
-        else if (key === "copper" || key === "tin" || key === "raw_iron") lists = ["quarries", "foundries"];
-        else if (key === "charcoal") lists = ["kilns", "foundries"];
-        else if (key === "bronze" || key === "iron" || key === "steel") lists = ["forges", "foundries", "workshops"];
+        else if (key === "copper") lists = ["foundries", "quarries"];
+        else if (key === "raw_iron") lists = ["kilns", "quarries"];
+        else if (key === "bronze") lists = ["foundries"];
+        else if (key === "iron") lists = ["kilns"];
+        else if (key === "steel") lists = ["forges"];
         for (let i = 0; i < lists.length; i++) {
             const facilities = buildingsForSettlement(faction, banner.settlementId, lists[i]);
             if (facilities.length) return facilities.sort((a, b) => Core.distance(actor.x, actor.y, a.x, a.y) - Core.distance(actor.x, actor.y, b.x, b.y))[0];
@@ -2952,6 +3585,7 @@
             if (kind.indexOf(TREE_SAPLING_PREFIX) === 0) {
                 const seed = kind.slice(TREE_SAPLING_PREFIX.length);
                 banner.stock.treeSaplings[seed] = safeNumber(banner.stock.treeSaplings[seed], 0) + amount;
+                banner.stock.sapling = treeSaplingTotal(banner.stock);
                 if (!banner.firstNaturalResources[kind]) {
                     banner.firstNaturalResources[kind] = true;
                     logSettlementEvent(banner, "first_resource", "首次采集树苗资源：" + seed, {resource: kind, amount});
@@ -2959,19 +3593,15 @@
                 return;
             }
             if (kind.indexOf("seed:") === 0) {
-                const seed = kind.slice(5);
-                banner.stock.seeds[seed] = safeNumber(banner.stock.seeds[seed], 0) + amount;
-                if (!banner.firstNaturalResources[kind]) {
-                    banner.firstNaturalResources[kind] = true;
-                    logSettlementEvent(banner, "first_resource", "首次采集资源：" + seed, {resource: kind, amount});
-                }
+                addMaterial(banner.stock, "food", amount);
                 return;
             }
             addMaterial(banner.stock, kind, amount, actor.carryElement);
             const research = ensureResearchState(banner);
             research.discoveries[kind] = Math.max(1, safeNumber(research.discoveries[kind], 0) + amount);
             research.milestones.resourceDeliveries = safeNumber(research.milestones.resourceDeliveries, 0) + 1;
-            if (hasTech(banner, "tally_marks")) research.knowledge += 0.5;
+            const faction = manager.factionById.get(actor.factionId);
+            if (factionHasFeature(faction, "deliveryKnowledge")) research.knowledge += 0.5;
             if (!banner.firstNaturalResources[kind]) {
                 banner.firstNaturalResources[kind] = true;
                 logSettlementEvent(banner, "first_resource", "首次采集资源：" + kind, {resource: kind, amount});
@@ -2982,12 +3612,16 @@
         actor.carryElement = null;
         actor.carryAmount = 0;
         actor.carrySeed = null;
+        ensureStock(banner);
+        const deliveringFaction = manager.factionById.get(actor.factionId);
+        if (deliveringFaction) reconcileFactionEquipment(deliveringFaction);
         addPersonActivityMetrics(actor, {resourcesDelivered: delivered});
         const resume = actor.resumeAfterDelivery;
         const completedTrip = actor.workTrip;
         delete actor.resumeAfterDelivery;
         actor.preserveWorkTrip = !!(resume && resume.resourceKind);
         clearTask(actor, "completed", "resources_delivered", {destinationBuildingId: destination.buildingId || null, destinationType: destination.buildingType || destination.element, destinationX: destination.x, destinationY: destination.y});
+        actor.lastDeliveryTick = pixelTicks;
         recordPersonLifeEvent(actor, "resources_unloaded", {destinationBuildingId: destination.buildingId || null, delivered: delivered});
         if (resume && resume.resourceKind) {
             actor.workTrip = completedTrip || {version: 1, resourceKind: resume.resourceKind};
@@ -3149,8 +3783,9 @@
         const dropY = base ? base.y : safeNumber(tree.root && tree.root.y, 0);
         removeTreeResourceNodes(tree.id, allPixels);
         allPixels.forEach((pixel) => deleteExactPixel(pixel));
+        manager.treeRootColumnsTick = -Infinity;
         const woodDropCount = Math.ceil(woodPixels.length / 2);
-        const saplingDropCount = woodPixels.length;
+        const saplingDropCount = Math.random() < 0.8 ? 1 : 2;
         const woodDropSources = woodPixels.slice().sort((a, b) => a.y - b.y || a.x - b.x);
         for (let index = 0; index < woodDropCount; index++) {
             const sourceIndex = Math.floor(index * woodDropSources.length / Math.max(1, woodDropCount));
@@ -3256,7 +3891,7 @@
         removeResourcePixelFromIndex(pixel, descriptor.kind);
         const leavesSoil = !descriptor.resourceDrop && descriptor.kind !== "wood" && descriptor.kind !== "food" && elements.dirt;
         if (!leavesSoil) return deleteExactPixel(pixel);
-        const leavesTunnel = NONRENEWABLE_KINDS.has(descriptor.kind) && elements.civ_tunnel && !mineralExposedToSky(pixel.x, pixel.y);
+        const leavesTunnel = NONRENEWABLE_KINDS.has(descriptor.kind) && elements.civ_tunnel && !getBuildingCoreAt(pixel.x, pixel.y) && !mineralExposedToSky(pixel.x, pixel.y);
         changePixel(pixel, leavesTunnel ? "civ_tunnel" : "dirt");
         clearHarvestedResourceFields(pixel);
         if (leavesTunnel) {
@@ -3295,6 +3930,7 @@
         harvestTicks *= safeNumber(mods.harvestSpeed, 1);
         if (descriptor.kind === "wood") harvestTicks *= safeNumber(mods.woodHarvestSpeed, 1);
         if (descriptor.kind === "stone") harvestTicks *= safeNumber(mods.stoneHarvestSpeed, 1);
+        if (descriptor.kind === "food") harvestTicks *= safeNumber(mods.foodHarvestSpeed, 1);
         const specialist = descriptor.kind === "food" ? (actor.role === "food" || actor.role === "farmer" || actor.role === "hunter") :
             (descriptor.kind === "wood" ? (actor.role === "wood" || actor.role === "forester") :
                 (descriptor.kind === "stone" || NONRENEWABLE_KINDS.has(descriptor.kind) ? actor.role === "miner" : true));
@@ -3341,7 +3977,7 @@
         }
         else {
             actor.carryElement = harvestedElement;
-            const amount = 1;
+            const amount = Math.max(1, Math.floor(safeNumber(descriptor.yield, 1)));
             const result = World.addCarry ? World.addCarry(actor, descriptor.kind, amount, capacity) : {accepted: 0, overflow: amount};
             resourcesCollected[descriptor.kind] = safeNumber(resourcesCollected[descriptor.kind], 0) + result.accepted;
             resourcesDropped[descriptor.kind] = safeNumber(resourcesDropped[descriptor.kind], 0) + result.overflow;
@@ -3363,19 +3999,8 @@
         return true;
     }
 
-    function matureCropAt(plot) {
-        for (let y = plot.y; y >= plot.y - 5; y--) {
-            const pixel = getPixel(plot.x, y);
-            const info = pixel && elements[pixel.element];
-            if (pixel && info && info.isFood && typeof info.seed === "string") return pixel;
-        }
-        return null;
-    }
-
-    function chooseSeed(stock) {
-        if (!stock || !stock.seeds) return null;
-        const seeds = Object.keys(stock.seeds).filter((seed) => stock.seeds[seed] > 0 && elements[seed]);
-        return seeds.length ? seeds[0] : null;
+    function farmCropAt(plot) {
+        return pixelsAt(plot.x, plot.y).find((pixel) => pixel && pixel.element === "civ_farm_crop") || null;
     }
 
     function chooseTreeSeed(stock) {
@@ -3383,29 +4008,58 @@
         return ["sapling", "pinecone", "bamboo_plant"].find((seed) => safeNumber(stock.treeSaplings[seed], 0) > 0 && elements[seed]) || null;
     }
 
-    function treeNear(x, y, radius) {
-        const treeElements = new Set(["wood", "tree_branch", "evergreen", "sapling", "pinecone", "bamboo", "bamboo_plant"]);
-        for (let dx = -radius; dx <= radius; dx++) {
-            for (let dy = -radius; dy <= radius; dy++) {
-                const pixel = getPixel(x + dx, y + dy);
-                if (pixel && treeElements.has(pixel.element)) return true;
-            }
-        }
-        return false;
+    function indexedTreeRootColumns() {
+        if (manager.treeRootColumnsTick === pixelTicks) return manager.treeRootColumns;
+        const columns = new Set();
+        manager.treeById.forEach((tree) => {
+            const rootPixel = tree && (tree.root && !tree.root.del ? tree.root : tree.base);
+            if (rootPixel && !rootPixel.del && Number.isFinite(rootPixel.x)) columns.add(rootPixel.x);
+        });
+        if (typeof currentPixels !== "undefined") currentPixels.forEach((pixel) => {
+            if (!pixel || pixel.del) return;
+            if (Number.isFinite(pixel.treeRootX)) columns.add(pixel.treeRootX);
+            else if (pixel._civTreeRoot || PLANTED_TREE_SEEDS.has(pixel.element)) columns.add(pixel.x);
+        });
+        manager.treeRootColumns = columns;
+        manager.treeRootColumnsTick = pixelTicks;
+        return columns;
     }
 
-    function findTreePlantSpot(banner) {
+    function treeRootSpacingClear(x, excludedActor) {
+        const clearance = Math.max(0, Math.floor(safeNumber(C.TREE_ROOT_HORIZONTAL_CLEARANCE, 2)));
+        for (const rootX of indexedTreeRootColumns()) {
+            if (Math.abs(rootX - x) <= clearance) return false;
+        }
+        for (const actor of manager.actors) {
+            if (!actor || actor === excludedActor || actor.del || actor.dead || actor.task !== "plant_tree" || !Number.isFinite(actor.targetX)) continue;
+            if (Math.abs(actor.targetX - x) <= clearance) return false;
+        }
+        return true;
+    }
+
+    function validTreePlantSpot(actor, banner, x, y) {
+        if (!banner || !Number.isFinite(x) || !Number.isFinite(y) || outOfBounds(x, y)) return false;
+        const territory = ensureTerritoryIndex();
+        if (!territory || territory.ownerAt(x) !== banner.factionId) return false;
+        if (!isEmpty(x, y) || !treeRootSpacingClear(x, actor)) return false;
+        const soil = getPixel(x, y + 1);
+        return !!(soil && SOIL_ELEMENTS.has(soil.element));
+    }
+
+    function findTreePlantSpot(banner, actor) {
         if (!banner) return null;
-        const radius = C.TREE_PLANT_SEARCH_RADIUS;
-        for (let distance = 4; distance <= radius; distance++) {
-            const direction = (distance + banner.settlementId) % 2 ? 1 : -1;
-            const xs = [banner.x + distance * direction, banner.x - distance * direction];
+        const territory = ensureTerritoryIndex();
+        if (!territory) return null;
+        const originX = Math.max(0, Math.min(territory.width - 1, Math.round(safeNumber(actor && actor.x, banner.x))));
+        const maximumDistance = Math.max(originX, territory.width - 1 - originX);
+        const rightFirst = (safeNumber(actor && actor.humanId, banner.settlementId) % 2) === 0;
+        for (let distance = 0; distance <= maximumDistance; distance++) {
+            const xs = distance === 0 ? [originX] : (rightFirst ? [originX + distance, originX - distance] : [originX - distance, originX + distance]);
             for (let i = 0; i < xs.length; i++) {
-                const y = findSurfaceY(xs[i], banner.y);
-                if (manager.territory && manager.territory.ownerAt(xs[i]) !== banner.factionId) continue;
-                if (y === null || !isEmpty(xs[i], y) || treeNear(xs[i], y, C.TREE_PLANT_SPACING)) continue;
-                const soil = getPixel(xs[i], y + 1);
-                if (soil && SOIL_ELEMENTS.has(soil.element)) return {x: xs[i], y: y, kind: "tree_seed"};
+                const x = xs[i];
+                if (x < 0 || x >= territory.width || territory.ownerAt(x) !== banner.factionId || !treeRootSpacingClear(x, actor)) continue;
+                const y = findSurfaceY(x, banner.y);
+                if (y !== null && validTreePlantSpot(actor, banner, x, y)) return {x, y, kind: "tree_seed"};
             }
         }
         return null;
@@ -3420,20 +4074,48 @@
             return;
         }
         let plantedTree = false;
-        if (isEmpty(actor.targetX, actor.targetY) && !treeNear(actor.targetX, actor.targetY, C.TREE_PLANT_SPACING)) {
+        if (validTreePlantSpot(actor, banner, actor.targetX, actor.targetY)) {
             createPixel(seed, actor.targetX, actor.targetY);
             const planted = getPixel(actor.targetX, actor.targetY);
             if (planted && planted.element === seed) {
                 planted.civPlantedTreeId = manager.nextTreeId++;
                 planted.civTreeOriginX = actor.targetX;
                 planted.civTreeOriginY = actor.targetY;
+                // createPixel indexes an ordinary sapling before its planted-tree
+                // identity is attached. Remove that stale node immediately so the
+                // forester cannot harvest the seed it has just planted.
+                removeIndexedResourcePixel(planted);
                 banner.stock.treeSaplings[seed]--;
+                manager.treeRootColumnsTick = -Infinity;
                 addDomainExperience(banner, "production", 0.1);
                 ensureResearchState(banner).milestones.treesPlanted = safeNumber(banner.research.milestones.treesPlanted, 0) + 1;
                 plantedTree = true;
             }
         }
         clearTask(actor, plantedTree ? "completed" : "failed", plantedTree ? "tree_planted" : "site_blocked", {seed: seed, siteX: actor.targetX, siteY: actor.targetY, treesPlanted: plantedTree ? 1 : 0});
+    }
+
+    function prioritizeForesterPlanting(actor) {
+        if (!actor || actor.dead || actor.del || actor.role !== "forester" || actor.playerOrder || actorIsSoldier(actor) || actor.underAttackUntil > pixelTicks) return false;
+        if (actor.task === "plant_tree" || actor.task === "combat" || actor.task === "siege" || actor.task === "extinguish" || actor.task === "deliver") return false;
+        const interruptible = new Set(["planning", "idle", "wander", "harvest", "patrol", "search_resource", "explore", "facility", "return"]);
+        if (actor.task && !interruptible.has(actor.task)) return false;
+        const banner = settlementForActor(actor);
+        const faction = manager.factionById.get(actor.factionId);
+        if (!banner || !faction || !factionHasFeature(faction, "treePlanting") || !chooseTreeSeed(banner.stock)) return false;
+        const plantingSpot = findTreePlantSpot(banner, actor);
+        if (!plantingSpot) return false;
+        if (carriedAmount(actor) > 0) {
+            const firstKind = Object.keys(ensureActorCarry(actor)).find((kind) => actor.carry[kind] > 0);
+            const destination = firstKind && deliveryDestination(actor, firstKind);
+            if (!destination) return false;
+            clearTask(actor, "interrupted", "forestry_delivery_priority");
+            setTask(actor, "deliver", destination);
+            return true;
+        }
+        if (actor.task !== "planning" && actor.task !== "idle" && actor.task !== "wander") clearTask(actor, "interrupted", "tree_planting_priority");
+        setTask(actor, "plant_tree", plantingSpot);
+        return true;
     }
 
     function handleFarmTask(actor, farm, banner) {
@@ -3445,12 +4127,13 @@
         let crop = null;
         for (let i = 0; i < farm.plots.length; i++) {
             const plot = farm.plots[i];
-            crop = matureCropAt(plot);
+            const existingCrop = farmCropAt(plot);
+            crop = existingCrop && resourceDescriptor(existingCrop) ? existingCrop : null;
             if (crop) {
                 chosen = plot;
                 break;
             }
-            if (!chosen && isEmpty(plot.x, plot.y) && chooseSeed(banner.stock)) chosen = plot;
+            if (!existingCrop && !chosen && isEmpty(plot.x, plot.y) && materialAmount(banner.stock, "food") >= 1) chosen = plot;
         }
         if (!chosen) {
             clearTask(actor, "completed", "no_farm_work");
@@ -3469,17 +4152,20 @@
         actor.targetX = approach.x;
         actor.targetY = approach.y;
         if (Core.distance(actor.x, actor.y, approach.x, approach.y) > 0.5) return;
-        const seed = chooseSeed(banner.stock);
         let plantedCrop = false;
-        if (seed && banner.stock.seeds[seed] > 0 && isEmpty(chosen.x, chosen.y)) {
-            createPixel(seed, chosen.x, chosen.y);
-            const planted = getPixel(chosen.x, chosen.y);
-            if (planted && planted.element === seed) {
-                banner.stock.seeds[seed]--;
+        if (!farmCropAt(chosen) && materialAmount(banner.stock, "food") >= 1 && isEmpty(chosen.x, chosen.y) && spendMaterial(banner.stock, "food", 1)) {
+            const created = createPixel("civ_farm_crop", chosen.x, chosen.y);
+            const planted = created && created.element === "civ_farm_crop" ? created : farmCropAt(chosen);
+            if (planted && planted.element === "civ_farm_crop") {
+                planted.plantedTick = pixelTicks;
+                planted.matureTick = pixelTicks + C.FARM_GROW_TICKS;
+                planted.factionId = actor.factionId;
+                planted.settlementId = banner.settlementId;
                 plantedCrop = true;
             }
+            else addMaterial(banner.stock, "food", 1);
         }
-        clearTask(actor, plantedCrop ? "completed" : "failed", plantedCrop ? "crop_planted" : "plot_blocked", {seed: seed, plotX: chosen.x, plotY: chosen.y, cropsPlanted: plantedCrop ? 1 : 0});
+        clearTask(actor, plantedCrop ? "completed" : "failed", plantedCrop ? "crop_planted" : "plot_blocked", {resource: "food", plotX: chosen.x, plotY: chosen.y, matureTick: plantedCrop ? pixelTicks + C.FARM_GROW_TICKS : null, cropsPlanted: plantedCrop ? 1 : 0});
     }
 
     function enemyDefendersRemain(actor) {
@@ -3494,7 +4180,8 @@
     }
 
     function currentEnemy(actor, radius) {
-        const visibleRadius = Math.min(radius, visionRangeFor(actor));
+        const weapon = weaponDescriptor(actor && actor.weapon);
+        const visibleRadius = Math.min(radius, Math.max(visionRangeFor(actor), safeNumber(weapon && weapon.range, 1)));
         const defendersOnly = enemyDefendersRemain(actor);
         const enemies = nearbyActors(actor.x, actor.y, visibleRadius, (other) => {
             if (other.humanId === actor.humanId || !atWar(actor.factionId, other.factionId) || !mutualLineOfSight(actor, other)) return false;
@@ -3575,6 +4262,19 @@
         return best;
     }
 
+    function fireResponseSlotAvailable(actor) {
+        if (!actor || actor.del || actor.dead) return false;
+        if (actor.task === "extinguish") return true;
+        let responders = 0;
+        manager.actors.forEach((other) => {
+            if (!other || other === actor || other.del || other.dead || other.task !== "extinguish") return;
+            if (other.factionId !== actor.factionId) return;
+            if (Number.isFinite(actor.settlementId) && Number.isFinite(other.settlementId) && other.settlementId !== actor.settlementId) return;
+            responders++;
+        });
+        return responders < Math.max(1, safeNumber(C.MAX_FIRE_RESPONDERS_PER_SETTLEMENT, 2));
+    }
+
     function extinguishPixel(pixel) {
         if (!isFireTarget(pixel)) return null;
         const sourceElement = pixel.element;
@@ -3624,6 +4324,66 @@
         return true;
     }
 
+    function actorCanStaffFacility(actor, building) {
+        if (!actor || !building || actor.dead || actor.del || building.del) return false;
+        if (building.element === "civ_workshop_core") return actor.role === "artisan";
+        if (building.element === "civ_library_core") return actor.role === "scholar";
+        if (building.element === "civ_market_core") return actor.role === "merchant" || actor.role === "artisan_trade";
+        return false;
+    }
+
+    function recipeStockAvailable(banner, recipeId) {
+        const recipe = TechData.RECIPES && TechData.RECIPES[recipeId];
+        if (!banner || !recipe) return false;
+        ensureStock(banner);
+        if (!(recipe.inputs || []).every((input) => materialAmount(banner.stock, input.resource) >= input.amount)) return false;
+        if (!(recipe.heat > 0)) return true;
+        return !!(Core.selectFuelCombination && Core.selectFuelCombination(availableFuelStock(banner.stock), recipe.heat, FUEL_VALUES));
+    }
+
+    function facilityWorkPriority(faction, banner, building) {
+        return 0;
+    }
+
+    function facilityAssignmentCounts(faction, facilities, excludedActors) {
+        const counts = new Map();
+        const facilityById = new Map();
+        facilities.forEach((building) => {
+            counts.set(building.buildingId, 0);
+            facilityById.set(building.buildingId, building);
+        });
+        (faction && faction.adults || []).forEach((actor) => {
+            if (!actor || actor.dead || actor.del || actor.task !== "facility" || excludedActors && excludedActors.has(actor)) return;
+            const building = facilityById.get(actor.targetId);
+            if (!building || !actorCanStaffFacility(actor, building)) return;
+            counts.set(building.buildingId, safeNumber(counts.get(building.buildingId), 0) + 1);
+        });
+        return counts;
+    }
+
+    function chooseFacilityForActor(actor, faction, facilities, assignmentCounts) {
+        if (!actor || !faction || !facilities || !facilities.length) return null;
+        const banner = settlementForActor(actor);
+        const localFacilities = facilities.filter((building) => building && !building.del && building.settlementId === actor.settlementId && actorCanStaffFacility(actor, building));
+        if (!localFacilities.length) return null;
+        const counts = assignmentCounts || facilityAssignmentCounts(faction, localFacilities, new Set([actor]));
+        return localFacilities.sort((a, b) => {
+            const priorityA = facilityWorkPriority(faction, banner, a);
+            const priorityB = facilityWorkPriority(faction, banner, b);
+            const hasWorkA = priorityA > 0 ? 1 : 0;
+            const hasWorkB = priorityB > 0 ? 1 : 0;
+            return hasWorkB - hasWorkA ||
+                safeNumber(counts.get(a.buildingId), 0) - safeNumber(counts.get(b.buildingId), 0) ||
+                priorityB - priorityA ||
+                Core.distance(actor.x, actor.y, a.x, a.y) - Core.distance(actor.x, actor.y, b.x, b.y) ||
+                safeNumber(a.buildingId, 0) - safeNumber(b.buildingId, 0);
+        })[0];
+    }
+
+    function rebalanceFactionIndustry(faction) {
+        return 0;
+    }
+
     function assignActorTask(actor) {
         if (!actor || actor.del || actor.dead || actor.element !== "civ_body") return;
         const banner = settlementForActor(actor);
@@ -3662,7 +4422,7 @@
             }
             if (banner) { setTask(actor, "patrol", banner); return; }
         }
-        const fireTarget = findFireTarget(actor);
+        const fireTarget = fireResponseSlotAvailable(actor) ? findFireTarget(actor) : null;
         if (fireTarget) {
             setTask(actor, "extinguish", fireTarget);
             return;
@@ -3671,39 +4431,35 @@
             setTask(actor, "build", faction.constructionSites[0]);
             return;
         }
-        if (actor.role === "farmer" && faction && faction.farms.length && banner) {
-            const farm = faction.farms[0];
-            setTask(actor, "farm", farm);
-            return;
-        }
-        if (actor.role === "forester" && banner) {
-            const plantingSpot = chooseTreeSeed(banner.stock) && findTreePlantSpot(banner);
+        if (actor.role === "forester" && banner && factionHasFeature(faction, "treePlanting")) {
+            const plantingSpot = chooseTreeSeed(banner.stock) && findTreePlantSpot(banner, actor);
             if (plantingSpot) {
                 setTask(actor, "plant_tree", plantingSpot);
                 return;
             }
         }
-        if (faction && (actor.role === "artisan" || actor.role === "industry" || actor.role === "scholar" || actor.role === "merchant")) {
+        if (banner && (actor.role === "warrior" || actor.role === "guard")) {
+            setTask(actor, "patrol", banner);
+            return;
+        }
+        if (faction && (actor.role === "artisan" || actor.role === "scholar" || actor.role === "merchant")) {
             let facilities = [];
-            if (actor.role === "artisan") facilities = faction.workshops.concat(faction.forges);
-            else if (actor.role === "industry") facilities = faction.kilns.concat(faction.foundries, faction.forges);
+            if (actor.role === "artisan") facilities = faction.workshops;
             else if (actor.role === "scholar") facilities = faction.libraries;
             else facilities = faction.markets;
-            const localFacility = facilities.filter((building) => building.settlementId === actor.settlementId).sort((a, b) => Core.distance(actor.x, actor.y, a.x, a.y) - Core.distance(actor.x, actor.y, b.x, b.y))[0];
+            const localFacility = chooseFacilityForActor(actor, faction, facilities);
             if (localFacility) { setTask(actor, "facility", localFacility); return; }
-            if (banner) { setTask(actor, "patrol", banner); return; }
         }
+        const demand = settlementGatheringDemand(faction || {population: 1}, banner);
         let wanted = preferredResourceKind(faction || {population: 1}, banner);
-        if (actor.role === "food" || actor.role === "farmer" || actor.role === "hunter") wanted = "food";
-        else if (actor.role === "wood" || actor.role === "forester") wanted = "wood";
+        if (actor.role === "food" || actor.role === "hunter") {
+            wanted = safeNumber(demand.food, 0) > 0 ? "food" : preferredResourceKind(faction, banner, ["wood", "stone", "food"]);
+        }
+        else if (actor.role === "wood" || actor.role === "forester") {
+            wanted = safeNumber(demand.wood, 0) > 0 ? "wood" : preferredResourceKind(faction, banner, ["stone", "food", "wood"]);
+        }
         else if (actor.role === "miner") {
-            const desired = [
-                hasTech(faction, "iron_prospecting") && materialAmount(banner.stock, "raw_iron") < 8 ? "raw_iron" : null,
-                hasTech(faction, "copper_prospecting") && materialAmount(banner.stock, "copper") < 8 ? "copper" : null,
-                hasTech(faction, "tin_prospecting") && materialAmount(banner.stock, "tin") < 4 ? "tin" : null,
-                "stone"
-            ].filter(Boolean);
-            wanted = desired.find((kind) => (manager.resourceIndex.get(kind) || []).length) || "stone";
+            wanted = preferredResourceKind(faction, banner, ["copper", "raw_iron", "stone"]);
         }
         const resource = findResource(actor, wanted);
         if (resource) setHarvestTask(actor, resource);
@@ -3711,7 +4467,7 @@
             const firstKind = Object.keys(ensureActorCarry(actor)).find((kind) => actor.carry[kind] > 0);
             setTask(actor, "deliver", deliveryDestination(actor, firstKind));
         }
-        else if (banner && (actor.role === "warrior" || actor.role === "guard" || actor.role === "builder")) setTask(actor, "patrol", banner);
+        else if (banner && actor.role === "builder") setTask(actor, "patrol", banner);
         else if (banner) {
             setTask(actor, "search_resource", banner);
             actor.targetKind = wanted;
@@ -3756,6 +4512,7 @@
         if (outOfBounds(x, y)) return {satisfied: false, mutated: false};
         const forceTraversal = !!(actor.pathCache && actor.pathCache.forceTunnel);
         const occupants = pixelsAt(x, y).slice();
+        if (occupants.some(isBuildingCorePixel)) return {satisfied: false, mutated: false};
         let tunnel = occupants.find((pixel) => pixel.element === "civ_tunnel") || null;
         let mutated = false;
         for (let i = 0; i < occupants.length; i++) {
@@ -4422,6 +5179,20 @@
         const nav = ensureNavigationState(actor);
         nav.searchStatus = "failed";
         nav.blockedReason = reason || nav.blockedReason || "unreachable";
+        if (actor.task === "patrol") {
+            // A patrol waypoint is disposable. Keep the guard on duty and pick
+            // another point at the next action step instead of ending patrol.
+            actor.patrolX = undefined;
+            actor.patrolY = undefined;
+            actor.targetX = undefined;
+            actor.targetY = undefined;
+            actor.navigationAway = false;
+            actor.navigationFailureCount = 0;
+            actor.navigationLastProgressTick = pixelTicks;
+            invalidateNavigation(actor, reason || nav.blockedReason || "unreachable");
+            setPersonActivityPhase(actor, "patrolling");
+            return false;
+        }
         if (actor.task === "harvest") {
             blockFailedResource(actor, actor.harvestX, actor.harvestY, actor.targetKind);
         }
@@ -4533,7 +5304,9 @@
     function mutualLineOfSight(source, target) {
         if (!source || !target) return false;
         const distance = Core.distance(source.x, source.y, target.x, target.y);
-        if (distance > Math.min(visionRangeFor(source), visionRangeFor(target))) return false;
+        const weapon = weaponDescriptor(source.weapon);
+        const combatVision = Math.max(visionRangeFor(source), safeNumber(weapon && weapon.range, 1));
+        if (distance > combatVision) return false;
         const transparency = lineTransparencyBetween(source, target);
         if (Core.hasLineOfSight) return Core.hasLineOfSight(source.x, source.y - 1, target.x, target.y - 1, lineCellTransparency, 0.16);
         return transparency >= 0.16;
@@ -4544,12 +5317,7 @@
     }
 
     function attackBox(actor, weapon) {
-        const id = actor.weapon || weapon && weapon.id || "fists";
-        if (id === "fists") return {minX: actor.x - 1, maxX: actor.x + 1, minY: actor.y - 1, maxY: actor.y + 1};
-        if (id === "club" || id === "iron_sword" || id === "bronze_sword") {
-            return actor.dir < 0 ? {minX: actor.x - 2, maxX: actor.x + 1, minY: actor.y - 2, maxY: actor.y + 1} : {minX: actor.x - 1, maxX: actor.x + 2, minY: actor.y - 2, maxY: actor.y + 1};
-        }
-        const radius = id === "crossbow" ? 5 : (id === "bow" ? 4 : 2);
+        const radius = Math.max(1, Math.floor(safeNumber(weapon && weapon.range, 1)));
         return {minX: actor.x - radius, maxX: actor.x + radius, minY: actor.y - radius, maxY: actor.y + radius};
     }
 
@@ -4693,6 +5461,7 @@
             const facility = getBuildingById(actor.targetId);
             if (!facility || facility.del) return clearTask(actor, "interrupted", "facility_destroyed");
             if (facility.factionId !== actor.factionId) return clearTask(actor, "interrupted", "facility_captured");
+            if (!actorCanStaffFacility(actor, facility)) return clearTask(actor, "interrupted", "facility_not_usable");
             if (Core.distance(actor.x, actor.y, facility.x, facility.y) > 2.5) moveRelationToward(actor, facility.x, facility.y, false);
             else setPersonActivityPhase(actor, "working");
             return;
@@ -4971,7 +5740,6 @@
         if (activeCost > stock) return true;
         if (kind === "stone") return eraIndexFor(faction) >= 1 && stock < 12;
         if (kind === "copper") return hasTech(faction, "copper_prospecting") && stock < 8;
-        if (kind === "tin") return hasTech(faction, "tin_prospecting") && stock < 4;
         if (kind === "raw_iron") return hasTech(faction, "iron_prospecting") && stock < 8;
         return false;
     }
@@ -5043,12 +5811,19 @@
         if (!banner || !banner.stock) return;
         ensureStock(banner);
         STOCK_KEYS.forEach((kind) => {
+            if (kind === "sapling") return;
             const amount = Math.floor(materialAmount(banner.stock, kind));
             if (amount > 0) queueResourceDrops(kind, null, amount, banner.x, banner.y);
             if (kind === "food" || kind === "wood" || kind === "stone") banner.stock[kind] = 0;
             else { banner.stock[kind] = 0; banner.stock.materials[kind] = 0; }
         });
         Object.keys(banner.stock.materials || {}).forEach((key) => { banner.stock.materials[key] = 0; });
+        Object.keys(banner.stock.treeSaplings || {}).forEach((seed) => {
+            const amount = Math.floor(safeNumber(banner.stock.treeSaplings[seed], 0));
+            if (amount) queueResourceDrops(TREE_SAPLING_PREFIX + seed, "civ_tree_sapling_resource", amount, banner.x, banner.y, {treeSapling: seed});
+            banner.stock.treeSaplings[seed] = 0;
+        });
+        banner.stock.sapling = 0;
         Object.keys(banner.stock.seeds || {}).forEach((seed) => {
             const amount = Math.floor(safeNumber(banner.stock.seeds[seed], 0));
             if (amount) queueResourceDrops("seed:" + seed, seed, amount, banner.x, banner.y);
@@ -5269,17 +6044,15 @@
         if (actor.task === "harvest") {
             const kind = currentHarvestResourceKind(actor);
             if (role === "worker") return true;
-            if (role === "food" || role === "farmer" || role === "hunter") return kind === "food";
-            if (role === "wood" || role === "forester") return kind === "wood";
+            if (role === "food" || role === "hunter" || role === "wood" || role === "forester") return kind === "food" || kind === "wood" || kind === "stone";
             if (role === "miner") return kind === "stone" || NONRENEWABLE_KINDS.has(kind);
             return false;
         }
         if (actor.task === "build") return role === "builder";
-        if (actor.task === "farm") return role === "farmer";
         if (actor.task === "plant_tree") return role === "forester";
-        if (actor.task === "facility") return role === "artisan" || role === "industry" || role === "scholar" || role === "merchant" || role === "artisan_trade";
+        if (actor.task === "facility") return role === "artisan" || role === "scholar" || role === "merchant" || role === "artisan_trade";
         if (actor.task === "patrol") {
-            return role === "guard" || role === "warrior" || role === "builder" || role === "artisan" || role === "industry" || role === "scholar" || role === "merchant" || role === "artisan_trade";
+            return role === "guard" || role === "warrior" || role === "builder" || role === "artisan" || role === "scholar" || role === "merchant" || role === "artisan_trade";
         }
         return false;
     }
@@ -5328,13 +6101,13 @@
     function assignFactionRoles(faction) {
         if (!faction || !faction.adults.length) return;
         const previousRoles = new Map(faction.adults.map((actor) => [actor, permanentActorRole(actor)]));
-        const roleMap = {food: "food", wood: "wood", miner: "miner", builder: "builder", artisan: "artisan", forester: "forester", industry: "industry", scholar: "scholar", military: "guard", artisan_trade: "merchant", flex: "worker"};
+        const roleMap = {food: "food", wood: "wood", miner: "miner", builder: "builder", artisan: "artisan", forester: "forester", scholar: "scholar", military: "guard", artisan_trade: "merchant", flex: "worker"};
         let standingQuota = 0;
         faction.settlements.forEach((settlement) => {
             const adults = faction.adults.filter((actor) => actor.settlementId === settlement.settlementId).sort((a, b) => a.humanId - b.humanId);
             const target = Core.eraPopulationTarget ? Core.eraPopulationTarget(eraIndexFor(faction)) : (World.populationTarget ? World.populationTarget(eraIndexFor(faction)) : 6);
-            const foodReserve = 2 * Math.ceil(target / 2);
-            const lowFood = materialAmount(settlement.stock, "food") < foodReserve;
+            const gatheringDemand = settlementGatheringDemand(faction, settlement);
+            const lowFood = safeNumber(gatheringDemand.food, 0) > 0;
             const housingUrgent = settlement.housing < Math.min(target, safeNumber(settlement.population, adults.length) + 2);
             let quotas;
             if (Core.eraJobAllocation) quotas = Core.eraJobAllocation(eraIndexFor(faction), adults.length, {lowFood, housingUrgent});
@@ -5343,11 +6116,18 @@
             if (lowFood) {
                 const desiredFood = Math.ceil(adults.length / 2);
                 while (safeNumber(quotas.food, 0) < desiredFood) {
-                    const donor = Object.keys(quotas).filter((role) => role !== "food" && quotas[role] > 0).sort((a, b) => quotas[b] - quotas[a])[0];
+                    const donor = Object.keys(quotas).filter((role) => role !== "food" && role !== "military" && quotas[role] > 0).sort((a, b) => quotas[b] - quotas[a])[0];
                     if (!donor) break;
                     quotas[donor]--;
                     quotas.food = safeNumber(quotas.food, 0) + 1;
                 }
+            }
+            else if (safeNumber(quotas.food, 0) > 0) {
+                const surplus = quotas.food;
+                quotas.food = 0;
+                const mineralDemand = safeNumber(gatheringDemand.stone, 0) + safeNumber(gatheringDemand.copper, 0) + safeNumber(gatheringDemand.raw_iron, 0);
+                if (resourceUnlockedForFaction(faction, "stone") && mineralDemand > safeNumber(gatheringDemand.wood, 0)) quotas.miner = safeNumber(quotas.miner, 0) + surplus;
+                else quotas.wood = safeNumber(quotas.wood, 0) + surplus;
             }
             if (faction.constructionSites.some((site) => site.settlementId === settlement.settlementId) && adults.length > 1 && safeNumber(quotas.builder, 0) < 1) {
                 const donors = Object.keys(quotas).filter((role) => role !== "builder" && safeNumber(quotas[role], 0) > (role === "food" ? 1 : 0)).sort((a, b) => safeNumber(quotas[b], 0) - safeNumber(quotas[a], 0));
@@ -5357,6 +6137,10 @@
                     quotas[donor]--;
                     quotas.builder = 1;
                 }
+            }
+            if (!factionHasFeature(faction, "treePlanting") && safeNumber(quotas.forester, 0) > 0) {
+                quotas.wood = safeNumber(quotas.wood, 0) + safeNumber(quotas.forester, 0);
+                quotas.forester = 0;
             }
             settlement.roleQuotas = Object.assign({}, quotas);
             standingQuota += safeNumber(quotas.military, 0);
@@ -5373,10 +6157,14 @@
         if (!enemies.length) {
             allAdults.forEach((actor) => { delete actor.warRole; delete actor.warFrontId; });
             const peaceWarriors = Math.min(allAdults.length, Math.max(0, standingQuota));
+            allAdults.forEach((actor) => {
+                if (permanentActorRole(actor) === "guard" || permanentActorRole(actor) === "warrior") assignPermanentActorRole(actor, "worker");
+            });
             for (let i = 0; i < peaceWarriors; i++) assignPermanentActorRole(allAdults[allAdults.length - 1 - i], "guard");
             const banner = faction.settlements[0];
             if (banner && banner.warState) banner.warState.initialized = false;
             recordPermanentRoleChanges(allAdults, previousRoles);
+            reconcileFactionEquipment(faction);
             return;
         }
 
@@ -5413,6 +6201,7 @@
         });
         allAdults.filter((actor) => actor.warRole === "defender").forEach((actor) => { assignPermanentActorRole(actor, "guard"); delete actor.warFrontId; });
         recordPermanentRoleChanges(allAdults, previousRoles);
+        reconcileFactionEquipment(faction);
     }
 
     function planFactionConstruction(faction) {
@@ -5425,7 +6214,6 @@
             if (localSites.length >= constructionSlots) return;
             if (!banner.buildRetry || typeof banner.buildRetry !== "object") banner.buildRetry = {};
             const local = (list) => list.filter((building) => building.settlementId === banner.settlementId);
-            const hasSeeds = Object.keys(banner.stock.seeds || {}).some((seed) => banner.stock.seeds[seed] > 0);
             const housingUrgent = banner.housing < Math.min(eraTarget, safeNumber(banner.population, 0) + 2);
             const candidates = [];
             if (housingUrgent) candidates.push("hut");
@@ -5433,12 +6221,10 @@
                 if (!local(faction.lumberyards).length) candidates.push("lumberyard");
                 if (!local(faction.hearths).length) candidates.push("hearth");
                 if (!local(faction.huts).length) candidates.push("hut");
-                if (!local(faction.farms).length && hasSeeds) candidates.push("farm");
                 if (!local(faction.workshops).length) candidates.push("workshop");
                 if (!local(faction.quarries).length) candidates.push("quarry");
-                if (!local(faction.granaries).length) candidates.push("granary");
-                if (!local(faction.kilns).length) candidates.push("kiln");
                 if (!local(faction.foundries).length) candidates.push("foundry");
+                if (!local(faction.kilns).length) candidates.push("kiln");
                 if (!local(faction.forges).length) candidates.push("forge");
                 if (!local(faction.defenses).length) candidates.push("palisade");
                 if (!local(faction.towers).length) candidates.push("watchtower");
@@ -5462,126 +6248,311 @@
         });
     }
 
-    function craftForFaction(faction) {
-        const banner = faction && faction.settlements[0];
-        const workshop = faction && (faction.forges[0] || faction.foundries[0] || faction.workshops[0]);
-        const workers = facilityWorkers(faction, workshop, ["artisan", "industry"]);
-        if (!banner || !workshop || !workers.length || pixelTicks - (workshop.lastCraftTick || 0) < 120) return;
-        const noTechData = !hasTechnologyData();
-        const choices = [
-            {id: "crossbow", tech: "crossbow"},
-            {id: "iron_sword", tech: "iron_weapons"},
-            {id: "bronze_spear", tech: "bronze_weapons"},
-            {id: "bow", tech: "bowmaking"},
-            {id: "spear", tech: "stone_spearheads"},
-            {id: "club", tech: "war_clubs"}
-        ];
-        const ranks = {fists: 0, club: 1, spear: 2, bow: 2.2, bronze_spear: 3, iron_sword: 4, crossbow: 5};
-        const selected = choices.find((choice) => noTechData ? (choice.id === "spear" || choice.id === "club") : hasTech(faction, choice.tech));
-        if (!selected) return;
-        const weapon = selected.id;
-        const target = faction.adults.filter((actor) => !actor.dead && safeNumber(ranks[actor.weapon || "fists"], 0) < ranks[weapon]).sort((a, b) => safeNumber(ranks[a.weapon || "fists"], 0) - safeNumber(ranks[b.weapon || "fists"], 0))[0];
-        if (!target) return;
-        const descriptor = manager.weapons.get(weapon);
-        if (!descriptor || !spendStock(banner, descriptor.cost || {})) return;
-        target.weapon = weapon;
-        workshop.lastCraftTick = pixelTicks;
-        addPersonActivityMetrics(workers[0], {
-            weaponsCrafted: {[weapon]: 1},
-            equipmentIssued: {[weapon]: 1},
-            lastEquipmentRecipient: "H" + target.humanId
-        });
+    function actorIsSoldier(actor) {
+        if (!actor || actor.dead || actor.del || actor.element === "civ_child") return false;
+        return actor.role === "guard" || actor.role === "warrior" || actor.warRole === "attacker" || actor.warRole === "defender";
     }
 
-    function consumeFuel(stock, fuelUse) {
-        if (!stock || !fuelUse) return false;
-        const available = availableFuelStock(stock);
-        const canPay = Object.keys(fuelUse).every((fuel) => safeNumber(available[fuel], 0) >= safeNumber(fuelUse[fuel], 0));
-        if (!canPay) return false;
-        Object.keys(fuelUse).forEach((fuel) => {
-            let amount = Math.max(0, Math.floor(safeNumber(fuelUse[fuel], 0)));
-            if (!amount) return;
-            if (fuel === "charcoal") {
-                spendMaterial(stock, fuel, amount);
-                return;
-            }
-            stock.wood = Math.max(0, safeNumber(stock.wood, 0) - amount);
-            if (!stock.materials) return;
-            const detailed = Math.min(amount, safeNumber(stock.materials[fuel], 0));
-            stock.materials[fuel] -= detailed;
-        });
-        return true;
+    function eraWeaponTargets(eraId, soldierCount) {
+        const count = Math.max(0, Math.floor(safeNumber(soldierCount, 0)));
+        if (!count) return [];
+        const thirds = function (first, second, ranged) {
+            const base = Math.floor(count / 3);
+            const remainder = count % 3;
+            return Array(base + (remainder >= 1 ? 1 : 0)).fill(first)
+                .concat(Array(base + (remainder >= 2 ? 1 : 0)).fill(second))
+                .concat(Array(base).fill(ranged));
+        };
+        if (eraId === "stone") return Array(count).fill("stone_spear");
+        if (eraId === "agriculture") return Array(count - Math.floor(count / 2)).fill("stone_spear").concat(Array(Math.floor(count / 2)).fill("bow"));
+        if (eraId === "bronze") return thirds("bronze_sword", "bronze_spear", "bow");
+        if (eraId === "iron") return thirds("iron_sword", "iron_spear", "bow");
+        if (eraId === "castle") return thirds("steel_blade", "steel_spear", "crossbow");
+        return Array(count).fill("club");
     }
 
-    function processRecipe(faction, building, recipeId) {
-        const banner = faction && (manager.settlementById.get(building && building.settlementId) || faction.settlements[0]);
-        const recipe = TechData.RECIPES && TechData.RECIPES[recipeId];
-        if (!banner || !building || !recipe || pixelTicks - safeNumber(building.lastProcessTick, 0) < 150) return false;
-        ensureStock(banner);
-        if (!(recipe.inputs || []).every((input) => materialAmount(banner.stock, input.resource) >= input.amount)) return false;
-        const fuelPlan = recipe.heat > 0 ? (Core.selectFuelCombination ? Core.selectFuelCombination(availableFuelStock(banner.stock), recipe.heat, FUEL_VALUES) : null) : {used: {}};
-        if (recipe.heat > 0 && !fuelPlan) return false;
-        (recipe.inputs || []).forEach((input) => spendMaterial(banner.stock, input.resource, input.amount));
-        if (!consumeFuel(banner.stock, fuelPlan.used)) {
-            (recipe.inputs || []).forEach((input) => addMaterial(banner.stock, input.resource, input.amount));
+    function weaponUnlockedForFaction(faction, weaponId) {
+        if (weaponId === "fists") return true;
+        const requirement = WEAPON_TECH_REQUIREMENTS[weaponId];
+        return !hasTechnologyData() || factionHasUnlock(faction, "weapon", weaponId) || !requirement || hasTech(faction, requirement);
+    }
+
+    function resolvedEraWeaponTargets(faction, eraId, soldierCount) {
+        const count = Math.max(0, Math.floor(safeNumber(soldierCount, 0)));
+        const resolved = Array(count).fill("fists");
+        const eraLimit = ERA_INDEX.has(eraId) ? ERA_INDEX.get(eraId) : 0;
+        for (let eraIndex = 0; eraIndex <= eraLimit; eraIndex++) {
+            const targets = eraWeaponTargets(ERA_ORDER[eraIndex] || DEFAULT_ERA_ID, count);
+            targets.forEach((weaponId, index) => {
+                if (weaponUnlockedForFaction(faction, weaponId)) resolved[index] = weaponId;
+            });
+        }
+        return resolved;
+    }
+
+    function armorUnlockedForFaction(faction, armorId) {
+        const desired = canonicalArmorId(armorId);
+        if (desired === "none") return true;
+        const requiredEra = ARMOR_ERA_REQUIREMENTS[desired];
+        if (requiredEra && eraIndexFor(faction) < safeNumber(ERA_INDEX.get(requiredEra), 0)) return false;
+        const requirement = ARMOR_TECH_REQUIREMENTS[desired];
+        return !hasTechnologyData() || factionHasUnlock(faction, "armor", desired) ||
+            factionHasUnlock(faction, "armor", requirement) || !requirement || hasTech(faction, requirement);
+    }
+
+    function resolvedEraArmorTarget(faction, eraId) {
+        const eraLimit = ERA_INDEX.has(eraId) ? ERA_INDEX.get(eraId) : 0;
+        let desired = "none";
+        [["agriculture", "rattan"], ["iron", "iron"], ["castle", "steel"]].forEach((entry) => {
+            const requiredIndex = safeNumber(ERA_INDEX.get(entry[0]), Infinity);
+            if (requiredIndex <= eraLimit && armorUnlockedForFaction(faction, entry[1])) desired = entry[1];
+        });
+        return desired;
+    }
+
+    function actorEquipmentBanner(actor, faction) {
+        return settlementForActor(actor) || faction && faction.settlements.find((settlement) => settlement.townCenterActive !== false) || faction && faction.settlements[0] || null;
+    }
+
+    function refundActorWeapon(actor, faction) {
+        if (!actor || actor.dead || actor.del) return false;
+        migrateActorEquipment(actor);
+        if (actor.weapon === "fists") {
+            delete actor.weaponPaidCost;
             return false;
         }
-        const produced = {};
-        (recipe.outputs || []).forEach((output) => {
-            addMaterial(banner.stock, output.resource, output.amount);
-            produced[output.resource] = safeNumber(produced[output.resource], 0) + output.amount;
-            if (!banner.firstProducedResources || typeof banner.firstProducedResources !== "object") banner.firstProducedResources = {};
-            if (!banner.firstProducedResources[output.resource]) {
-                banner.firstProducedResources[output.resource] = true;
-                logSettlementEvent(banner, "first_production", "首次生产资源：" + output.resource, {resource: output.resource, amount: output.amount, recipeId});
-            }
-        });
-        building.lastProcessTick = pixelTicks;
-        const research = ensureResearchState(banner);
-        research.milestones.itemsSmelted = safeNumber(research.milestones.itemsSmelted, 0) + 1;
-        addDomainExperience(banner, "production", 0.2);
-        const worker = facilityWorkers(faction, building, ["industry", "artisan"])[0];
-        if (worker) addPersonActivityMetrics(worker, {resourcesProduced: produced, recipesCompleted: {[recipeId]: 1}});
+        const banner = actorEquipmentBanner(actor, faction);
+        if (banner && actor.weaponPaidCost) refundStock(banner, actor.weaponPaidCost);
+        const previousWeapon = actor.weapon;
+        actor.weapon = "fists";
+        delete actor.weaponPaidCost;
+        recordPersonLifeEvent(actor, "weapon_removed", {weapon: previousWeapon, refunded: true});
         return true;
     }
 
-    function facilityWorkers(faction, building, roles) {
-        if (!faction || !building) return [];
-        return faction.adults.filter((actor) => !actor.dead && roles.indexOf(actor.role) !== -1 && Core.distance(actor.x, actor.y, building.x, building.y) <= 2.5).sort((a, b) => {
-            const assignedA = a.task === "facility" && a.targetId === building.buildingId ? 0 : 1;
-            const assignedB = b.task === "facility" && b.targetId === building.buildingId ? 0 : 1;
-            return assignedA - assignedB || Core.distance(a.x, a.y, building.x, building.y) - Core.distance(b.x, b.y, building.x, building.y) || a.humanId - b.humanId;
-        });
+    function refundActorArmor(actor, faction) {
+        if (!actor || actor.dead || actor.del) return false;
+        migrateActorEquipment(actor);
+        if (actor.armor === "none") {
+            delete actor.armorPaidCost;
+            syncActorHealth(actor, false);
+            return false;
+        }
+        const banner = actorEquipmentBanner(actor, faction);
+        if (banner && actor.armorPaidCost) refundStock(banner, actor.armorPaidCost);
+        const previousArmor = actor.armor;
+        actor.armor = "none";
+        delete actor.armorPaidCost;
+        syncActorHealth(actor, true);
+        recordPersonLifeEvent(actor, "armor_removed", {armor: previousArmor, refunded: true});
+        return true;
     }
 
-    function facilityStaffed(faction, building, roles) {
-        return facilityWorkers(faction, building, roles).length > 0;
+    function canAffordWeaponSwap(banner, actor, cost) {
+        if (!banner) return false;
+        ensureStock(banner);
+        const refund = actor && actor.weapon !== "fists" && actor.weaponPaidCost || {};
+        return Object.keys(cost || {}).every((resource) => materialAmount(banner.stock, resource) + safeNumber(refund[resource], 0) >= safeNumber(cost[resource], 0));
+    }
+
+    function canAffordArmorSwap(banner, actor, cost) {
+        if (!banner) return false;
+        ensureStock(banner);
+        const refund = actor && actor.armor !== "none" && actor.armorPaidCost || {};
+        return Object.keys(cost || {}).every((resource) => materialAmount(banner.stock, resource) + safeNumber(refund[resource], 0) >= safeNumber(cost[resource], 0));
+    }
+
+    function equipActorWeapon(actor, faction, weaponId) {
+        if (!actor || !actorIsSoldier(actor)) return false;
+        migrateActorEquipment(actor);
+        const desired = canonicalWeaponId(weaponId);
+        if (actor.weapon === desired) return false;
+        if (!weaponUnlockedForFaction(faction, desired)) return false;
+        const descriptor = weaponDescriptor(desired);
+        const banner = actorEquipmentBanner(actor, faction);
+        const cost = copyResourceCost(descriptor && descriptor.cost || {});
+        if (!descriptor || !banner || !canAffordWeaponSwap(banner, actor, cost)) return false;
+        const previousWeapon = actor.weapon;
+        if (previousWeapon !== "fists") refundActorWeapon(actor, faction);
+        if (!spendStock(banner, cost)) return false;
+        actor.weapon = desired;
+        actor.weaponPaidCost = cost;
+        actor.equipmentSchemaVersion = EQUIPMENT_SCHEMA_VERSION;
+        recordPersonLifeEvent(actor, "weapon_equipped", {weapon: desired, previousWeapon: previousWeapon, cost: copyResourceCost(cost)});
+        addPersonActivityMetrics(actor, {equipmentIssued: {[desired]: 1}});
+        return true;
+    }
+
+    function equipActorArmor(actor, faction, armorId) {
+        if (!actor || !actorIsSoldier(actor)) return false;
+        migrateActorEquipment(actor);
+        const desired = canonicalArmorId(armorId);
+        if (actor.armor === desired || desired === "none" || !armorUnlockedForFaction(faction, desired)) return false;
+        const descriptor = armorDescriptor(desired);
+        const banner = actorEquipmentBanner(actor, faction);
+        const cost = copyResourceCost(descriptor && descriptor.cost || {});
+        if (!descriptor || !banner || !canAffordArmorSwap(banner, actor, cost)) return false;
+        const previousArmor = actor.armor;
+        if (previousArmor !== "none") refundActorArmor(actor, faction);
+        if (!spendStock(banner, cost)) return false;
+        actor.armor = desired;
+        actor.armorPaidCost = cost;
+        actor.equipmentSchemaVersion = EQUIPMENT_SCHEMA_VERSION;
+        syncActorHealth(actor, true);
+        recordPersonLifeEvent(actor, "armor_equipped", {armor: desired, previousArmor: previousArmor, cost: copyResourceCost(cost)});
+        addPersonActivityMetrics(actor, {equipmentIssued: {[desired + "_armor"]: 1}});
+        return true;
+    }
+
+    function reconcileFactionEquipment(faction) {
+        if (!faction) return 0;
+        const livingAdults = (faction.adults || []).filter((actor) => actor && !actor.dead && !actor.del).sort((a, b) => a.humanId - b.humanId);
+        livingAdults.forEach(migrateActorEquipment);
+        let changes = 0;
+        livingAdults.filter((actor) => !actorIsSoldier(actor)).forEach((actor) => {
+            if (refundActorWeapon(actor, faction)) changes++;
+            if (refundActorArmor(actor, faction)) changes++;
+        });
+        const soldiers = livingAdults.filter(actorIsSoldier);
+        const banner = faction.settlements && faction.settlements[0];
+        const eraId = banner && banner.eraId || faction.eraId || DEFAULT_ERA_ID;
+        const targets = resolvedEraWeaponTargets(faction, eraId, soldiers.length);
+        const armorTarget = resolvedEraArmorTarget(faction, eraId);
+        soldiers.forEach((actor, index) => {
+            if (equipActorWeapon(actor, faction, targets[index] || "fists")) changes++;
+        });
+        // Preserve the era's army-wide weapon distribution before spending any
+        // shared material on armor for individual soldiers.
+        soldiers.forEach((actor) => {
+            if (armorTarget === "none") {
+                if (refundActorArmor(actor, faction)) changes++;
+            }
+            else if (equipActorArmor(actor, faction, armorTarget)) changes++;
+        });
+        return changes;
+    }
+
+    function craftForFaction(faction) {
+        return reconcileFactionEquipment(faction);
+    }
+
+    const WORKSHOP_RECIPE_BY_ELEMENT = Object.freeze({
+        civ_foundry_core: "bronze",
+        civ_kiln_core: "iron",
+        civ_forge_core: "steel"
+    });
+    const RECIPE_TECH_REQUIREMENTS = Object.freeze({bronze: "bronze_foundry", iron: "iron_smelting", steel: "steelmaking"});
+
+    function recipeUnlockedForFaction(faction, recipeId) {
+        if (!hasTechnologyData()) return true;
+        return factionHasUnlock(faction, "recipe", recipeId) || hasTech(faction, RECIPE_TECH_REQUIREMENTS[recipeId]);
+    }
+
+    function workshopLedger(stock) {
+        const keys = new Set(STOCK_KEYS.concat(MATERIAL_KEYS, Object.keys(FUEL_VALUES)));
+        Object.keys(TechData.RECIPES || {}).forEach((recipeId) => {
+            const recipe = TechData.RECIPES[recipeId] || {};
+            (recipe.inputs || []).concat(recipe.outputs || []).forEach((entry) => keys.add(entry.resource));
+        });
+        const ledger = {};
+        keys.forEach((key) => { ledger[key] = materialAmount(stock, key); });
+        return ledger;
+    }
+
+    function reserveWorkshopRecipe(ledger, recipe, woodReserve) {
+        if (!ledger || !recipe) return null;
+        if (!(recipe.inputs || []).every((input) => safeNumber(ledger[input.resource], 0) >= safeNumber(input.amount, 0))) return null;
+        (recipe.inputs || []).forEach((input) => { ledger[input.resource] = safeNumber(ledger[input.resource], 0) - safeNumber(input.amount, 0); });
+        const minimumWood = Math.max(0, Math.floor(safeNumber(woodReserve, 0)));
+        const rollbackInputs = () => (recipe.inputs || []).forEach((input) => {
+            ledger[input.resource] = safeNumber(ledger[input.resource], 0) + safeNumber(input.amount, 0);
+        });
+        if (safeNumber(ledger.wood, 0) < minimumWood) {
+            rollbackInputs();
+            return null;
+        }
+        const availableFuel = {};
+        Object.keys(FUEL_VALUES).forEach((fuel) => {
+            const protectedAmount = fuel === "wood" ? minimumWood : 0;
+            availableFuel[fuel] = Math.max(0, Math.floor(safeNumber(ledger[fuel], 0) - protectedAmount));
+        });
+        const fuelPlan = recipe.heat > 0 && Core.selectFuelCombination ? Core.selectFuelCombination(availableFuel, recipe.heat, FUEL_VALUES) : {used: {}};
+        if (recipe.heat > 0 && !fuelPlan) {
+            rollbackInputs();
+            return null;
+        }
+        Object.keys(fuelPlan.used || {}).forEach((fuel) => { ledger[fuel] = safeNumber(ledger[fuel], 0) - safeNumber(fuelPlan.used[fuel], 0); });
+        if (safeNumber(ledger.wood, 0) < minimumWood) {
+            Object.keys(fuelPlan.used || {}).forEach((fuel) => { ledger[fuel] = safeNumber(ledger[fuel], 0) + safeNumber(fuelPlan.used[fuel], 0); });
+            rollbackInputs();
+            return null;
+        }
+        return {fuelUse: copyResourceCost(fuelPlan.used || {})};
+    }
+
+    function processWorkshopBatches(faction, banner, buildings) {
+        if (!faction || !banner || banner.townCenterActive === false) return 0;
+        ensureStock(banner);
+        const ledger = workshopLedger(banner.stock);
+        const woodReserve = smeltingWoodReserveFor(banner);
+        const proposals = [];
+        (buildings || []).filter((building) => building && !building.del && building.buildingState !== "destroyed" && building.settlementId === banner.settlementId)
+            .sort((a, b) => safeNumber(a.buildingId, 0) - safeNumber(b.buildingId, 0))
+            .forEach((building) => {
+                const recipeId = WORKSHOP_RECIPE_BY_ELEMENT[building.element];
+                const recipe = recipeId && TechData.RECIPES && TechData.RECIPES[recipeId];
+                if (!recipe || !recipeUnlockedForFaction(faction, recipeId) || pixelTicks - safeNumber(building.lastProcessTick, 0) < C.WORKSHOP_PROCESS_INTERVAL) return;
+                const reservation = reserveWorkshopRecipe(ledger, recipe, woodReserve);
+                if (!reservation) return;
+                proposals.push({building, recipeId, recipe, fuelUse: reservation.fuelUse});
+            });
+        if (!proposals.length) return 0;
+
+        // Inputs for every workshop are committed before any outputs. This keeps
+        // a newly smelted intermediate from being consumed again in the same tick.
+        proposals.forEach((proposal) => {
+            (proposal.recipe.inputs || []).forEach((input) => spendMaterial(banner.stock, input.resource, input.amount));
+            Object.keys(proposal.fuelUse).forEach((fuel) => spendMaterial(banner.stock, fuel, proposal.fuelUse[fuel]));
+        });
+        proposals.forEach((proposal) => {
+            (proposal.recipe.outputs || []).forEach((output) => {
+                addMaterial(banner.stock, output.resource, output.amount);
+                if (!banner.firstProducedResources || typeof banner.firstProducedResources !== "object") banner.firstProducedResources = {};
+                if (!banner.firstProducedResources[output.resource]) {
+                    banner.firstProducedResources[output.resource] = true;
+                    logSettlementEvent(banner, "first_production", "首次生产资源：" + output.resource, {
+                        resource: output.resource,
+                        amount: output.amount,
+                        recipeId: proposal.recipeId,
+                        buildingId: proposal.building.buildingId
+                    });
+                }
+            });
+            proposal.building.lastProcessTick = pixelTicks;
+        });
+        const research = ensureResearchState(banner);
+        research.milestones.itemsSmelted = safeNumber(research.milestones.itemsSmelted, 0) + proposals.length;
+        addDomainExperience(banner, "production", 0.2 * proposals.length);
+        return proposals.length;
     }
 
     function processFactionIndustry(faction) {
-        if (!faction) return;
+        if (!faction) return 0;
+        let processed = 0;
         faction.settlements.forEach((banner) => {
-            if (banner.townCenterActive === false) return;
-            const local = (list) => list.filter((building) => building.settlementId === banner.settlementId);
-            const kiln = local(faction.kilns)[0];
-            const foundry = local(faction.foundries)[0];
-            const forge = local(faction.forges)[0];
-            if (hasTech(faction, "charcoal_kiln") && kiln && facilityStaffed(faction, kiln, ["industry", "artisan"]) && materialAmount(banner.stock, "charcoal") < 12 && banner.stock.wood >= 6) processRecipe(faction, kiln, "charcoal");
-            if (foundry && facilityStaffed(faction, foundry, ["industry", "artisan"])) {
-                if (hasTech(faction, "iron_smelting") && materialAmount(banner.stock, "raw_iron") >= 2) processRecipe(faction, foundry, "iron");
-                else if (hasTech(faction, "bronze_foundry")) processRecipe(faction, foundry, "bronze");
-            }
-            if (forge && facilityStaffed(faction, forge, ["industry", "artisan"]) && hasTech(faction, "steelmaking")) processRecipe(faction, forge, "steel");
+            const buildings = faction.foundries.concat(faction.kilns, faction.forges);
+            processed += processWorkshopBatches(faction, banner, buildings);
         });
+        return processed;
     }
 
     function processFactionCommunity(faction) {
-        if (!faction || !faction.hearths.length || !hasTech(faction, "controlled_fire")) return;
+        if (!faction || !faction.hearths.length || !factionHasFeature(faction, "hearthHealing")) return;
         for (let i = 0; i < faction.adults.length; i++) {
             const actor = faction.adults[i];
             if (!actor || actor.dead || actor.hp >= actor.maxHp) continue;
             const nearHearth = faction.hearths.some((hearth) => !hearth.del && Core.distance(actor.x, actor.y, hearth.x, hearth.y) <= 6);
-            if (nearHearth) actor.hp = Math.min(actor.maxHp, actor.hp + 2);
+            if (nearHearth) healActor(actor, 2);
         }
     }
 
@@ -5597,12 +6568,17 @@
             dead: false,
             hp: C.CHILD_HP,
             maxHp: C.CHILD_HP,
+            baseMaxHp: C.CHILD_HP,
+            healthDamage: 0,
             birthTick: pixelTicks,
             lifespanYears: randomLifespanYears(),
             ageTicks: 0,
             dir: Math.random() < 0.5 ? -1 : 1,
             task: "idle",
             weapon: "fists",
+            armor: "none",
+            armorBonusHp: 0,
+            equipmentSchemaVersion: EQUIPMENT_SCHEMA_VERSION,
             carry: {},
             carryCapacity: C.BASE_CARRY_CAPACITY,
             attackReadyTick: 0
@@ -5737,6 +6713,7 @@
         if (actor.dead) return;
         const deathTick = Math.max(1, Number.isFinite(tick) ? tick : pixelTicks);
         finishPersonActivity(actor, "death", actor.deathCause || "injury", details);
+        actor.healthDamage = Math.max(safeNumber(actor.healthDamage, 0), safeNumber(actor.maxHp, C.ADULT_HP));
         actor.hp = 0;
         actor.dead = deathTick;
         actor.task = "dead";
@@ -5757,11 +6734,14 @@
         const sourceFaction = source && source.factionId !== undefined ? source.factionId : (Number.isFinite(source) ? source : null);
         if (!actor || actor.del || actor.dead) return false;
         if (sourceFaction !== null && sourceFaction !== actor.factionId && getPeaceMode() === "full-peace") return false;
+        migrateActorEquipment(actor);
         const defendingFaction = manager.factionById.get(actor.factionId);
-        const reduction = Math.max(0, Math.min(0.8, safeNumber(defendingFaction && defendingFaction.techModifiers && defendingFaction.techModifiers.damageReduction, 0)));
-        const damage = Math.max(0, Number(amount) || 0) * (1 - reduction);
+        const incomingDamageMultiplier = Math.max(0.1, Math.min(1, safeNumber(defendingFaction && defendingFaction.techModifiers && defendingFaction.techModifiers.incomingDamageMultiplier, 1)));
+        const damage = Math.max(0, Number(amount) || 0) * incomingDamageMultiplier;
         if (!damage) return false;
-        actor.hp = Math.max(0, safeNumber(actor.hp, actor.maxHp || C.ADULT_HP) - damage);
+        delete actor.equipmentSurvivalFloor;
+        actor.healthDamage = safeNumber(actor.healthDamage, 0) + damage;
+        syncActorHealth(actor, false);
         addPersonActivityMetrics(actor, {damageTaken: damage});
         if (source && Number.isFinite(source.humanId)) addPersonActivityMetrics(source, {hits: 1, damageDealt: damage});
         actor.underAttackUntil = pixelTicks + 90;
@@ -5793,6 +6773,26 @@
         };
     }
 
+    function knockbackActor(target, attacker, distance) {
+        const steps = Math.max(0, Math.floor(safeNumber(distance, 0)));
+        if (!target || !attacker || !steps) return false;
+        let moved = false;
+        let dx = Math.sign(target.x - attacker.x);
+        const dy = Math.sign(target.y - attacker.y);
+        if (!dx && !dy) dx = attacker.dir === -1 ? -1 : 1;
+        for (let step = 0; step < steps; step++) {
+            let stepMoved = false;
+            if (target._r !== undefined) {
+                const relation = getRelation(target._r);
+                if (relation) stepMoved = tryMoveRelation(relation, dx, dy, true);
+            }
+            else stepMoved = tryMove(target, target.x + dx, target.y + dy);
+            if (!stepMoved) break;
+            moved = true;
+        }
+        return moved;
+    }
+
     function resolveActorAttacks() {
         if (!manager.pendingAttacks.length) return;
         const pending = manager.pendingAttacks.splice(0, manager.pendingAttacks.length);
@@ -5809,17 +6809,12 @@
             lockCombatTarget(target, attacker);
             target.underAttackUntil = pixelTicks + 90;
             addPersonActivityMetrics(attacker, {attacks: 1});
-            if (Math.random() >= 0.5) { addPersonActivityMetrics(attacker, {misses: 1}); continue; }
             const weapon = manager.weapons.get(attacker.weapon) || manager.weapons.get("fists");
-            const damage = Math.max(0.1, safeNumber(weapon && weapon.damage, 8) * 0.1);
+            if (Math.random() >= safeNumber(weapon && weapon.hitChance, 0.5)) { addPersonActivityMetrics(attacker, {misses: 1}); continue; }
+            const damage = Math.max(0, safeNumber(weapon && weapon.damage, 5));
             damageActor(target, damage, attacker);
             if (Math.random() < C.ATTACK_BLOOD_CHANCE) spawnBloodNear(target);
-            const dx = Math.sign(target.x - attacker.x) || (attacker.dir || 1);
-            if (target._r !== undefined) {
-                const relation = getRelation(target._r);
-                if (relation) tryMoveRelation(relation, dx, 0, true);
-            }
-            else tryMove(target, target.x + dx, target.y);
+            knockbackActor(target, attacker, safeNumber(weapon && weapon.knockback, 1));
             const attackingBanner = settlementForActor(attacker);
             if (attackingBanner) addDomainExperience(attackingBanner, "military", 0.08);
         }
@@ -5885,11 +6880,11 @@
             const weapon = manager.weapons.get(attacker.weapon) || manager.weapons.get("fists");
             usedAttackers.add(attacker.humanId);
             addPersonActivityMetrics(attacker, {attacks: 1});
-            if (Math.random() >= 0.5) { addPersonActivityMetrics(attacker, {misses: 1}); continue; }
+            if (Math.random() >= safeNumber(weapon && weapon.hitChance, 0.5)) { addPersonActivityMetrics(attacker, {misses: 1}); continue; }
             const attackerFaction = manager.factionById.get(attacker.factionId);
             const multiplier = safeNumber(attackerFaction && attackerFaction.techModifiers && attackerFaction.techModifiers.structureDamageMultiplier, 1);
             const beforeHp = safeNumber(target.structureHp, target.structureMaxHp || 120);
-            damageStructure(target, Math.max(0.1, safeNumber(weapon.damage, 8) * 0.1) * multiplier, attacker.factionId);
+            damageStructure(target, Math.max(0, safeNumber(weapon.damage, 5)) * multiplier, attacker.factionId);
             const dealt = Math.max(0, beforeHp - safeNumber(target.structureHp, 0));
             addPersonActivityMetrics(attacker, {hits: 1, structureDamage: dealt, structuresDestroyed: target.structureHp <= 0 ? 1 : 0});
         }
@@ -5922,7 +6917,7 @@
         }
         const healInterval = C.PASSIVE_HEAL_INTERVAL_TICKS || 60;
         if (!actor.dead && pixelTicks % healInterval === 0) {
-            actor.hp = Math.min(actor.maxHp, actor.hp + (C.PASSIVE_HEAL_AMOUNT || 1));
+            healActor(actor, C.PASSIVE_HEAL_AMOUNT || 1);
         }
     }
 
@@ -5994,6 +6989,7 @@
     function fireTaskCanInterrupt(actor) {
         if (!actor || actor.playerOrder || actor.warRole || actor.underAttackUntil > pixelTicks) return false;
         if (carriedAmount(actor) >= carryCapacityFor(actor)) return false;
+        if (!fireResponseSlotAvailable(actor)) return false;
         return actor.task !== "extinguish" && actor.task !== "deliver" && actor.task !== "combat" && actor.task !== "siege" && actor.task !== "flee" && actor.task !== "move";
     }
 
@@ -6030,8 +7026,7 @@
             return;
         }
         if (!head && pixelTicks % 30 === 0) {
-            pixel.hp = Math.max(0, safeNumber(pixel.hp, pixel.maxHp || C.ADULT_HP) - 5);
-            if (pixel.hp <= 0) markActorDead(pixel, pixelTicks);
+            damageActor(pixel, 5, null);
         }
         processLife(pixel);
         if (pixel.dead) return;
@@ -6050,6 +7045,7 @@
                 const hadPlayerOrder = !!pixel.playerOrder;
                 const emergencyFire = fireTaskCanInterrupt(pixel) ? findFireTarget(pixel) : null;
                 if (emergencyFire) setTask(pixel, "extinguish", emergencyFire);
+                if (!emergencyFire) prioritizeForesterPlanting(pixel);
                 const activeTask = pixel.task === "move" || pixel.task === "harvest" || pixel.task === "deliver" || pixel.task === "build" ||
                     pixel.task === "farm" || pixel.task === "plant_tree" || pixel.task === "combat" || pixel.task === "siege" || pixel.task === "extinguish";
                 const taskIsFacility = pixel.task === "facility";
@@ -6068,6 +7064,7 @@
                 deferAdultLocomotion = true;
                 try { runAdultAction(pixel); }
                 finally { deferAdultLocomotion = false; }
+                if (pixel.lastDeliveryTick === pixelTicks) break;
                 if (pixel.task !== "planning") break;
             }
         }
@@ -6206,7 +7203,9 @@
         const actor = getActorFromPixel(pixel) || pixel;
         const weapon = actor.weapon || "fists";
         const role = actor.role || (actor.element === "civ_child" ? "child" : "worker");
-        return "H" + (actor.humanId || "?") + " · F" + (actor.factionId || "?") + " · " + role + " · HP " + Math.max(0, Math.round(actor.hp || 0)) + " · Age " + ageYears(actor).toFixed(1) + "/" + Math.round(actor.lifespanYears || 55) + " · " + weapon;
+        return "H" + (actor.humanId || "?") + " · " + civilizationText("people.factionShort", "Faction", "阵营") + " " + (actor.factionId || "?") + " · " +
+            localizedPersonRole(role) + " · " + civilizationText("people.health", "HP", "生命值") + " " + Math.max(0, Math.round(actor.hp || 0)) + " · " +
+            civilizationText("people.age", "Age", "年龄") + " " + ageYears(actor).toFixed(1) + "/" + Math.round(actor.lifespanYears || 55) + " · " + localizedPersonWeapon(weapon);
     }
 
     function bannerHoverStat(pixel) {
@@ -6215,7 +7214,9 @@
         const era = eraDefinition(pixel.eraId);
         const eraTechIds = era && era.techIds || [];
         const completed = eraTechIds.filter((techId) => pixel.research && pixel.research.unlocked && pixel.research.unlocked[techId]).length;
-        return "F" + (pixel.factionId || "?") + " · " + (era ? era.name : pixel.stage || "camp") + " " + completed + "/8 · Pop " + (faction ? faction.population : "?") + "/" + (pixel.housing || 2) + " · F/W/S " + Math.floor(stock.food || 0) + "/" + Math.floor(stock.wood || 0) + "/" + Math.floor(stock.stone || 0);
+        return civilizationText("people.factionShort", "Faction", "阵营") + " " + (pixel.factionId || "?") + " · " + (era ? localizedEraName(era) : localizedSettlementStage(pixel.stage || "camp")) + " " + completed + "/" + eraTechIds.length + " · " +
+            civilizationText("ui.population", "Population", "人口") + " " + (faction ? faction.population : "?") + "/" + (pixel.housing || 2) + " · " +
+            civilizationText("ui.stock", "Stock F/W/S", "库存 食/木/石") + " " + Math.floor(stock.food || 0) + "/" + Math.floor(stock.wood || 0) + "/" + Math.floor(stock.stone || 0);
     }
 
     function renderTerritoryHover(ctx) {
@@ -6250,12 +7251,16 @@
     function renderResourceOverlay(ctx) {
         if (!manager.overlaySettings.resources) return;
         const filters = manager.overlaySettings.resourceFilters;
-        const colors = {food: "#76d15f", wood: "#58a35c", stone: "#a6a6a6", copper: "#d78655", tin: "#d7d8df", raw_iron: "#a85d45"};
+        const colors = {
+            food: "#76d15f", wood: "#58a35c", stone: "#a6a6a6", sapling: "#8fcf68",
+            copper: "#d78655", bronze: "#b87832", raw_iron: "#a85d45", iron: "#c0c4c7", steel: "#7e96a3"
+        };
         manager.resourceIndex.forEach((nodes, kind) => {
-            const category = kind === "food" ? "food" : (kind === "wood" ? "tree" : (kind === "stone" ? "stone" : "metals"));
+            const sapling = String(kind || "").indexOf(TREE_SAPLING_PREFIX) === 0;
+            const category = kind === "food" ? "food" : (kind === "wood" || sapling ? "tree" : (kind === "stone" ? "stone" : "metals"));
             ctx.save();
             ctx.globalAlpha = 0.8;
-            ctx.fillStyle = colors[kind] || "#ffffff";
+            ctx.fillStyle = sapling ? colors.sapling : (colors[kind] || "#ffffff");
             nodes.forEach((node) => {
                 if (!node.pixel || node.pixel.del) return;
                 const isDrop = node.pixel._civResourceDrop === true;
@@ -6266,20 +7271,103 @@
         });
     }
 
+    function drawPersonWeapon(pixel, ctx) {
+        const weapon = pixel.weapon || "fists";
+        if (weapon === "fists" || weapon === "fist") return;
+        const direction = pixel.dir || 1;
+        const centerX = canvasCoord(pixel.x) + pixelSize / 2;
+        const centerY = canvasCoord(pixel.y) + pixelSize / 2;
+        const spearColors = {
+            spear: "#8f8b82", stone_spear: "#8f8b82", bronze_spear: "#bf7b39",
+            iron_spear: "#c6c8cb", steel_spear: "#8da3ad"
+        };
+        const swordColors = {bronze_sword: "#bf7b39", iron_sword: "#c6c8cb", steel_blade: "#8da3ad"};
+        ctx.save();
+        ctx.lineWidth = Math.max(1, pixelSize / 5);
+        if (Object.prototype.hasOwnProperty.call(spearColors, weapon)) {
+            const shaftEndX = centerX + direction * pixelSize * 1.15;
+            const shaftEndY = centerY - pixelSize * 0.2;
+            ctx.strokeStyle = "#795834";
+            ctx.beginPath();
+            ctx.moveTo(centerX - direction * pixelSize * 0.15, centerY + pixelSize * 0.1);
+            ctx.lineTo(shaftEndX, shaftEndY);
+            ctx.stroke();
+            ctx.strokeStyle = spearColors[weapon];
+            ctx.beginPath();
+            ctx.moveTo(shaftEndX, shaftEndY);
+            ctx.lineTo(shaftEndX + direction * pixelSize * 0.32, shaftEndY - pixelSize * 0.06);
+            ctx.stroke();
+        }
+        else if (Object.prototype.hasOwnProperty.call(swordColors, weapon)) {
+            ctx.strokeStyle = "#6f4a2d";
+            ctx.beginPath();
+            ctx.moveTo(centerX - direction * pixelSize * 0.12, centerY + pixelSize * 0.1);
+            ctx.lineTo(centerX + direction * pixelSize * 0.12, centerY - pixelSize * 0.02);
+            ctx.stroke();
+            ctx.strokeStyle = swordColors[weapon];
+            ctx.lineWidth = Math.max(1, pixelSize / 4);
+            ctx.beginPath();
+            ctx.moveTo(centerX + direction * pixelSize * 0.1, centerY);
+            ctx.lineTo(centerX + direction * pixelSize * 0.78, centerY - pixelSize * 0.28);
+            ctx.stroke();
+        }
+        else if (weapon === "bow") {
+            ctx.strokeStyle = "#966f3e";
+            ctx.beginPath();
+            ctx.moveTo(centerX + direction * pixelSize * 0.45, centerY - pixelSize * 0.42);
+            ctx.lineTo(centerX + direction * pixelSize * 0.62, centerY);
+            ctx.lineTo(centerX + direction * pixelSize * 0.45, centerY + pixelSize * 0.42);
+            ctx.lineTo(centerX + direction * pixelSize * 0.45, centerY - pixelSize * 0.42);
+            ctx.stroke();
+        }
+        else if (weapon === "crossbow") {
+            ctx.strokeStyle = "#755235";
+            ctx.beginPath();
+            ctx.moveTo(centerX - direction * pixelSize * 0.1, centerY + pixelSize * 0.15);
+            ctx.lineTo(centerX + direction * pixelSize * 0.75, centerY - pixelSize * 0.1);
+            ctx.moveTo(centerX + direction * pixelSize * 0.35, centerY - pixelSize * 0.42);
+            ctx.lineTo(centerX + direction * pixelSize * 0.5, centerY - pixelSize * 0.08);
+            ctx.lineTo(centerX + direction * pixelSize * 0.35, centerY + pixelSize * 0.28);
+            ctx.stroke();
+        }
+        else {
+            ctx.strokeStyle = "#6f4a2d";
+            ctx.beginPath();
+            ctx.moveTo(centerX, centerY);
+            ctx.lineTo(centerX + direction * pixelSize * 0.75, centerY - pixelSize * 0.16);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    function drawPersonArmor(pixel, ctx) {
+        const armor = canonicalArmorId(pixel.armor);
+        const palettes = {
+            rattan: {base: "#6f7440", highlight: "#9a8958", shadow: "#4f5832"},
+            iron: {base: "#d9dddf", highlight: "#f4f5f2", shadow: "#8d969b"},
+            steel: {base: "#202426", highlight: "#525b60", shadow: "#090b0c"}
+        };
+        const palette = palettes[armor];
+        if (!palette) return;
+        const left = canvasCoord(pixel.x);
+        const top = canvasCoord(pixel.y);
+        const factionBelt = pixel.factionColor || factionColor(pixel.factionId) || pixel.color;
+        ctx.save();
+        ctx.fillStyle = palette.shadow;
+        ctx.fillRect(left + pixelSize * 0.05, top + pixelSize * 0.18, pixelSize * 0.9, pixelSize * 0.62);
+        ctx.fillStyle = palette.base;
+        ctx.fillRect(left + pixelSize * 0.13, top + pixelSize * 0.2, pixelSize * 0.74, pixelSize * 0.56);
+        ctx.fillStyle = palette.highlight;
+        ctx.fillRect(left + pixelSize * 0.2, top + pixelSize * 0.24, pixelSize * 0.13, pixelSize * 0.34);
+        ctx.fillStyle = factionBelt;
+        ctx.fillRect(left + pixelSize * 0.08, top + pixelSize * 0.66, pixelSize * 0.84, pixelSize * 0.13);
+        ctx.restore();
+    }
+
     function renderCivilizedBody(pixel, ctx) {
         drawSquare(ctx, pixel.color, pixel.x, pixel.y);
-        if (!pixel.weapon || pixel.weapon === "fists") return;
-        const ranged = pixel.weapon === "bow" || pixel.weapon === "crossbow";
-        const length = pixel.weapon === "spear" || pixel.weapon === "bronze_spear" ? 1.35 : (ranged ? 0.65 : 0.75);
-        const direction = pixel.dir || 1;
-        ctx.save();
-        ctx.strokeStyle = pixel.weapon === "iron_sword" ? "#c6c8cb" : (pixel.weapon === "crossbow" ? "#a99a7d" : (pixel.weapon === "spear" || pixel.weapon === "bronze_spear" ? "#9a835b" : "#6f4a2d"));
-        ctx.lineWidth = Math.max(1, pixelSize / 5);
-        ctx.beginPath();
-        ctx.moveTo(canvasCoord(pixel.x) + pixelSize / 2, canvasCoord(pixel.y) + pixelSize / 2);
-        ctx.lineTo(canvasCoord(pixel.x) + pixelSize / 2 + direction * pixelSize * length, canvasCoord(pixel.y) + pixelSize / 3);
-        ctx.stroke();
-        ctx.restore();
+        drawPersonArmor(pixel, ctx);
+        drawPersonWeapon(pixel, ctx);
     }
 
     function renderRangedProjectiles(ctx) {
@@ -6301,27 +7389,148 @@
         for (let i = 0; i < expired.length; i++) manager.visualProjectiles.delete(expired[i]);
     }
 
-    function renderBuildingSprites(ctx, layer) {
-        const seen = new Set();
-        const draw = (building) => {
-            if (!isBuildingCorePixel(building) || building.buildingState === "destroyed" || seen.has(building)) return;
-            const configuredLayer = typeof interactionRenderLayer === "function" ? interactionRenderLayer(building) : "default";
-            const drawsOnTop = configuredLayer !== "normal";
-            if ((layer === "top") !== drawsOnTop) return;
-            seen.add(building);
-            ctx.save();
-            ctx.globalAlpha = building.element === "civ_construction" ? 0.55 : 1;
-            ctx.fillStyle = building.factionColor || factionColor(building.factionId) || building.color;
-            ctx.fillRect(canvasCoord(building.x - 1), canvasCoord(building.y - 2), pixelSize * 3, pixelSize * 3);
-            ctx.restore();
-        };
-        manager.settlements.forEach(draw);
-        manager.constructionSites.forEach(draw);
-        manager.structures.forEach(draw);
+    function buildingSpriteEraId(building) {
+        if (building && ERA_INDEX.has(building.eraId)) return building.eraId;
+        const settlement = building && manager.settlementById.get(building.settlementId);
+        if (settlement && ERA_INDEX.has(settlement.eraId)) return settlement.eraId;
+        const faction = building && manager.factionById.get(building.factionId);
+        const capital = faction && faction.settlements && faction.settlements[0];
+        return capital && ERA_INDEX.has(capital.eraId) ? capital.eraId : DEFAULT_ERA_ID;
     }
 
-    function renderNormalBuildingSprites(ctx) { renderBuildingSprites(ctx, "normal"); }
-    function renderTopBuildingSprites(ctx) { renderBuildingSprites(ctx, "top"); }
+    function buildingSpriteDescriptor(building) {
+        if (!building || typeof World.buildingSpriteDescriptor !== "function") return null;
+        const type = building.buildingType || building.blueprintType || building.element;
+        return World.buildingSpriteDescriptor(type, buildingSpriteEraId(building));
+    }
+
+    function requestBuildingSprite(descriptor) {
+        if (!descriptor || typeof root.Image !== "function") return null;
+        let asset = buildingSpriteAssets.get(descriptor.fileName);
+        if (asset) return asset;
+        asset = {state: "loading", image: null, bounds: null, tinted: new Map()};
+        buildingSpriteAssets.set(descriptor.fileName, asset);
+        const image = new root.Image();
+        image.decoding = "async";
+        image.onload = function () {
+            asset.image = image;
+            asset.state = "ready";
+        };
+        image.onerror = function () {
+            asset.state = "failed";
+            asset.image = null;
+        };
+        image.src = BUILDING_SPRITE_ROOT + descriptor.fileName + "?v=" + BUILDING_SPRITE_VERSION;
+        return asset;
+    }
+
+    function parseSpriteFactionColor(color) {
+        const value = String(color || "").trim();
+        let match = /^#([0-9a-f]{6})$/i.exec(value);
+        if (match) {
+            const numeric = parseInt(match[1], 16);
+            return {key: match[1].toLowerCase(), r: numeric >> 16, g: numeric >> 8 & 255, b: numeric & 255};
+        }
+        match = /^#([0-9a-f]{3})$/i.exec(value);
+        if (!match) return null;
+        const expanded = match[1].split("").map((part) => part + part).join("");
+        const numeric = parseInt(expanded, 16);
+        return {key: expanded.toLowerCase(), r: numeric >> 16, g: numeric >> 8 & 255, b: numeric & 255};
+    }
+
+    function tintedBuildingSprite(asset, color) {
+        if (!asset || asset.state !== "ready" || !asset.image || typeof document === "undefined") return null;
+        const faction = parseSpriteFactionColor(color);
+        if (!faction) return null;
+        if (asset.tinted.has(faction.key)) return asset.tinted.get(faction.key);
+        const canvas = document.createElement("canvas");
+        canvas.width = asset.image.naturalWidth || asset.image.width || 64;
+        canvas.height = asset.image.naturalHeight || asset.image.height || 64;
+        const spriteContext = canvas.getContext("2d", {willReadFrequently: true});
+        if (!spriteContext) return null;
+        spriteContext.imageSmoothingEnabled = false;
+        spriteContext.drawImage(asset.image, 0, 0, canvas.width, canvas.height);
+        try {
+            const imageData = spriteContext.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imageData.data;
+            let minX = canvas.width;
+            let minY = canvas.height;
+            let maxX = -1;
+            let maxY = -1;
+            for (let i = 0; i < data.length; i += 4) {
+                if (data[i + 3] !== 0) {
+                    const pixelIndex = i / 4;
+                    const x = pixelIndex % canvas.width;
+                    const y = Math.floor(pixelIndex / canvas.width);
+                    minX = Math.min(minX, x);
+                    minY = Math.min(minY, y);
+                    maxX = Math.max(maxX, x);
+                    maxY = Math.max(maxY, y);
+                }
+                if (data[i] === 255 && data[i + 1] === 0 && data[i + 2] === 255 && data[i + 3] !== 0) {
+                    data[i] = faction.r;
+                    data[i + 1] = faction.g;
+                    data[i + 2] = faction.b;
+                }
+            }
+            spriteContext.putImageData(imageData, 0, 0);
+            asset.bounds = maxX >= minX && maxY >= minY ? {
+                x: minX,
+                y: minY,
+                width: maxX - minX + 1,
+                height: maxY - minY + 1
+            } : {x: 0, y: 0, width: canvas.width, height: canvas.height};
+        }
+        catch (error) {
+            return null;
+        }
+        const result = {canvas, bounds: asset.bounds};
+        asset.tinted.set(faction.key, result);
+        return result;
+    }
+
+    function renderBuildingSprites(ctx) {
+        const seen = new Set();
+        const buildings = [];
+        const collect = (building) => {
+            if (!isBuildingCorePixel(building) || building.buildingState === "destroyed" || seen.has(building)) return;
+            seen.add(building);
+            buildings.push(building);
+        };
+        manager.settlements.forEach(collect);
+        manager.constructionSites.forEach(collect);
+        manager.structures.forEach(collect);
+        buildings.sort((first, second) => first.y - second.y || safeNumber(first.buildingId, 0) - safeNumber(second.buildingId, 0));
+        buildings.forEach((building) => {
+            const faction = building.factionColor || factionColor(building.factionId) || building.color;
+            const descriptor = buildingSpriteDescriptor(building);
+            const asset = requestBuildingSprite(descriptor);
+            const sprite = tintedBuildingSprite(asset, faction);
+            const bounds = sprite && sprite.bounds || asset && asset.bounds || {x: 0, y: 0, width: 1, height: 1};
+            const rect = buildingDisplayRect(building, bounds);
+            ctx.save();
+            ctx.globalAlpha = building.element === "civ_construction" ? 0.55 : 1;
+            if (sprite) {
+                ctx.imageSmoothingEnabled = false;
+                ctx.drawImage(
+                    sprite.canvas,
+                    bounds.x,
+                    bounds.y,
+                    bounds.width,
+                    bounds.height,
+                    canvasCoord(rect.left),
+                    canvasCoord(rect.top),
+                    rect.width * pixelSize,
+                    rect.height * pixelSize
+                );
+            }
+            else {
+                ctx.fillStyle = faction;
+                ctx.fillRect(canvasCoord(rect.left), canvasCoord(rect.top), rect.width * pixelSize, rect.height * pixelSize);
+            }
+            ctx.restore();
+        });
+    }
 
     const organicReactions = {
         cancer: {elem1: "cancer", chance: 0.005},
@@ -6649,6 +7858,24 @@
         breakInto: ["rock", "gravel", "dirt"]
     };
 
+    elements.civ_farm_crop = {
+        color: ["#70a84f", "#91bd5e", "#d2ad45"],
+        category: "civilization",
+        hidden: true,
+        behavior: behaviors.WALL,
+        state: "solid",
+        density: 160,
+        nonBlocking: true,
+        humanCollectible: true,
+        properties: {_civFarmCrop: true, nonBlocking: true, plantedTick: 0, matureTick: C.FARM_GROW_TICKS},
+        tick: function (pixel) {
+            if (!pixel || pixel.del || pixel.mature || pixelTicks < safeNumber(pixel.matureTick, safeNumber(pixel.plantedTick, pixelTicks) + C.FARM_GROW_TICKS)) return;
+            pixel.mature = true;
+            if (typeof setPixelColor === "function") setPixelColor(pixel, "#d2ad45");
+        },
+        forceSaveColor: true
+    };
+
     elements.civ_wood_resource = {
         color: ["#8d5b35", "#a56d3e", "#724626"],
         category: "civilization",
@@ -6720,25 +7947,61 @@
     const TECH_NAMES_ZH = {
         organized_gathering: "有组织采集", controlled_fire: "火种掌控", simple_shelters: "简易住所", woodworking: "木工",
         clan_council: "氏族议会", oral_tradition: "口述传统", war_clubs: "战棍", hunting_cooperation: "协作狩猎",
-        stone_knapping: "石器打制", polished_axes: "磨制石斧", artisan_shed: "工匠棚", quarrying: "采石",
+        stone_knapping: "石器打制", polished_axes: "磨制石器", artisan_shed: "工匠棚", quarrying: "采石",
         craft_specialization: "手工业分工", tally_marks: "刻划记事", stone_spearheads: "石制矛头", palisade_defense: "木栅防御",
         seed_selection: "选种", managed_forestry: "林业管理", granary: "粮仓", irrigation: "灌溉",
-        village_planning: "村落规划", barter: "物物交换", militia: "民兵制度", bowmaking: "制弓",
-        copper_prospecting: "铜矿勘探", tin_prospecting: "锡矿勘探", charcoal_kiln: "木炭窑", bronze_foundry: "青铜铸造",
-        writing: "文字", administration: "行政管理", bronze_weapons: "青铜武器", shield_formation: "盾阵",
-        iron_prospecting: "铁矿勘探", iron_smelting: "炼铁", forge: "锻造工坊", stone_fortifications: "石制防御工事",
-        coinage: "铸币", codified_law: "成文法", iron_weapons: "铁制武器", iron_armor: "铁甲",
+        village_planning: "村落规划", barter: "物物交换", militia: "民兵制度", bowmaking: "丝弦法", rattan_armor: "藤甲",
+        copper_prospecting: "生铜勘探", tin_prospecting: "青铜合金", charcoal_kiln: "木柴冶炼", bronze_foundry: "青铜铸造",
+        writing: "文字", administration: "行政管理", bronze_weapons: "范铸法", shield_formation: "盾阵",
+        iron_prospecting: "生铁勘探", iron_smelting: "炒炼法", forge: "炼钢作坊", stone_fortifications: "石制防御工事",
+        coinage: "铸币", codified_law: "成文法", iron_weapons: "铁匠铺", iron_armor: "铁甲护身",
         steelmaking: "炼钢", crop_rotation: "轮作", castle_building: "城堡建筑", siege_workshop: "攻城工坊",
-        library: "图书馆", guild_market: "行会市场", crossbow: "弩", siege_engineering: "攻城工程"
+        library: "图书馆", guild_market: "行会市场", crossbow: "机括制造", siege_engineering: "攻城工程", carburizing_tempering: "渗碳百炼", steel_armor: "钢甲裹身"
     };
     const DOMAIN_NAMES_ZH = {production: "生产", construction: "建造", society: "社会", military: "军事"};
-    const RESOURCE_NAMES_ZH = {food: "食物", wood: "木材", stone: "石材", seed: "种子", tree_seed: "树种", water: "水", copper: "铜", tin: "锡", raw_iron: "铁矿", iron: "铁", steel: "钢", charcoal: "木炭", bronze: "青铜"};
+    const RESOURCE_NAMES_ZH = {
+        food: "食物", wood: "木头", stone: "石头", seed: "种子", tree_seed: "树种", water: "水", salt_water: "盐水", dirty_water: "污水",
+        copper: "生铜", tin: "生铜", raw_iron: "生铁", iron: "熟铁", steel: "合金钢", charcoal: "木头", bronze: "青铜",
+        tree_branch: "树枝", evergreen: "常绿木", bamboo: "竹材", bamboo_plant: "竹苗", sapling: "树苗", pinecone: "松树苗",
+        wheat_seed: "小麦种子", corn_seed: "玉米种子", apple: "苹果", apple_seed: "苹果种子", meat: "肉", cooked_meat: "熟肉", rotten_meat: "腐肉",
+        rock: "岩石", gravel: "砾石", limestone: "石灰岩", basalt: "玄武岩", command_destination: "指令目的地", building: "建筑", resource: "资源"
+    };
+    const RESOURCE_NAMES_EN = {
+        food: "Food", wood: "Wood", stone: "Stone", copper: "Raw copper", bronze: "Bronze",
+        raw_iron: "Raw iron", iron: "Refined iron", steel: "Alloy steel", sapling: "Sapling",
+        command_destination: "Command destination", building: "Building", resource: "Resource"
+    };
+    const TREE_SAPLING_NAMES = {
+        sapling: ["Tree sapling", "普通树苗"], pinecone: ["Pine sapling", "松树苗"], bamboo_plant: ["Bamboo shoot", "竹苗"]
+    };
+    const BUILDING_NAMES = {
+        town_center: ["Town center", "城镇中心"], civ_banner: ["Town center", "城镇中心"], construction: ["Construction site", "施工点"], civ_construction: ["Construction site", "施工点"],
+        hut: ["Hut", "住房"], civ_hut_core: ["Hut", "住房"], workshop: ["Workshop", "工坊"], civ_workshop_core: ["Workshop", "工坊"],
+        farm: ["Farm", "农场"], civ_farm_marker: ["Farm", "农场"], lumberyard: ["Lumberyard", "伐木场"], civ_lumberyard_core: ["Lumberyard", "伐木场"],
+        hearth: ["Hearth", "火塘"], civ_hearth_core: ["Hearth", "火塘"], quarry: ["Quarry", "采石场"], civ_quarry_core: ["Quarry", "采石场"],
+        granary: ["Granary", "粮仓"], civ_granary_core: ["Granary", "粮仓"], kiln: ["Ironworks", "冶铁作坊"], civ_kiln_core: ["Ironworks", "冶铁作坊"],
+        foundry: ["Foundry", "冶铸作坊"], civ_foundry_core: ["Foundry", "冶铸作坊"], forge: ["Steelworks", "炼钢作坊"], civ_forge_core: ["Steelworks", "炼钢作坊"],
+        palisade: ["Palisade", "木栅"], civ_gate: ["Palisade gate", "木栅门"], watchtower: ["Watchtower", "瞭望塔"], civ_tower_core: ["Watchtower", "瞭望塔"],
+        keep: ["Keep", "城堡主楼"], civ_keep_core: ["Keep", "城堡主楼"], siege_workshop: ["Siege workshop", "攻城工坊"], civ_siege_workshop_core: ["Siege workshop", "攻城工坊"],
+        library: ["Library", "图书馆"], civ_library_core: ["Library", "图书馆"], market: ["Market", "市场"], civ_market_core: ["Market", "市场"]
+    };
+    const MILESTONE_NAMES = {
+        technologies: ["technologies researched", "已研发科技"], eras: ["eras entered", "进入时代"], buildingsCompleted: ["buildings completed", "完工建筑"],
+        resourceDeliveries: ["resource deliveries", "资源运送次数"], harvests: ["harvests", "采集次数"], treesPlanted: ["trees planted", "植树数量"],
+        itemsSmelted: ["processing batches", "加工批次"], births: ["births", "人口诞生数"]
+    };
+    const WAR_REASON_LABELS = {manual: ["manual declaration", "手动宣战"], resource_exhaustion: ["non-renewable resources exhausted", "不可再生资源枯竭"]};
+    const SETTLEMENT_STAGE_LABELS = {nomadic: ["Nomadic", "游牧阶段"], camp: ["Camp", "营地阶段"], village: ["Village", "村落阶段"], town: ["Town", "城镇阶段"]};
     const PERSON_TASK_LABELS = {
         idle: ["Idle", "待命"], planning: ["Planning work", "规划工作"], move: ["Following command", "执行移动命令"], wander: ["Exploring", "探索"], explore: ["Exploring", "探索"], search_resource: ["Searching resources", "搜寻资源"], harvest: ["Gathering", "采集"], deliver: ["Delivering", "运输"],
         extinguish: ["Extinguishing fire", "灭火"], build: ["Building", "建造"], farm: ["Farming", "耕作"], plant_tree: ["Planting trees", "种树"], facility: ["Working", "设施工作"],
         combat: ["Fighting", "战斗"], siege: ["Sieging", "攻城"], flee: ["Fleeing", "逃跑"], patrol: ["Patrolling", "巡逻"],
         return: ["Returning", "返回聚落"], placed: ["Entered the world", "进入世界"], birth: ["Born", "出生"], maturity: ["Reached adulthood", "成年"],
-        faction_changed: ["Changed faction", "阵营变更"], role_changed: ["Changed role", "职业变更"], death: ["Died", "死亡"], dead: ["Dead", "已死亡"]
+        faction_changed: ["Changed faction", "阵营变更"], role_changed: ["Changed role", "职业变更"], death: ["Died", "死亡"], dead: ["Dead", "已死亡"],
+        weapon_equipped: ["Equipped weapon", "装备武器"], weapon_removed: ["Removed weapon", "卸下武器"],
+        armor_equipped: ["Equipped armor", "装备护甲"], armor_removed: ["Removed armor", "卸下护甲"],
+        route_created: ["Planned a route", "规划路线"], resources_unloaded: ["Unloaded resources", "卸下资源"], return_started: ["Started returning", "开始返程"],
+        return_broken: ["Return route was blocked", "返程路线受阻"], legacy_child_conversion: ["Legacy child converted", "旧存档儿童转为工作人口"]
     };
     const PERSON_PHASE_LABELS = {
         planning: ["Planning", "规划中"], flat: ["Travelling", "平地移动"], climb: ["Climbing", "攀爬"], tunnel: ["Digging a tunnel", "挖掘矿洞"],
@@ -6751,7 +8014,16 @@
         hunter: ["Hunter", "猎人"], artisan: ["Artisan", "工匠"], industry: ["Industrial worker", "产业工人"], scholar: ["Scholar", "学者"],
         merchant: ["Merchant", "商人"], artisan_trade: ["Trader", "贸易工匠"], warrior: ["Warrior", "战士"], guard: ["Guard", "守卫"]
     };
-    const PERSON_WEAPON_LABELS = {fists: ["Unarmed", "徒手"], club: ["Club", "木棍"], spear: ["Spear", "长矛"], bow: ["Bow", "弓"], bronze_spear: ["Bronze spear", "青铜矛"], iron_sword: ["Iron sword", "铁剑"], crossbow: ["Crossbow", "弩"]};
+    const PERSON_WEAPON_LABELS = {
+        fist: ["Unarmed", "徒手"], fists: ["Unarmed", "徒手"], club: ["Wooden club", "木棍"],
+        spear: ["Stone spear", "石矛"], stone_spear: ["Stone spear", "石矛"], bow: ["Bow", "弓"],
+        bronze_spear: ["Bronze spear", "青铜矛"], bronze_sword: ["Bronze sword", "青铜剑"],
+        iron_spear: ["Iron spear", "铁矛"], iron_sword: ["Iron sword", "铁剑"],
+        steel_blade: ["Steel blade", "钢刀"], steel_spear: ["Steel spear", "钢矛"], crossbow: ["Crossbow", "弩"]
+    };
+    const PERSON_ARMOR_LABELS = {
+        none: ["Unarmored", "无护甲"], rattan: ["Rattan armor", "藤甲"], iron: ["Iron armor", "铁甲"], steel: ["Steel armor", "钢甲"]
+    };
     const PERSON_DEATH_CAUSE_LABELS = {injury: ["Injury", "伤害"], old_age: ["Old age", "寿终"], erased: ["Erased", "被擦除"], changed: ["Transformed", "发生转化"], environment: ["Environment", "环境伤害"]};
     let selectedCivilizationFactionId = null;
     let selectedCivilizationSettlementId = null;
@@ -6770,8 +8042,8 @@
     let interactionMode = "place";
 
     function isChineseUi() {
-        if (typeof langCode !== "undefined" && (langCode === "zh_cn" || langCode === "zh_hant" || String(langCode).indexOf("zh") === 0)) return true;
-        return typeof navigator !== "undefined" && /^zh\b/i.test(navigator.language || "");
+        if (typeof langCode !== "undefined") return String(langCode).toLowerCase() === "zh_cn";
+        return typeof navigator !== "undefined" && /^(zh-cn|zh-sg)\b/i.test(navigator.language || "");
     }
 
     function civilizationText(key, english, chinese) {
@@ -6781,33 +8053,65 @@
 
     function localizedEraName(era) {
         if (!era) return civilizationText("era.unknown", "Unknown Era", "未知时代");
-        return civilizationText("era." + era.id, era.name || era.id, ERA_NAMES_ZH[era.id] || era.name || era.id);
+        return civilizationText("era." + era.id, era.name || era.id, ERA_NAMES_ZH[era.id] || "未知时代");
     }
 
-    function localizedTechName(tech) {
-        return civilizationText("tech." + tech.id, tech.name || tech.id, TECH_NAMES_ZH[tech.id] || tech.name || tech.id);
+    function localizedTechName(techOrId) {
+        const id = typeof techOrId === "string" ? techOrId : techOrId && techOrId.id;
+        const tech = typeof techOrId === "string" ? manager.technologies.get(techOrId) : techOrId;
+        if (!id) return civilizationText("tech.unknown", "Unknown technology", "未知科技");
+        return civilizationText("tech." + id, tech && (tech.name || id) || id.replace(/_/g, " "), TECH_NAMES_ZH[id] || "未知科技");
     }
 
     function localizedDomain(domain) {
-        return civilizationText("domain." + domain, domain, DOMAIN_NAMES_ZH[domain] || domain);
+        const value = String(domain || "");
+        return civilizationText("domain." + value, value || "Knowledge domain", DOMAIN_NAMES_ZH[value] || "知识领域");
+    }
+
+    function localizedMilestoneName(milestone) {
+        const value = String(milestone || "");
+        const entry = MILESTONE_NAMES[value];
+        if (entry) return civilizationText("milestone." + value, entry[0], entry[1]);
+        return isChineseUi() ? "发展里程碑" : value.replace(/_/g, " ");
+    }
+
+    function localizedWarReason(reason) {
+        const value = String(reason || "");
+        const entry = WAR_REASON_LABELS[value];
+        if (entry) return civilizationText("warReason." + value, entry[0], entry[1]);
+        return isChineseUi() ? "其他原因" : value.replace(/_/g, " ");
+    }
+
+    function localizedSettlementStage(stage) {
+        const value = String(stage || "camp");
+        const entry = SETTLEMENT_STAGE_LABELS[value];
+        if (entry) return civilizationText("stage." + value, entry[0], entry[1]);
+        return isChineseUi() ? "聚落阶段" : value.replace(/_/g, " ");
+    }
+
+    function localizedBuildingName(building) {
+        const value = String(building || "building");
+        const entry = BUILDING_NAMES[value] || BUILDING_NAMES[value.replace(/^civ_|_core$/g, "")];
+        if (entry) return civilizationText("building." + value, entry[0], entry[1]);
+        return isChineseUi() ? "建筑" : value.replace(/^civ_/, "").replace(/_core$/, "").replace(/_/g, " ");
     }
 
     function conditionDescription(state) {
         const condition = state.condition || {};
         const mark = state.met ? "✓ " : "○ ";
-        const resource = isChineseUi() ? (RESOURCE_NAMES_ZH[condition.resource] || condition.resource) : condition.resource;
+        const resource = localizedResourceName(condition.resource);
         const progress = " (" + Math.floor(safeNumber(state.current, 0)) + "/" + safeNumber(state.required, condition.minimum || 0) + ")";
         if (condition.type === "population") return mark + civilizationText("condition.population", "Population", "人口") + " ≥ " + condition.minimum + progress;
         if (condition.type === "resource_stock") return mark + civilizationText("condition.stock", "Stock", "库存") + " " + resource + " ≥ " + condition.minimum + progress;
         if (condition.type === "resource_encountered") return mark + civilizationText("condition.encounter", "Discover", "发现") + " " + resource + " × " + condition.minimum + progress;
         if (condition.type === "heat_available") return mark + civilizationText("condition.heat", "Available heat", "可用热值") + " ≥ " + condition.minimum + progress;
-        if (condition.type === "milestone") return mark + civilizationText("condition.milestone", "Milestone", "里程碑") + " " + condition.id + " × " + condition.minimum + progress;
-        return mark + condition.type;
+        if (condition.type === "milestone") return mark + civilizationText("condition.milestone", "Milestone", "里程碑") + " " + localizedMilestoneName(condition.id) + " × " + condition.minimum + progress;
+        return mark + civilizationText("condition.other", "Other condition", "其他条件");
     }
 
-    function localizedPersonLabel(group, key, fallback) {
-        const entry = group[key];
-        if (!entry) return fallback || key || "";
+    function localizedPersonLabel(group, key, fallback, chineseFallback) {
+        const entry = key !== null && key !== undefined && Object.prototype.hasOwnProperty.call(group, key) ? group[key] : null;
+        if (!entry) return isChineseUi() ? (chineseFallback || "未知状态") : (fallback || key || "");
         return civilizationText("people." + key, entry[0], entry[1]);
     }
 
@@ -6815,15 +8119,175 @@
         const value = String(kind || "");
         if (value.indexOf(TREE_SAPLING_PREFIX) === 0) {
             const seed = value.slice(TREE_SAPLING_PREFIX.length);
+            const entry = TREE_SAPLING_NAMES[seed];
+            if (entry) return civilizationText("resource.treeSapling." + seed, entry[0], entry[1]);
             return (isChineseUi() ? "树苗 " : "Tree sapling ") + localizedResourceName(seed);
         }
         if (value.indexOf("seed:") === 0) {
             const seed = value.slice(5);
-            return (isChineseUi() ? "种子 " : "Seed ") + localizedResourceName(seed);
+            return localizedResourceName(seed);
         }
+        if (BUILDING_NAMES[value]) return localizedBuildingName(value);
         if (isChineseUi() && RESOURCE_NAMES_ZH[value]) return RESOURCE_NAMES_ZH[value];
         const translated = typeof langKey === "function" ? langKey(value, null) : null;
-        return translated || value.replace(/_/g, " ");
+        if (translated && translated !== value) return translated;
+        if (!isChineseUi() && RESOURCE_NAMES_EN[value]) return RESOURCE_NAMES_EN[value];
+        return isChineseUi() ? (RESOURCE_NAMES_ZH[value] || "资源") : value.replace(/_/g, " ");
+    }
+
+    function localizedRecipeName(recipeId) {
+        const value = String(recipeId || "");
+        if (value === "bronze" || value === "iron" || value === "steel") return localizedResourceName(value);
+        return isChineseUi() ? "加工配方" : value.replace(/_/g, " ");
+    }
+
+    function localizedResearchBlocker(blocker) {
+        if (!blocker) return "";
+        const reasonParts = String(blocker.reason || "").split(":");
+        const type = blocker.type || reasonParts[0] || "unknown";
+        const subject = blocker.resource || blocker.milestone || blocker.prerequisiteId || reasonParts[1] || "";
+        const techId = blocker.techId || reasonParts[2] || "";
+        const current = Math.floor(safeNumber(blocker.current, 0));
+        const required = safeNumber(blocker.required, 0);
+        let detail;
+        if (type === "prerequisite") detail = civilizationText("blocker.prerequisite", "Missing prerequisite", "缺少前置科技") + "：" + localizedTechName(subject);
+        else if (type === "resource_stock") detail = civilizationText("blocker.stock", "Stock", "库存") + " " + localizedResourceName(subject) + " " + current + "/" + required;
+        else if (type === "resource_encountered") detail = civilizationText("blocker.encounter", "Discovery", "资源发现") + " " + localizedResourceName(subject) + " " + current + "/" + required;
+        else if (type === "population") detail = civilizationText("condition.population", "Population", "人口") + " " + current + "/" + required;
+        else if (type === "heat_available") detail = civilizationText("condition.heat", "Available heat", "可用热值") + " " + current + "/" + required;
+        else if (type === "milestone") detail = localizedMilestoneName(subject) + " " + current + "/" + required;
+        else if (type === "era") {
+            const tech = manager.technologies.get(techId);
+            detail = civilizationText("blocker.era", "Requires era", "需要时代") + "：" + localizedEraName(eraDefinition(tech && techEraId(tech)));
+        }
+        else detail = civilizationText("blocker.other", "Research conditions are not met", "研发条件尚未满足");
+        return civilizationText("blocker.title", "Research blocked", "研究受阻") + "：" + localizedTechName(techId) + " · " + detail;
+    }
+
+    function chronicleHasValue(value) {
+        return value !== null && value !== undefined && (typeof value !== "string" || value.trim() !== "") && !/^(?:undefined|null)$/i.test(String(value).trim());
+    }
+
+    function chronicleAmount(event) {
+        return event && chronicleHasValue(event.amount) && Number.isFinite(Number(event.amount)) ? " ×" + Math.round(Number(event.amount)) : "";
+    }
+
+    function legacyChronicleBody(message) {
+        const value = String(message || "").trim();
+        return value.replace(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\s*(?:·|\|)\s*/, "");
+    }
+
+    function localizedLegacyTechName(name) {
+        const value = String(name || "").trim();
+        const normalized = value.toLowerCase();
+        const technology = Array.from(manager.technologies.values()).find((candidate) => candidate && (
+            String(candidate.id || "").toLowerCase() === normalized || String(candidate.name || "").toLowerCase() === normalized ||
+            String(TECH_NAMES_ZH[candidate.id] || "").toLowerCase() === normalized
+        ));
+        return localizedTechName(technology || value);
+    }
+
+    function localizedLegacyEraName(name) {
+        const value = String(name || "").trim();
+        const normalized = value.toLowerCase();
+        const era = Array.from(manager.eras.values()).find((candidate) => candidate && (
+            String(candidate.id || "").toLowerCase() === normalized || String(candidate.name || "").toLowerCase() === normalized ||
+            String(ERA_NAMES_ZH[candidate.id] || "").toLowerCase() === normalized
+        ));
+        return localizedEraName(era || null);
+    }
+
+    function localizedLegacyChronicleMessage(message) {
+        const value = legacyChronicleBody(message);
+        if (!value) return civilizationText("log.other", "Civilization event", "文明发展事件");
+        if (!isChineseUi()) return value;
+        let match = value.match(/^(?:首次采集(?:树苗)?资源|First gathered resource)\s*[:：]\s*(.+)$/i);
+        if (match) return civilizationText("log.firstResource", "First gathered resource", "首次采集资源") + "：" + localizedResourceName(match[1]);
+        match = value.match(/^(?:领地内发现矿脉|Mineral vein discovered in the territory)\s*[:：]\s*(.+)$/i);
+        if (match) return civilizationText("log.mineralBreakthrough", "Mineral vein discovered in the territory", "领地内发现矿脉") + "：" + localizedResourceName(match[1]);
+        match = value.match(/^(?:首次生产资源|First produced resource)\s*[:：]\s*(.+)$/i);
+        if (match) return civilizationText("log.firstProduction", "First produced resource", "首次生产资源") + "：" + localizedResourceName(match[1]);
+        match = value.match(/^(?:科技完成|Technology completed)\s*[:：]\s*(.+)$/i);
+        if (match) return civilizationText("log.technology", "Technology completed", "科技完成") + "：" + localizedLegacyTechName(match[1]);
+        match = value.match(/^(?:进入时代|Entered era)\s*[:：]\s*(.+)$/i);
+        if (match) return civilizationText("log.era", "Entered era", "进入时代") + "：" + localizedLegacyEraName(match[1]);
+        match = value.match(/^(?:开始建造|Construction started)\s*[:：]\s*(.+)$/i);
+        if (match) return civilizationText("log.construction", "Construction started", "开始建造") + "：" + localizedBuildingName(match[1]);
+        match = value.match(/^(?:建筑完成|Building completed)\s*[:：]\s*(.+)$/i);
+        if (match) return civilizationText("log.building", "Building completed", "建筑完成") + "：" + localizedBuildingName(match[1]);
+        match = value.match(/^(?:建筑被摧毁|Building destroyed)\s*[:：]\s*(.+)$/i);
+        if (match) return civilizationText("log.buildingDestroyed", "Building destroyed", "建筑被摧毁") + "：" + localizedBuildingName(match[1]);
+        if (/[\u3400-\u9fff]/.test(value)) return value;
+        return civilizationText("log.other", "Civilization event", "文明发展事件");
+    }
+
+    function localizedChronicleTimestamp(event) {
+        if (event && typeof event === "object" && chronicleHasValue(event.timestamp)) return String(event.timestamp);
+        if (typeof event === "string") {
+            const match = event.trim().match(/^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})\s*(?:·|\|)\s*/);
+            if (match) return match[1];
+        }
+        return civilizationText("log.unknownTime", "Unknown time", "时间不详");
+    }
+
+    function localizedFactionReference(factionId) {
+        if (chronicleHasValue(factionId) && Number.isFinite(Number(factionId))) {
+            return civilizationText("ui.faction", "Faction", "阵营") + " " + Number(factionId);
+        }
+        return civilizationText("log.unknownFaction", "Unknown faction", "未知阵营");
+    }
+
+    function localizedChronicleMessage(event) {
+        if (typeof event === "string") return localizedLegacyChronicleMessage(event);
+        if (!event || typeof event !== "object") return civilizationText("log.other", "Civilization event", "文明发展事件");
+        const human = chronicleHasValue(event.humanId) && Number.isFinite(Number(event.humanId)) ? " H" + Number(event.humanId) : "";
+        const building = localizedBuildingName(event.buildingType || "building");
+        switch (event.type) {
+        case "first_resource":
+            return civilizationText("log.firstResource", "First gathered resource", "首次采集资源") + "：" + localizedResourceName(event.resource) + chronicleAmount(event);
+        case "mineral_breakthrough":
+            return civilizationText("log.mineralBreakthrough", "Mineral vein discovered in the territory", "领地内发现矿脉") + "：" + localizedResourceName(event.resource) + chronicleAmount(event);
+        case "technology":
+            return civilizationText("log.technology", "Technology completed", "科技完成") + "：" + localizedTechName(event.technologyId) + (event.forced ? civilizationText("log.forced", " (forced)", "（强制）") : "");
+        case "era":
+            return civilizationText("log.era", "Entered era", "进入时代") + "：" + localizedEraName(eraDefinition(event.eraId));
+        case "construction":
+            return civilizationText("log.construction", "Construction started", "开始建造") + "：" + building;
+        case "building":
+            return civilizationText("log.building", "Building completed", "建筑完成") + "：" + building;
+        case "settlement":
+            return civilizationText("log.settlement", "Settlement founded with a town center", "聚落形成并建立城镇中心");
+        case "fire_extinguished":
+            return civilizationText("log.fireExtinguished", "Fire extinguished", "扑灭火情") + human;
+        case "tunnel":
+            return civilizationText("log.tunnel", "First tunnel excavated", "首次开挖矿洞") + human;
+        case "war":
+            return (isChineseUi() ? "与" : "War began against ") + localizedFactionReference(event.enemyFactionId) + (isChineseUi() ? "开战：" : ": ") + localizedWarReason(event.reason);
+        case "town_center_destroyed":
+            return civilizationText("log.townCenterDestroyed", "Town center destroyed; settlement operations suspended", "城镇中心被摧毁，聚落暂停运作");
+        case "building_destroyed":
+            return civilizationText("log.buildingDestroyed", "Building destroyed", "建筑被摧毁") + "：" + building;
+        case "town_center_rebuilt":
+            return civilizationText("log.townCenterRebuilt", "Residents rebuilt the town center", "居民重建了城镇中心");
+        case "annexation":
+            return civilizationText("log.annexation", "Annexed ", "吞并") + localizedFactionReference(event.loserFactionId);
+        case "war_wave":
+            return chronicleHasValue(event.wave) && Number.isFinite(Number(event.wave)) ?
+                civilizationText("log.warWave", "Attack wave ", "第 ") + Number(event.wave) + civilizationText("log.warWaveSuffix", " began", " 波进攻开始") :
+                civilizationText("log.warWaveUnknown", "A new attack wave began", "新一波进攻开始");
+        case "first_production":
+            return civilizationText("log.firstProduction", "First produced resource", "首次生产资源") + "：" + localizedResourceName(event.resource) + chronicleAmount(event);
+        case "birth":
+            return civilizationText("log.birth", "Member born and assigned to work", "成员诞生并立即参加工作") + human;
+        case "death":
+            return civilizationText("log.death", "Member died", "成员死亡") + human + (event.cause ? " · " + localizedDeathCause(event.cause) : "");
+        case "legacy_child_conversion":
+            return civilizationText("log.legacyChild", "Legacy child converted into the unified workforce", "旧存档儿童已转换为统一工作人口") + human;
+        case "resource_edit":
+            return civilizationText("log.resourceEdit", "Player forcibly edited the resource stockpile", "玩家强制修改资源库存");
+        default:
+            return localizedLegacyChronicleMessage(event.message || event.type || "");
+        }
     }
 
     function activityTargetLabel(targetKind, targetId, targetKey, x, y) {
@@ -6888,17 +8352,41 @@
     function activityMetricSummary(metrics) {
         if (!metrics || typeof metrics !== "object") return "";
         const parts = [];
-        const resourceMap = metrics.resourcesDelivered || metrics.resourcesCollected;
+        const resourceMap = metrics.resourcesDelivered || metrics.resourcesCollected || metrics.delivered;
         if (resourceMap) {
             const resources = Object.keys(resourceMap).filter((kind) => safeNumber(resourceMap[kind], 0) > 0).map((kind) => localizedResourceName(kind) + " " + Math.round(resourceMap[kind]));
             if (resources.length) parts.push(resources.join(", "));
         }
         if (metrics.buildWork) parts.push(civilizationText("people.work", "Work ", "工作量 ") + Math.round(metrics.buildWork));
+        if (metrics.harvestedBlocks) parts.push(civilizationText("people.harvestedBlocks", "Blocks gathered ", "采集方块 ") + Math.round(metrics.harvestedBlocks));
+        if (metrics.felledTrees) parts.push(civilizationText("people.felledTrees", "Trees felled ", "砍伐树木 ") + Math.round(metrics.felledTrees));
+        if (metrics.resourcesDropped) {
+            const dropped = Object.keys(metrics.resourcesDropped).filter((kind) => safeNumber(metrics.resourcesDropped[kind], 0) > 0).map((kind) => localizedResourceName(kind) + " " + Math.round(metrics.resourcesDropped[kind]));
+            if (dropped.length) parts.push(civilizationText("people.resourcesDropped", "Dropped ", "掉落 ") + dropped.join(", "));
+        }
         if (metrics.tunnelCells) parts.push(civilizationText("people.tunnelCells", "Tunnel cells ", "矿洞格 ") + Math.round(metrics.tunnelCells));
         if (metrics.firesExtinguished) parts.push(civilizationText("people.firesExtinguished", "Fires extinguished ", "扑灭火情 ") + Math.round(metrics.firesExtinguished));
         if (metrics.attacks) parts.push(civilizationText("people.attacks", "Attacks ", "攻击 ") + Math.round(metrics.attacks));
         if (metrics.hits) parts.push(civilizationText("people.hits", "Hits ", "命中 ") + Math.round(metrics.hits));
+        if (metrics.misses) parts.push(civilizationText("people.misses", "Misses ", "未命中 ") + Math.round(metrics.misses));
         if (metrics.kills) parts.push(civilizationText("people.kills", "Kills ", "击杀 ") + Math.round(metrics.kills));
+        if (metrics.damageDealt) parts.push(civilizationText("people.damageDealt", "Damage dealt ", "造成伤害 ") + Math.round(metrics.damageDealt));
+        if (metrics.damageTaken) parts.push(civilizationText("people.damageTaken", "Damage taken ", "承受伤害 ") + Math.round(metrics.damageTaken));
+        if (metrics.structureDamage) parts.push(civilizationText("people.structureDamage", "Structure damage ", "建筑伤害 ") + Math.round(metrics.structureDamage));
+        if (metrics.structuresDestroyed) parts.push(civilizationText("people.structuresDestroyed", "Structures destroyed ", "摧毁建筑 ") + Math.round(metrics.structuresDestroyed));
+        if (metrics.resourcesProduced) {
+            const produced = Object.keys(metrics.resourcesProduced).filter((kind) => safeNumber(metrics.resourcesProduced[kind], 0) > 0).map((kind) => localizedResourceName(kind) + " " + Math.round(metrics.resourcesProduced[kind]));
+            if (produced.length) parts.push(civilizationText("people.produced", "Produced ", "生产 ") + produced.join(", "));
+        }
+        if (metrics.recipesCompleted) {
+            const recipes = Object.keys(metrics.recipesCompleted).filter((recipe) => safeNumber(metrics.recipesCompleted[recipe], 0) > 0).map((recipe) => localizedRecipeName(recipe) + " " + Math.round(metrics.recipesCompleted[recipe]));
+            if (recipes.length) parts.push(civilizationText("people.recipesCompleted", "Recipes ", "完成配方 ") + recipes.join(", "));
+        }
+        if (metrics.equipmentIssued || metrics.weaponsCrafted) {
+            const equipment = metrics.equipmentIssued || metrics.weaponsCrafted;
+            const items = Object.keys(equipment).filter((item) => safeNumber(equipment[item], 0) > 0).map((item) => localizedPersonEquipment(item) + " " + Math.round(equipment[item]));
+            if (items.length) parts.push(civilizationText("people.equipmentIssued", "Equipment ", "装备 ") + items.join(", "));
+        }
         return parts.join(" · ");
     }
 
@@ -6911,10 +8399,10 @@
         const targetId = active && profile && Number.isFinite(profile.targetId) ? profile.targetId : record.i;
         const targetKind = active && profile && profile.targetKind ? profile.targetKind : record.e;
         const targetKey = active && profile && profile.targetKey ? profile.targetKey : record.g;
-        const taskLabel = localizedPersonLabel(PERSON_TASK_LABELS, task, task);
+        const taskLabel = localizedPersonLabel(PERSON_TASK_LABELS, task, task, "未知活动");
         const targetLabel = activityTargetLabel(targetKind, targetId, targetKey, targetX, targetY);
         const status = active ? "active" : (record.o || "interrupted");
-        const phaseLabel = active ? localizedPersonLabel(PERSON_PHASE_LABELS, phase, phase) : localizedPersonLabel(PERSON_OUTCOME_LABELS, status, status);
+        const phaseLabel = active ? localizedPersonLabel(PERSON_PHASE_LABELS, phase, phase, "未知阶段") : localizedPersonLabel(PERSON_OUTCOME_LABELS, status, status, "未知结果");
         const metrics = cloneActivityValue(record.d) || {};
         const metricSummary = activityMetricSummary(metrics);
         const description = [phaseLabel, taskLabel + (targetLabel ? " · " + targetLabel : ""), metricSummary].filter(Boolean).join(" · ");
@@ -6975,6 +8463,8 @@
             role: actor.role || (actor.element === "civ_child" ? "child" : "worker"),
             task: actor.task || "idle",
             weapon: actor.weapon || "fists",
+            armor: canonicalArmorId(actor.armor),
+            armorBonusHp: Math.max(0, safeNumber(actor.armorBonusHp, 0)),
             warRole: actor.warRole || null,
             carry: carry,
             carryTotal: carriedAmount(actor),
@@ -7030,6 +8520,8 @@
             role: entry.r || "worker",
             task: "dead",
             weapon: entry.w || "fists",
+            armor: canonicalArmorId(entry.ar),
+            armorBonusHp: Math.max(0, safeNumber(entry.ab, 0)),
             warRole: entry.wr || null,
             carry: {},
             carryTotal: 0,
@@ -7163,11 +8655,11 @@
             domainExperience: Object.assign({}, research.domainExperience),
             stock: {
                 food: stockNumber(selectedSettlement.stock, "food"), wood: stockNumber(selectedSettlement.stock, "wood"), stone: stockNumber(selectedSettlement.stock, "stone"),
-                charcoal: materialAmount(selectedSettlement.stock, "charcoal"), copper: materialAmount(selectedSettlement.stock, "copper"), tin: materialAmount(selectedSettlement.stock, "tin"),
+                copper: materialAmount(selectedSettlement.stock, "copper"),
                 bronze: materialAmount(selectedSettlement.stock, "bronze"), raw_iron: materialAmount(selectedSettlement.stock, "raw_iron"), iron: materialAmount(selectedSettlement.stock, "iron"), steel: materialAmount(selectedSettlement.stock, "steel"),
-                seeds: Object.assign({}, selectedSettlement.stock.seeds || {}),
-                treeSaplings: Object.assign({}, selectedSettlement.stock.treeSaplings || {})
+                sapling: materialAmount(selectedSettlement.stock, "sapling")
             },
+            woodSmeltingReserve: smeltingWoodReserveFor(banner),
             technologies: technologies,
             chronicle: ensureChronicle(selectedSettlement).slice(),
             wars: activeEnemyFactionIds(faction.id),
@@ -7178,6 +8670,26 @@
 
     function stockNumber(stock, key) {
         return Math.max(0, safeNumber(stock && stock[key], 0));
+    }
+
+    function setTreeSaplingTotal(stock, target) {
+        if (!stock) return;
+        if (!stock.treeSaplings || typeof stock.treeSaplings !== "object") stock.treeSaplings = {};
+        const desired = Math.max(0, safeNumber(Number(target), 0));
+        let difference = desired - treeSaplingTotal(stock);
+        if (difference > 0) {
+            stock.treeSaplings.sapling = safeNumber(stock.treeSaplings.sapling, 0) + difference;
+        }
+        else if (difference < 0) {
+            let remove = -difference;
+            ["sapling", "pinecone", "bamboo_plant"].forEach((seed) => {
+                if (!remove) return;
+                const used = Math.min(remove, Math.max(0, safeNumber(stock.treeSaplings[seed], 0)));
+                stock.treeSaplings[seed] -= used;
+                remove -= used;
+            });
+        }
+        stock.sapling = treeSaplingTotal(stock);
     }
 
     function setResearchFocus(factionId, techId) {
@@ -7268,6 +8780,7 @@
             if (key === "food") stock.food = value;
             else if (key === "wood") { stock.wood = value; stock.materials.tree_branch = 0; stock.materials.bamboo = 0; stock.materials.wood = value; }
             else if (key === "stone") { stock.stone = value; stock.materials.stone = value; }
+            else if (key === "sapling") setTreeSaplingTotal(stock, value);
             else { stock[key] = value; stock.materials[key] = value; }
         });
         const seeds = patch.seeds && typeof patch.seeds === "object" ? patch.seeds : {};
@@ -7280,6 +8793,8 @@
         Object.keys(treeSaplings).forEach((seed) => {
             if (TREE_SAPLING_ELEMENTS.has(seed)) stock.treeSaplings[seed] = Math.max(0, safeNumber(Number(treeSaplings[seed]), 0));
         });
+        ensureStock(settlement);
+        reconcileFactionEquipment(faction);
         logSettlementEvent(settlement, "resource_edit", "玩家强制修改资源库存", {patch: JSON.parse(JSON.stringify(patch))});
         captureTimelineBoundary("after-resource-edit");
         return true;
@@ -7290,7 +8805,7 @@
         if (!faction) return manager.archivedChronicles.filter((archive) => archive.factionId === Number(factionId));
         const opts = options || {};
         const settlements = opts.settlementId ? faction.settlements.filter((settlement) => settlement.settlementId === Number(opts.settlementId)) : faction.settlements;
-        return settlements.reduce((events, settlement) => events.concat(ensureChronicle(settlement)), []).sort((a, b) => safeNumber(a.tick, 0) - safeNumber(b.tick, 0)).slice(-C.MAX_CHRONICLE_EVENTS);
+        return settlements.reduce((events, settlement) => events.concat(ensureChronicle(settlement)), []).sort((a, b) => safeNumber(a && a.tick, 0) - safeNumber(b && b.tick, 0)).slice(-C.MAX_CHRONICLE_EVENTS);
     }
 
     function getWarSnapshot(factionId) {
@@ -7375,7 +8890,7 @@ function setMapOverlay(name, value) {
             snapshot.settlements.forEach((settlement) => {
                 const option = document.createElement("option");
                 option.value = settlement.id;
-                option.textContent = civilizationText("ui.settlement", "Settlement", "聚落") + " " + settlement.id + " · " + settlement.population + "/" + settlement.housing + (settlement.active ? "" : " (暂停)");
+                option.textContent = civilizationText("ui.settlement", "Settlement", "聚落") + " " + settlement.id + " · " + settlement.population + "/" + settlement.housing + (settlement.active ? "" : civilizationText("ui.paused", " (paused)", "（暂停）"));
                 option.selected = settlement.id === selectedCivilizationSettlementId;
                 settlementSelector.appendChild(option);
             });
@@ -7384,7 +8899,8 @@ function setMapOverlay(name, value) {
         content.textContent = "";
         const eraTitle = document.createElement("div");
         eraTitle.className = "civ-era-title";
-        eraTitle.textContent = localizedEraName(snapshot.era) + " · " + snapshot.completedInEra + "/8 · " + civilizationText("ui.advance", "Advance at", "晋级需要") + " " + snapshot.requiredToAdvance + "/8";
+        const currentEraTechCount = snapshot.technologies.filter((entry) => entry.eraId === snapshot.eraId).length;
+        eraTitle.textContent = localizedEraName(snapshot.era) + " · " + snapshot.completedInEra + "/" + currentEraTechCount + " · " + civilizationText("ui.advance", "Advance at", "晋级需要") + " " + snapshot.requiredToAdvance + "/" + currentEraTechCount;
         content.appendChild(eraTitle);
         const eraStrip = document.createElement("div");
         eraStrip.className = "civ-era-strip";
@@ -7397,7 +8913,13 @@ function setMapOverlay(name, value) {
         content.appendChild(eraStrip);
         const tabs = document.createElement("div");
         tabs.className = "civ-tabs";
-        [["overview", "资源"], ["technology", "科技"], ["wars", "战争"], ["logs", "日志"], ["overlays", "地图"]].forEach((item) => {
+        [
+            ["overview", civilizationText("tab.resources", "Resources", "资源")],
+            ["technology", civilizationText("tab.technology", "Technology", "科技")],
+            ["wars", civilizationText("tab.wars", "Wars", "战争")],
+            ["logs", civilizationText("tab.logs", "Logs", "日志")],
+            ["overlays", civilizationText("tab.map", "Map", "地图")]
+        ].forEach((item) => {
             const button = document.createElement("button");
             button.type = "button";
             button.className = selectedCivilizationTab === item[0] ? "active" : "";
@@ -7415,17 +8937,20 @@ function setMapOverlay(name, value) {
         if (snapshot.researchBlocker) {
             const blocker = document.createElement("div");
             blocker.className = "civ-summary";
-            blocker.textContent = "研究受阻：" + (snapshot.researchBlocker.techId || "未知科技") + " · " +
-                (snapshot.researchBlocker.resource ? snapshot.researchBlocker.resource + " " + snapshot.researchBlocker.current + "/" + snapshot.researchBlocker.required : snapshot.researchBlocker.reason);
+            blocker.textContent = localizedResearchBlocker(snapshot.researchBlocker);
             content.appendChild(blocker);
         }
         if (selectedCivilizationTab === "overview") {
+            const reserve = document.createElement("div");
+            reserve.className = "civ-summary";
+            reserve.textContent = civilizationText("resource.smeltingWoodReserve", "Smelting wood reserve", "冶炼木材保留量") + "：" + Math.floor(snapshot.woodSmeltingReserve);
+            content.appendChild(reserve);
             const editor = document.createElement("div");
             editor.className = "civ-resource-editor";
             const inputs = {};
             STOCK_KEYS.forEach((key) => {
                 const label = document.createElement("label");
-                label.textContent = (RESOURCE_NAMES_ZH[key] || key) + " ";
+                label.textContent = localizedResourceName(key) + " ";
                 const input = document.createElement("input");
                 input.type = "number";
                 input.min = "0";
@@ -7434,26 +8959,13 @@ function setMapOverlay(name, value) {
                 label.appendChild(input);
                 editor.appendChild(label);
             });
-            ["sapling", "pinecone", "bamboo_plant"].forEach((seed) => {
-                const label = document.createElement("label");
-                label.textContent = ({sapling: "普通树苗", pinecone: "松树苗", bamboo_plant: "竹苗"}[seed] || seed) + " ";
-                const input = document.createElement("input");
-                input.type = "number";
-                input.min = "0";
-                input.value = Math.floor(safeNumber(snapshot.stock.treeSaplings && snapshot.stock.treeSaplings[seed], 0));
-                inputs[TREE_SAPLING_PREFIX + seed] = input;
-                label.appendChild(input);
-                editor.appendChild(label);
-            });
             const apply = document.createElement("button");
             apply.type = "button";
-            apply.textContent = "强制写入库存";
+            apply.textContent = civilizationText("resource.forceWrite", "Force stock values", "强制写入库存");
             apply.addEventListener("click", function () {
-                const patch = {seeds: {}, treeSaplings: {}};
+                const patch = {};
                 Object.keys(inputs).forEach((key) => {
-                    if (key.indexOf("seed:") === 0) patch.seeds[key.slice(5)] = Number(inputs[key].value);
-                    else if (key.indexOf(TREE_SAPLING_PREFIX) === 0) patch.treeSaplings[key.slice(TREE_SAPLING_PREFIX.length)] = Number(inputs[key].value);
-                    else patch[key] = Number(inputs[key].value);
+                    patch[key] = Number(inputs[key].value);
                 });
                 setSettlementResources(snapshot.id, snapshot.selectedSettlementId, patch);
                 refreshCivilizationUi();
@@ -7464,7 +8976,8 @@ function setMapOverlay(name, value) {
         else if (selectedCivilizationTab === "technology") {
             (TechData.ERAS || []).forEach((techEra) => {
                 const heading = document.createElement("h3");
-                heading.textContent = localizedEraName(techEra) + " · " + snapshot.technologies.filter((entry) => entry.eraId === techEra.id && entry.unlocked).length + "/8";
+                const eraTechnologies = snapshot.technologies.filter((entry) => entry.eraId === techEra.id);
+                heading.textContent = localizedEraName(techEra) + " · " + eraTechnologies.filter((entry) => entry.unlocked).length + "/" + eraTechnologies.length;
                 content.appendChild(heading);
                 const grid = document.createElement("div");
                 grid.className = "civ-tech-grid";
@@ -7478,11 +8991,13 @@ function setMapOverlay(name, value) {
                     progress.textContent = localizedDomain(entry.domain) + " · " + Math.min(entry.cost, entry.progress).toFixed(1) + "/" + entry.cost;
                     card.appendChild(progress);
                     const status = document.createElement("span");
-                    status.textContent = entry.unlocked ? (entry.forced ? "已研发（强制）" : "已研发") : (entry.focused ? "重点研发 #" + (entry.queueIndex + 1) + (entry.future ? " · 未来时代" : "") : (entry.future ? "未来时代 · 未研发" : "未研发"));
+                    status.textContent = entry.unlocked ? (entry.forced ? civilizationText("techStatus.forced", "Researched (forced)", "已研发（强制）") : civilizationText("techStatus.researched", "Researched", "已研发")) :
+                        (entry.focused ? civilizationText("techStatus.focused", "Priority research #", "重点研发 #") + (entry.queueIndex + 1) + (entry.future ? civilizationText("techStatus.futureSuffix", " · future era", " · 未来时代") : "") :
+                            (entry.future ? civilizationText("techStatus.future", "Future era · unresearched", "未来时代 · 未研发") : civilizationText("techStatus.unresearched", "Unresearched", "未研发")));
                     card.appendChild(status);
                     if (entry.prerequisites.length) {
                         const prerequisites = document.createElement("small");
-                        prerequisites.textContent = "前置：" + entry.prerequisites.join(", ") + (entry.prerequisitesMet ? " ✓" : "");
+                        prerequisites.textContent = civilizationText("tech.prerequisites", "Prerequisites: ", "前置：") + entry.prerequisites.map(localizedTechName).join(isChineseUi() ? "、" : ", ") + (entry.prerequisitesMet ? " ✓" : "");
                         card.appendChild(prerequisites);
                     }
                     if (entry.conditionStates.length) {
@@ -7494,13 +9009,13 @@ function setMapOverlay(name, value) {
                         const controls = document.createElement("span");
                         const focus = document.createElement("button");
                         focus.type = "button";
-                        focus.textContent = entry.focused ? "取消重点" : "标记重点";
+                        focus.textContent = entry.focused ? civilizationText("tech.unfocus", "Remove priority", "取消重点") : civilizationText("tech.focus", "Mark priority", "标记重点");
                         focus.addEventListener("click", function () { setTechnologyState(snapshot.id, entry.id, entry.focused ? "unresearched" : "focused"); refreshCivilizationUi(); });
                         controls.appendChild(focus);
                         const force = document.createElement("button");
                         force.type = "button";
-                        force.textContent = "强制完成";
-                        force.addEventListener("click", function () { if (typeof confirm !== "function" || confirm("强制完成后不可撤销，确定吗？")) { setTechnologyState(snapshot.id, entry.id, "researched"); refreshCivilizationUi(); } });
+                        force.textContent = civilizationText("tech.force", "Force complete", "强制完成");
+                        force.addEventListener("click", function () { if (typeof confirm !== "function" || confirm(civilizationText("tech.forceConfirm", "Forced completion cannot be undone. Continue?", "强制完成后不可撤销，确定吗？"))) { setTechnologyState(snapshot.id, entry.id, "researched"); refreshCivilizationUi(); } });
                         controls.appendChild(force);
                         if (entry.focused && entry.queueIndex > 0) {
                             const up = document.createElement("button"); up.type = "button"; up.textContent = "↑"; up.addEventListener("click", function () { moveResearchPriority(snapshot.id, entry.id, entry.queueIndex - 1); refreshCivilizationUi(); }); controls.appendChild(up);
@@ -7516,7 +9031,11 @@ function setMapOverlay(name, value) {
             const modeLabel = document.createElement("label");
             modeLabel.textContent = civilizationText("peace.label", "Peace mode ", "和平模式 ");
             const modeSelect = document.createElement("select");
-            [["normal","正常"],["no-new-wars","仅禁止新战争"],["full-peace","完全和平"]].forEach((item) => {
+            [
+                ["normal", civilizationText("peace.normal", "Normal", "正常")],
+                ["no-new-wars", civilizationText("peace.noNewWars", "No new wars", "仅禁止新战争")],
+                ["full-peace", civilizationText("peace.full", "Full peace", "完全和平")]
+            ].forEach((item) => {
                 const option = document.createElement("option");
                 option.value = item[0];
                 option.textContent = item[1];
@@ -7527,18 +9046,23 @@ function setMapOverlay(name, value) {
             modeLabel.appendChild(modeSelect);
             content.appendChild(modeLabel);
             const explanation = document.createElement("p");
-            explanation.textContent = getPeaceMode() === "normal" ? "允许宣战和正常战斗。" : (getPeaceMode() === "no-new-wars" ? "禁止新战争，已有战争继续。" : "已有战争、攻击、反击和吞并已暂停，关闭后继续。");
+            explanation.textContent = getPeaceMode() === "normal" ? civilizationText("peace.normalHelp", "War declarations and combat are enabled.", "允许宣战和正常战斗。") :
+                (getPeaceMode() === "no-new-wars" ? civilizationText("peace.noNewWarsHelp", "New wars are disabled; existing wars continue.", "禁止新战争，已有战争继续。") :
+                    civilizationText("peace.fullHelp", "Wars, attacks, retaliation and annexation are paused until this mode is disabled.", "已有战争、攻击、反击和吞并已暂停，关闭后继续。"));
             content.appendChild(explanation);
             const wars = document.createElement("div");
             const active = getWarSnapshot(snapshot.id);
-            wars.textContent = active.length ? active.map((war) => "对阵 F" + war.enemyFactionId + (war.suspended ? " · 已暂停" : " · 第" + war.wave + "波 · 攻" + war.attackers + "/守" + war.defenders) + " · " + war.reason).join("\n") : "当前没有战争。";
+            wars.textContent = active.length ? active.map((war) => civilizationText("war.versus", "Against faction ", "对阵阵营 ") + war.enemyFactionId +
+                (war.suspended ? civilizationText("war.suspended", " · suspended", " · 已暂停") :
+                    civilizationText("war.wavePrefix", " · wave ", " · 第") + war.wave + civilizationText("war.waveForces", " · attackers ", "波 · 进攻 ") + war.attackers + civilizationText("war.defenders", "/defenders ", "/防守 ") + war.defenders) +
+                " · " + localizedWarReason(war.reason)).join("\n") : civilizationText("war.none", "There are no current wars.", "当前没有战争。");
             content.appendChild(wars);
             factionIds.filter((id) => id !== snapshot.id && snapshot.wars.indexOf(id) === -1).forEach((enemyId) => {
                 const button = document.createElement("button");
                 button.type = "button";
                 button.disabled = getPeaceMode() !== "normal";
-                button.textContent = "强制向阵营 " + enemyId + " 宣战";
-                button.addEventListener("click", function () { if (typeof confirm !== "function" || confirm("战争将持续到一方被吞并，确定宣战吗？")) { declareWar(snapshot.id, enemyId, "manual"); refreshCivilizationUi(); } });
+                button.textContent = civilizationText("war.forcePrefix", "Declare war on faction ", "强制向阵营 ") + enemyId + civilizationText("war.forceSuffix", "", " 宣战");
+                button.addEventListener("click", function () { if (typeof confirm !== "function" || confirm(civilizationText("war.confirm", "War lasts until one faction is annexed. Declare war?", "战争将持续到一方被吞并，确定宣战吗？"))) { declareWar(snapshot.id, enemyId, "manual"); refreshCivilizationUi(); } });
                 content.appendChild(button);
             });
         }
@@ -7547,13 +9071,21 @@ function setMapOverlay(name, value) {
             log.className = "civ-log";
             snapshot.chronicle.slice().reverse().forEach((event) => {
                 const row = document.createElement("div");
-                row.textContent = event.timestamp + " · " + event.message;
+                row.textContent = localizedChronicleTimestamp(event) + " · " + localizedChronicleMessage(event);
                 log.appendChild(row);
             });
             content.appendChild(log);
         }
         else if (selectedCivilizationTab === "overlays") {
-            [["territory", "显示领地列"], ["resources", "显示资源点"], ["food", "食物"], ["tree", "树木"], ["stone", "石头"], ["metals", "金属"], ["drops", "掉落物"]].forEach((item) => {
+            [
+                ["territory", civilizationText("overlay.territory", "Show territory columns", "显示领地列")],
+                ["resources", civilizationText("overlay.resources", "Show resource locations", "显示资源点")],
+                ["food", civilizationText("overlay.food", "Food", "食物")],
+                ["tree", civilizationText("overlay.tree", "Trees", "树木")],
+                ["stone", civilizationText("overlay.stone", "Stone", "石头")],
+                ["metals", civilizationText("overlay.metals", "Metals", "金属")],
+                ["drops", civilizationText("overlay.drops", "Drops", "掉落物")]
+            ].forEach((item) => {
                 const label = document.createElement("label");
                 const input = document.createElement("input");
                 input.type = "checkbox";
@@ -7584,7 +9116,36 @@ function setMapOverlay(name, value) {
         if (typeof document === "undefined" || document.getElementById("civilizationParent")) return;
         const style = document.createElement("style");
         style.id = "civilizationUiStyle";
-        style.textContent = ".civ-menu{max-width:860px!important;width:min(94vw,860px)!important}.civ-toolbar,.civ-tabs{display:flex;flex-wrap:wrap;gap:.55em;align-items:center;justify-content:center;margin:.7em 0}.civ-tabs button.active{outline:2px solid #63a9de}.civ-era-title{font-size:1.2em;font-weight:700;margin:.5em}.civ-era-strip{display:flex;flex-wrap:wrap;gap:.35em;justify-content:center;margin:.4em}.civ-era-chip{padding:.22em .5em;border:1px solid #777;border-radius:.35em;opacity:.45}.civ-era-chip.done{opacity:.8;border-color:#78a878}.civ-era-chip.current{opacity:1;border-color:#e5c15c;color:#ffe08a}.civ-summary{margin:.5em;text-align:center}.civ-materials{font-size:.82em;opacity:.85}.civ-tech-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.55em;padding:.5em}.civ-tech-card{display:flex;flex-direction:column;gap:.3em;text-align:left;padding:.65em;border:1px solid #777;border-radius:.45em;background:#252525;color:#eee}.civ-tech-card.unlocked{border-color:#5ca66b;background:#213526}.civ-tech-card.active{border-color:#e8bb4a;box-shadow:0 0 8px #e8bb4a88}.civ-tech-card.focused{outline:2px solid #63a9de}.civ-tech-card.blocked{opacity:.7}.civ-tech-domain,.civ-tech-status,.civ-tech-card small{font-size:.8em;opacity:.9}.civ-resource-editor{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.5em;padding:.7em}.civ-resource-editor label{display:flex;justify-content:space-between;gap:.4em}.civ-resource-editor input{width:6em}.civ-log{max-height:48vh;overflow:auto;text-align:left;white-space:normal}.civ-log div{padding:.3em;border-bottom:1px solid #555}@media(max-width:560px){.civ-tech-grid,.civ-resource-editor{grid-template-columns:1fr}}";
+        style.textContent = [
+            "#civilizationParent{box-sizing:border-box;width:min(94vw,860px);max-width:860px;height:min(82vh,720px);max-height:720px}",
+            ".civ-menu{box-sizing:border-box;width:100%!important;max-width:none!important}",
+            "#civilizationContent,.civ-tech-card,.civ-resource-editor label{min-width:0}",
+            ".civ-toolbar,.civ-tabs{display:flex;flex-wrap:wrap;gap:.55em;align-items:center;justify-content:center;margin:.7em 0}",
+            ".civ-tabs button.active{outline:2px solid #63a9de}",
+            ".civ-era-title{font-size:1.2em;font-weight:700;margin:.5em}",
+            ".civ-era-strip{display:flex;flex-wrap:wrap;gap:.35em;justify-content:center;margin:.4em}",
+            ".civ-era-chip{padding:.22em .5em;border:1px solid #777;border-radius:.35em;opacity:.45}",
+            ".civ-era-chip.done{opacity:.8;border-color:#78a878}",
+            ".civ-era-chip.current{opacity:1;border-color:#e5c15c;color:#ffe08a}",
+            ".civ-summary{margin:.5em;text-align:center;overflow-wrap:anywhere}",
+            ".civ-materials{font-size:.82em;opacity:.85}",
+            ".civ-tech-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.55em;padding:.5em}",
+            ".civ-tech-card{display:flex;min-width:0;flex-direction:column;gap:.3em;text-align:left;padding:.65em;border:1px solid #777;border-radius:.45em;background:#252525;color:#eee;overflow-wrap:anywhere}",
+            ".civ-tech-card>span{display:flex;flex-wrap:wrap;gap:.3em}",
+            ".civ-tech-card.unlocked{border-color:#5ca66b;background:#213526}",
+            ".civ-tech-card.active{border-color:#e8bb4a;box-shadow:0 0 8px #e8bb4a88}",
+            ".civ-tech-card.focused{outline:2px solid #63a9de}",
+            ".civ-tech-card.blocked{opacity:.7}",
+            ".civ-tech-domain,.civ-tech-status,.civ-tech-card small{font-size:.8em;opacity:.9}",
+            ".civ-resource-editor{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.5em;padding:.7em}",
+            ".civ-resource-editor label{display:grid;grid-template-columns:minmax(0,1fr) minmax(5em,7em);align-items:center;gap:.4em;overflow-wrap:anywhere}",
+            ".civ-resource-editor input{box-sizing:border-box;width:100%;min-width:0;margin:0}",
+            ".civ-resource-editor>button{grid-column:1/-1;justify-self:start}",
+            ".civ-log{max-height:48vh;overflow:auto;text-align:left;white-space:normal}",
+            ".civ-log div{padding:.3em;border-bottom:1px solid #555}",
+            "@media(max-width:760px){.civ-tech-grid{grid-template-columns:1fr}.civ-resource-editor{grid-template-columns:repeat(2,minmax(0,1fr))}}",
+            "@media(max-width:460px){#civilizationParent{width:96vw;height:88vh;top:2%}.civ-resource-editor{grid-template-columns:1fr}}"
+        ].join("");
         document.head.appendChild(style);
         const parent = document.createElement("div");
         parent.id = "civilizationParent";
@@ -7639,22 +9200,36 @@ function setMapOverlay(name, value) {
 
     function localizedPersonRole(role) {
         const value = role || "worker";
-        return localizedPersonLabel(PERSON_ROLE_LABELS, value, String(value).replace(/_/g, " "));
+        return localizedPersonLabel(PERSON_ROLE_LABELS, value, String(value).replace(/_/g, " "), "未知职业");
     }
 
     function localizedPersonTask(task) {
         const value = task || "idle";
-        return localizedPersonLabel(PERSON_TASK_LABELS, value, String(value).replace(/_/g, " "));
+        return localizedPersonLabel(PERSON_TASK_LABELS, value, String(value).replace(/_/g, " "), "未知活动");
     }
 
     function localizedPersonWeapon(weapon) {
         const value = weapon || "fists";
-        return localizedPersonLabel(PERSON_WEAPON_LABELS, value, String(value).replace(/_/g, " "));
+        return localizedPersonLabel(PERSON_WEAPON_LABELS, value, String(value).replace(/_/g, " "), "未知武器");
+    }
+
+    function localizedPersonArmor(armor) {
+        const raw = String(armor || "none");
+        const value = /_armor$/.test(raw) ? raw.slice(0, -6) : canonicalArmorId(raw);
+        const entry = Object.prototype.hasOwnProperty.call(PERSON_ARMOR_LABELS, value) ? PERSON_ARMOR_LABELS[value] : null;
+        if (!entry) return isChineseUi() ? "未知护甲" : raw.replace(/_/g, " ");
+        return civilizationText("armor." + value, entry[0], entry[1]);
+    }
+
+    function localizedPersonEquipment(item) {
+        const value = String(item || "");
+        const armorId = /_armor$/.test(value) ? value.slice(0, -6) : canonicalArmorId(value);
+        return Object.prototype.hasOwnProperty.call(PERSON_ARMOR_LABELS, armorId) && armorId !== "none" ? localizedPersonArmor(armorId) : localizedPersonWeapon(value);
     }
 
     function localizedDeathCause(cause) {
         if (!cause) return "";
-        return localizedPersonLabel(PERSON_DEATH_CAUSE_LABELS, cause, String(cause).replace(/_/g, " "));
+        return localizedPersonLabel(PERSON_DEATH_CAUSE_LABELS, cause, String(cause).replace(/_/g, " "), "未知死因");
     }
 
     function peopleFilterValue(id) {
@@ -7802,8 +9377,15 @@ function setMapOverlay(name, value) {
     function activityHistoryContext(entry) {
         const metrics = entry && entry.metrics || {};
         if (entry && entry.type === "role_changed" && metrics.fromRole && metrics.toRole) return localizedPersonRole(metrics.fromRole) + " → " + localizedPersonRole(metrics.toRole);
-        if (metrics.recipeId) return civilizationText("people.recipe", "Recipe ", "配方 ") + String(metrics.recipeId).replace(/_/g, " ");
-        if (metrics.equippedWeapon) return civilizationText("people.equipped", "Equipped ", "装备 ") + String(metrics.equippedWeapon).replace(/_/g, " ");
+        if (entry && entry.type === "faction_changed" && Number.isFinite(metrics.fromFactionId) && Number.isFinite(metrics.toFactionId)) return civilizationText("people.factionShort", "Faction", "阵营") + " " + metrics.fromFactionId + " → " + metrics.toFactionId;
+        if (entry && entry.type === "route_created" && metrics.resourceKind) return civilizationText("people.targetResource", "Target resource: ", "目标资源：") + localizedResourceName(metrics.resourceKind);
+        if (entry && entry.type === "death" && metrics.cause) return localizedDeathCause(metrics.cause);
+        if (entry && entry.type === "weapon_equipped" && metrics.weapon) return civilizationText("people.equippedWeapon", "Equipped ", "装备：") + localizedPersonWeapon(metrics.weapon);
+        if (entry && entry.type === "weapon_removed" && metrics.weapon) return civilizationText("people.removedWeapon", "Removed ", "卸下：") + localizedPersonWeapon(metrics.weapon);
+        if (entry && entry.type === "armor_equipped" && metrics.armor) return civilizationText("people.equippedArmor", "Equipped ", "装备：") + localizedPersonArmor(metrics.armor);
+        if (entry && entry.type === "armor_removed" && metrics.armor) return civilizationText("people.removedArmor", "Removed ", "卸下：") + localizedPersonArmor(metrics.armor);
+        if (metrics.recipeId) return civilizationText("people.recipe", "Recipe ", "配方 ") + localizedRecipeName(metrics.recipeId);
+        if (metrics.equippedWeapon) return civilizationText("people.equipped", "Equipped ", "装备 ") + localizedPersonWeapon(metrics.equippedWeapon);
         return "";
     }
 
@@ -7867,9 +9449,10 @@ function setMapOverlay(name, value) {
         addPersonProfileStat(profile, civilizationText("people.settlementShort", "Settlement", "聚落"), Number.isFinite(person.settlementId) ? person.settlementId : "-");
         addPersonProfileStat(profile, civilizationText("people.age", "Age", "年龄"), personAgeLabel(person) + " / " + Math.round(safeNumber(person.lifespanYears, 0)));
         addPersonProfileStat(profile, civilizationText("people.role", "Role", "职业"), localizedPersonRole(person.role));
-        addPersonProfileStat(profile, "HP", Math.round(person.hp) + "/" + Math.round(person.maxHp));
+        addPersonProfileStat(profile, civilizationText("people.health", "HP", "生命值"), Math.round(person.hp) + "/" + Math.round(person.maxHp));
         addPersonProfileStat(profile, civilizationText("people.position", "Position", "位置"), "(" + person.x + ", " + person.y + ")");
         addPersonProfileStat(profile, civilizationText("people.weapon", "Weapon", "武器"), localizedPersonWeapon(person.weapon));
+        addPersonProfileStat(profile, civilizationText("people.armor", "Armor", "护甲"), localizedPersonArmor(person.armor));
         addPersonProfileStat(profile, civilizationText("people.carry", "Carrying", "携带"), personCarryLabel(person));
         detail.appendChild(profile);
 
@@ -7891,7 +9474,7 @@ function setMapOverlay(name, value) {
             current.appendChild(description);
             if (person.currentActivity && person.currentActivity.startedAt) {
                 const started = document.createElement("small");
-                started.textContent = person.currentActivity.startedAt + " · " + civilizationText("people.duration", "Duration ", "持续 ") + person.currentActivity.durationTicks + " ticks";
+                started.textContent = person.currentActivity.startedAt + " · " + civilizationText("people.duration", "Duration ", "持续 ") + person.currentActivity.durationTicks + civilizationText("people.ticks", " ticks", " 刻");
                 current.appendChild(started);
                 renderActivityProgress(current, person.currentActivity.progress);
             }
@@ -8151,7 +9734,9 @@ function setMapOverlay(name, value) {
         if (tree && tree.base) pixel = tree.base;
         const descriptor = resourceDescriptor(pixel);
         if (!pixel || !descriptor) return null;
-        if ((descriptor.kind === "copper" || descriptor.kind === "tin" || descriptor.kind === "raw_iron") && actor.role !== "miner") return commandResult(false, "harvest", "miner_required", null);
+        const faction = manager.factionById.get(actor.factionId);
+        if (!resourceUnlockedForFaction(faction, descriptor.kind)) return commandResult(false, "harvest", "technology_required", null);
+        if ((descriptor.kind === "copper" || descriptor.kind === "raw_iron") && actor.role !== "miner") return commandResult(false, "harvest", "miner_required", null);
         const owner = manager.territory && manager.territory.ownerAt(pixel.x);
         if (owner !== null && owner !== undefined && owner !== actor.factionId) return commandResult(false, "harvest", "foreign_territory", null);
         const key = pixel.element + "@" + pixel.x + "," + pixel.y;
@@ -8331,7 +9916,7 @@ function setMapOverlay(name, value) {
         ctx.textBaseline = "middle";
         for (let i = 0; i < Math.min(12, speakers.length); i++) {
             const actor = speakers[i];
-            const text = String(actor.speech.text || "").slice(0, 64);
+            const text = localizedSpeechText(actor.speech.text).slice(0, 64);
             if (!text) continue;
             const measured = typeof ctx.measureText === "function" ? ctx.measureText(text).width : text.length * 7;
             const bubbleWidth = Math.max(34, Math.min(180, Math.ceil(measured) + 12));
@@ -8592,6 +10177,7 @@ function setMapOverlay(name, value) {
             processDirtyTrees(0.75);
             if (manager.derivedIndexesDirty && (manager.lastDerivedRefreshTick < 0 || pixelTicks - manager.lastDerivedRefreshTick >= C.CIVILIZATION_INTERVAL)) refreshDerivedIndexes();
         }
+        applyBuildingGravity();
         resolvePendingAttacks();
         if (pixelTicks % C.CIVILIZATION_INTERVAL === 0) civilizationStep();
         const elapsed = nowMs() - started;
@@ -8655,12 +10241,12 @@ function setMapOverlay(name, value) {
 
     runEveryTick(societyTick);
     if (typeof addPixelLifecycleListener === "function") addPixelLifecycleListener(handlePixelLifecycle);
-    if (typeof renderPrePixel === "function") renderPrePixel(renderNormalBuildingSprites);
+    if (typeof renderMidPixel === "function") renderMidPixel(renderBuildingSprites);
+    else if (typeof renderPostPixel === "function") renderPostPixel(renderBuildingSprites);
     if (typeof renderPostPixel === "function") {
         renderPostPixel(renderTerritoryHover);
         renderPostPixel(renderResourceOverlay);
         renderPostPixel(renderRangedProjectiles);
-        renderPostPixel(renderTopBuildingSprites);
         renderPostPixel(renderPersonSpeech);
         renderPostPixel(renderPersonFocus);
         renderPostPixel(renderPersonCommand);

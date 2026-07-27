@@ -97,6 +97,7 @@ function createEngineHarness() {
         "emitPixelLifecycleEvent",
         "elementFlag",
         "isLockedOverlapElement",
+        "isBuildingTunnelPair",
         "isCivilizedHumanElement",
         "defaultElementsCanOverlap",
         "ensureElementOverlapEntry",
@@ -191,6 +192,13 @@ test("engine provides a persisted creature overlap layer for passable vegetation
     }
     assert.match(html, /looksLikePassableVegetationElement/);
     assert.match(html, /naturalVegetation\s*=\s*true/);
+});
+
+test("the building render hook sits between terrain and plant or creature pixels", () => {
+    assert.match(html, /renderMidPixelList\s*=\s*\[\]/);
+    assert.match(html, /isPassableVegetationPixel\(pixel\)\s*\|\|\s*isCreaturePixel\(pixel\).*pixelsAboveBuildings\.push\(pixel\)/s);
+    assert.match(html, /drawPixelLayer\(pixelsBelowBuildings\).*renderMidPixelList.*drawPixelLayer\(pixelsAboveBuildings\)/s);
+    assert.match(html, /id="setting-humanSocietyBuildingScale"[^>]*type="range"[^>]*min="50"[^>]*max="200"/);
 });
 
 test("pixel lifecycle listeners receive low-frequency create, change, and delete events", () => {
@@ -435,13 +443,23 @@ test("collectible resources always overlap civilization humans", () => {
     assert.match(html, /isCivilizationCollectiblePixel\(pixel\).*getPixelsAt\(pixel\.x,pixel\.y\)\.some\(isCivilizedHumanPixel\).*pixelsUnderlay\.push\(pixel\)/s);
 });
 
-test("tunnels remain universal while overlap settings are absent", () => {
+test("tunnels overlap every element except logical building cores", () => {
     const {context, engine} = createEngineHarness();
     const tunnel = {element: "civ_tunnel"};
     for (const element of Object.keys(context.elements)) {
-        assert.equal(engine.pixelsCanOverlap(tunnel, {element}), true, `tunnel should overlap ${element}`);
+        const isBuildingCore = context.elements[element].isBuildingCore === true || context.elements[element].properties && context.elements[element].properties.isBuildingCore === true;
+        assert.equal(engine.pixelsCanOverlap(tunnel, {element}), !isBuildingCore, `unexpected tunnel overlap rule for ${element}`);
     }
     assert.ok(engine.getElementOverlapDirectory("sand").includes("civ_tunnel"));
+    assert.equal(engine.getElementOverlapDirectory("building").includes("civ_tunnel"), false);
+    assert.equal(engine.getElementOverlapDirectory("civ_tunnel").includes("building_variant"), false);
+
+    const placedTunnel = engine.createPixel("civ_tunnel", 7, 7);
+    assert.ok(placedTunnel);
+    assert.equal(engine.createPixel("building", 7, 7), null, "a building core cannot be created on a tunnel");
+    const placedBuilding = engine.createPixel("building", 8, 7);
+    assert.ok(placedBuilding);
+    assert.equal(engine.createPixel("civ_tunnel", 8, 7), null, "a tunnel cannot be created on a building core");
     assert.doesNotMatch(html, /id="elementInteractionSetting"/);
     assert.doesNotMatch(html, /elementInteractionDatalist/);
     assert.doesNotMatch(html, /function setElementInteractionSettings\(/);
@@ -676,6 +694,67 @@ test("save and load paths preserve auxiliary storage and restore pixel metadata 
     }
 });
 
+test("element palette modes classify civilization resources without changing the laboratory catalog", () => {
+    const start = html.indexOf("const CIVILIZATION_PALETTE_ELEMENTS");
+    const end = html.indexOf("function applyElementPaletteButtonVisibility", start);
+    assert.ok(start >= 0 && end > start, "missing element palette classification source");
+    const context = {
+        Set,
+        settings: {elementPaletteMode: "civilization"},
+        elements: {
+            civilized_human: {category: "civilization"},
+            civ_body: {category: "civilization", hidden: true},
+            water: {category: "liquids"},
+            wood: {category: "solids"},
+            sapling: {category: "life", seed: true},
+            copper: {category: "solids"},
+            tin: {category: "solids"},
+            civ_tin_resource: {category: "civilization", humanCollectible: true},
+            apple: {category: "food", isFood: true},
+            wheat_seed: {category: "life", seed: true},
+            mod_resource: {category: "other", humanCollectible: true},
+            mod_essential: {category: "other", civilizationRelevant: true},
+            excluded_water: {category: "liquids", civilizationRelevant: false},
+            plasma: {category: "energy"}
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext(
+        html.slice(start, end) + "\nglobalThis.palette = {normalizeElementPaletteMode,isCivilizationPaletteElement,isElementVisibleInPaletteMode};",
+        context
+    );
+
+    assert.equal(context.palette.normalizeElementPaletteMode("laboratory"), "laboratory");
+    assert.equal(context.palette.normalizeElementPaletteMode("invalid-old-value"), "civilization");
+    for (const element of ["civilized_human", "water", "wood", "sapling", "copper", "apple", "mod_resource", "mod_essential"]) {
+        assert.equal(context.palette.isElementVisibleInPaletteMode(element, "civilization"), true, `${element} should be available in civilization mode`);
+    }
+    for (const retiredElement of ["tin", "civ_tin_resource", "wheat_seed"]) {
+        assert.equal(context.palette.isElementVisibleInPaletteMode(retiredElement, "civilization"), false, `${retiredElement} is retired from civilization mode`);
+        assert.equal(context.palette.isElementVisibleInPaletteMode(retiredElement, "laboratory"), true, `${retiredElement} remains available in laboratory mode`);
+    }
+    assert.equal(context.palette.isElementVisibleInPaletteMode("civ_body", "civilization"), false, "hidden implementation pixels are not civilization palette entries");
+    assert.equal(context.palette.isElementVisibleInPaletteMode("excluded_water", "civilization"), false, "an explicit false marker overrides automatic inclusion");
+    assert.equal(context.palette.isElementVisibleInPaletteMode("plasma", "civilization"), false);
+    assert.equal(context.palette.isElementVisibleInPaletteMode("plasma", "laboratory"), true);
+    assert.equal(context.palette.isElementVisibleInPaletteMode("civ_body", "laboratory"), true, "the mode layer leaves the existing hidden/discovery rule in charge");
+});
+
+test("element palette mode is persistent, immediate, and applied to startup and dynamic buttons", () => {
+    assert.match(html, /settings\.elementPaletteMode\s*=\s*"civilization"/);
+    assert.match(html, /id="elementPaletteModeSelect"[^>]*onchange="setElementPaletteMode\(this\.value\)"/);
+    assert.match(html, /option value="civilization"[^>]*>文明发展<\/option>/);
+    assert.match(html, /option value="laboratory"[^>]*>实验室<\/option>/);
+    const setter = extractBlock("function setElementPaletteMode(");
+    assert.match(setter, /elementPaletteModeSelect/);
+    assert.match(setter, /saveSettings\(\)[\s\S]*refreshElementPaletteVisibility\(true\)/);
+    assert.match(extractBlock("function createElementButton("), /applyElementPaletteButtonVisibility\(button, element\)/);
+    assert.match(extractBlock("function checkUnlock("), /refreshElementPaletteVisibility\(false\)/);
+    assert.match(extractBlock("function addElement("), /refreshElementPaletteVisibility/);
+    assert.match(html, /refreshElementPaletteVisibility\(false\);[\s\S]*firstVisiblePaletteCategoryButton\(\)/);
+    assert.match(html, /firstVisiblePaletteElementButton\(getElementPaletteMode\(\) === "civilization" \? "civilized_human" : null\)/);
+});
+
 test("simulation speed cycles through 1x, 2x, 3x, and 5x with a hard 5x cap", () => {
     assert.match(html, /MAX_TPS\s*=\s*150/);
     assert.match(html, /SIMULATION_SPEEDS\s*=\s*\[30,60,90,150\]/);
@@ -686,7 +765,9 @@ test("simulation speed cycles through 1x, 2x, 3x, and 5x with a hard 5x cap", ()
     assert.match(html, /SIMULATION_WORK_BUDGET_MS\s*=\s*12/);
     assert.match(html, /SIMULATION_MAX_BACKLOG_TICKS\s*=\s*15/);
     assert.match(html, /while \(simulationTickDebt >= 1 && completed < SIMULATION_MAX_TICKS_PER_PULSE/);
-    assert.match(html, /actual: \"\+simulationActualTPS\.toFixed\(1\)\+\" TPS/);
+    const speedButtonUpdater = extractBlock("function updateSpeedButton(");
+    assert.match(speedButtonUpdater, /langKey\("guitemplate\.speedButton\.title"/);
+    assert.match(speedButtonUpdater, /simulationActualTPS\.toFixed\(1\)/);
     assert.doesNotMatch(html, /setInterval\(tick,\s*1000\/(?:new)?tps\)/);
 });
 

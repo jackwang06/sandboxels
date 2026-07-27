@@ -122,7 +122,7 @@
 		setTimeout(function() {
 			let loadingP = document.getElementById("loadingP");
 			if (loadingP && loadingP.style.display !== "none") {
-				loadingP.firstChild.textContent = "Failed to load. A mod is likely causing this.\n\n";
+				loadingP.firstChild.textContent = langKey("gui.loadingFailed","Failed to load. A mod is likely causing this.\n\n");
 			}
 		}, 5000);
 
@@ -140,6 +140,9 @@
 		var urlParams = new URLSearchParams(window.location.search);
 		if (!settings["unlocked"]) {
 			settings["unlocked"] = {};
+		}
+		if (settings.elementPaletteMode !== "laboratory" && settings.elementPaletteMode !== "civilization") {
+			settings.elementPaletteMode = "civilization";
 		}
 		function saveSettings() {
 			if (currentSaveData.loaded) { return }
@@ -423,7 +426,7 @@ CLONE_ON_CLICK: function(pixel,element) {
 	if (elements[element].temp !== undefined) pixel.temp = elements[element].temp;
 },
 CLONER_SHIFT_SELECT: function(element) {
-	promptInput("Enter an element to clone. Enter multiple separated by commas.", function(r) {
+	promptInput(langKey("gui.prompt.cloneElements","Enter an element to clone. Enter multiple separated by commas."), function(r) {
 		r = validateElementList(r);
 		if (!r) return;
 		currentElementProp = { clone:r }
@@ -927,7 +930,7 @@ SEEDRISE: function(pixel) {
 		"HT:2|HT:2|HT:2"
 	],
 	onShiftSelect: function(element) {
-		promptInput("Enter a maximum temperature (Celsius).", function(r) {
+		promptInput(langKey("gui.prompt.maximumTemperature","Enter a maximum temperature (Celsius)."), function(r) {
 			r = parseFloat(r);
 			if (isNaN(r)) return;
 			currentElementProp = { max:r }
@@ -956,7 +959,7 @@ SEEDRISE: function(pixel) {
 		"CO:2|CO:2|CO:2"
 	],
 	onShiftSelect: function(element) {
-		promptInput("Enter a minimum temperature (Celsius).", function(r) {
+		promptInput(langKey("gui.prompt.minimumTemperature","Enter a minimum temperature (Celsius)."), function(r) {
 			r = parseFloat(r);
 			if (isNaN(r)) return;
 			currentElementProp = { min:r }
@@ -980,7 +983,7 @@ SEEDRISE: function(pixel) {
 "erase": {
 	color: "#fdb5ff",
 	onShiftSelect: function(element) {
-		promptInput("Enter an element to delete. Enter multiple separated by commas.", function(r) {
+		promptInput(langKey("gui.prompt.deleteElements","Enter an element to delete. Enter multiple separated by commas."), function(r) {
 			r = validateElementList(r);
 			if (!r) return;
 			currentElementProp = { filter:r }
@@ -1172,7 +1175,7 @@ SEEDRISE: function(pixel) {
 "paint": {
 	color: ["#c27070","#c29c70","#c2c270","#70c270","#70c2c2","#7070c2","#c270c2"],
 	onShiftSelect: function(element) {
-		promptInput("Enter an element to only paint. Enter multiple elements separated by commas.", function(r) {
+		promptInput(langKey("gui.prompt.paintElements","Enter an element to only paint. Enter multiple elements separated by commas."), function(r) {
 			r = validateElementList(r);
 			if (!r) return;
 			currentElementProp = { filter:r }
@@ -2481,7 +2484,7 @@ SEEDRISE: function(pixel) {
 	density: 8960,
 	// ignoreConduct:["ecloner"]
 },
-"battery": {
+	"battery": {
 	color: "#9c6c25",
 	// behavior: [
 	// 	"XX|SH|XX", // shocks (adds charge)
@@ -2489,11 +2492,11 @@ SEEDRISE: function(pixel) {
 	// 	"XX|SH|XX"
 	// ],
 	onShiftSelect: function(element) {
-		promptInput("Enter a number to use as the frequency. (Default 1)", function(r) {
+		promptInput(langKey("gui.prompt.frequency","Enter a number to use as the frequency. (Default 1)"), function(r) {
 			if (r === "") return;
 			r = parseInt(r);
 			if (isNaN(r)) {
-				logMessage("Invalid integer - battery frequency not set.")
+				logMessage(langKey("gui.log.invalidBatteryFrequency","Invalid integer - battery frequency not set."))
 				return;
 			};
 			currentElementProp = { freq:r }
@@ -2535,7 +2538,7 @@ SEEDRISE: function(pixel) {
 "sensor": {
 	color: "#bebfa3",
 	onShiftSelect: function(element) {
-		promptInput("Enter an element to detect. Enter multiple separated by commas.", function(r) {
+		promptInput(langKey("gui.prompt.detectElements","Enter an element to detect. Enter multiple separated by commas."), function(r) {
 			r = validateElementList(r);
 			if (!r) return;
 			currentElementProp = { sense:r }
@@ -2612,7 +2615,7 @@ SEEDRISE: function(pixel) {
 	color: ["#28BCD1","#9335E6","#E13294"],
 	behavior: behaviors.WALL,
 	onShiftSelect: function(element) {
-		promptInput("Enter multiple elements separated by commas.", function(r) {
+		promptInput(langKey("gui.prompt.multipleElements","Enter multiple elements separated by commas."), function(r) {
 			r = validateElementList(r);
 			if (!r) return;
 			currentElementProp = { randomChoices:r }
@@ -2634,7 +2637,7 @@ SEEDRISE: function(pixel) {
 "image": {
 	color: ["#78bbff","#5bb81a"],
 	onShiftSelect: function(element) {
-		promptInput("Enter an element to make up the image.", function(r) {
+		promptInput(langKey("gui.prompt.imageElement","Enter an element to make up the image."), function(r) {
 			r = validateElementList(r);
 			if (!r) return;
 			currentElementProp = { imageelem:r }
@@ -2949,7 +2952,7 @@ SEEDRISE: function(pixel) {
 "void": {
 	color: "#262626",
 	onShiftSelect: function(element) {
-		promptInput("Enter an element to allow. Enter multiple separated by commas.", function(r) {
+		promptInput(langKey("gui.prompt.allowElements","Enter an element to allow. Enter multiple separated by commas."), function(r) {
 			r = validateElementList(r);
 			if (!r) return;
 			currentElementProp = { filter:r }
@@ -3934,7 +3937,7 @@ SEEDRISE: function(pixel) {
 		}
 		doDefaults(pixel);
 	},
-	hoverStat: function(pixel) { return pixel.bees.length + "bee" },
+	hoverStat: function(pixel) { return langKey("guitemplate.hover.beeCount","$1 bees",{1:pixel.bees.length}) },
 	properties: {
 		bees: [],
 		hive: 0,
@@ -4838,10 +4841,10 @@ SEEDRISE: function(pixel) {
 	category: "machines",
 	conduct: 0.73
 },
-"pipe": {
+	"pipe": {
 	color: "#414c4f",
 	onSelect: function() {
-		logMessage("Draw a pipe, wait for walls to appear, then erase the exit hole.");
+		logMessage(langKey("gui.log.pipeInstructions","Draw a pipe, wait for walls to appear, then erase the exit hole."));
 	},
 	onMix: function(pixel) {
 		if (!pixel.con) return;
@@ -4987,7 +4990,7 @@ SEEDRISE: function(pixel) {
 		"LD"
 	],
 	onShiftSelect: function(element) {
-		promptInput("Enter an element to allow. Enter multiple separated by commas.", function(r) {
+		promptInput(langKey("gui.prompt.allowElements","Enter an element to allow. Enter multiple separated by commas."), function(r) {
 			r = validateElementList(r);
 			if (!r) return;
 			currentElementProp = { filter:r }
@@ -5086,7 +5089,7 @@ SEEDRISE: function(pixel) {
 		}
 
 	},
-	hoverStat: function(pixel) { return pixel.filter ? pixel.filter.toUpperCase() : "NONE" },
+	hoverStat: function(pixel) { return pixel.filter ? pixel.filter.toUpperCase() : langKey("gui.info.none","None") },
 	category: "machines",
 	movable: false,
 	canContain: true,
@@ -5217,7 +5220,7 @@ SEEDRISE: function(pixel) {
 "fuse": {
 	color: "#825d38",
 	onShiftSelect: function(element) {
-		promptInput("Enter an element to turn into once charged.", function(r) {
+		promptInput(langKey("gui.prompt.chargedElement","Enter an element to turn into once charged."), function(r) {
 			r = validateElementList(r);
 			if (!r) return;
 			currentElementProp = { clone:r }
@@ -11599,11 +11602,11 @@ SEEDRISE: function(pixel) {
 "portal_in": {
 	color: "#ff9a00",
 	onShiftSelect: function(element) {
-		promptInput("Enter a number to use as the portal channel. (Default 0)", function(r) {
+		promptInput(langKey("gui.prompt.portalChannel","Enter a number to use as the portal channel. (Default 0)"), function(r) {
 			if (r === "") return;
 			r = parseInt(r);
 			if (isNaN(r)) {
-				logMessage("Invalid integer - portal channel not set.")
+				logMessage(langKey("gui.log.invalidPortalChannel","Invalid integer - portal channel not set."))
 				return;
 			};
 			currentElementProp = { channel:r }
@@ -11722,11 +11725,11 @@ SEEDRISE: function(pixel) {
 "portal_out": {
 	color: "#00a2ff",
 	onShiftSelect: function(element) {
-		promptInput("Enter a number to use as the portal channel. (Default 0)", function(r) {
+		promptInput(langKey("gui.prompt.portalChannel","Enter a number to use as the portal channel. (Default 0)"), function(r) {
 			if (r === "") return;
 			r = parseInt(r);
 			if (isNaN(r)) {
-				logMessage("Invalid integer - portal channel not set.")
+				logMessage(langKey("gui.log.invalidPortalChannel","Invalid integer - portal channel not set."))
 				return;
 			};
 			currentElementProp = { channel:r }
@@ -12961,7 +12964,7 @@ SEEDRISE: function(pixel) {
 	color: ["#ffb48f","#ffd991","#ffad91"],
 	behavior: behaviors.WALL,
 	onShiftSelect: function(element) {
-		promptInput("Enter a radius from 1 to 100. (Default 10)", function(r) {
+		promptInput(langKey("gui.prompt.radius","Enter a radius from 1 to 100. (Default 10)"), function(r) {
 			if (!r) return;
 			r = parseInt(r);
 			if (isNaN(r)) return;
@@ -13984,7 +13987,7 @@ SEEDRISE: function(pixel) {
 	tool: function(pixel) {
 		mouseIsDown = false;
 		if (shiftDown) { toggleShift() }
-		var output = pixel.element.toUpperCase()+" at x"+pixel.x+", y"+pixel.y+", tick"+pixelTicks+"\n\n";
+		var output = langKey("guitemplate.debug.pixelHeader","$1 at x$2, y$3, tick $4",{1:infoDisplayName(pixel.element),2:pixel.x,3:pixel.y,4:pixelTicks})+"\n\n";
 		for (var i in pixel) {
 			if (i !== "x" && i !== "y" && i !== "element") {
 				output += "  " + i + ": " + pixel[i] + "\n";
@@ -14001,10 +14004,10 @@ SEEDRISE: function(pixel) {
 "prop": {
 	color: ["#d46f50","#d4aa50"],
 	onSelect: function(){
-		promptInput("Warning - This tool may break Sandboxels if used incorrectly. Avoid using if you don't understand.\n\nEnter a pixel attribute to modify:",
+		promptInput(langKey("gui.prompt.modifyProperty","Warning - This tool may break Sandboxels if used incorrectly. Avoid using if you don't understand.\n\nEnter a pixel attribute to modify:"),
 		  (answer1) => {
 			  if (!answer1) { selectElement("unknown"); return }
-			  promptInput("Now, enter a value for "+answer1+":",
+			  promptInput(langKey("guitemplate.prompt.propertyValue","Now, enter a value for $1:",{1:answer1}),
 				(answer2) => {
 					if (!answer2) { selectElement("unknown"); return }
 					var valueL = answer2.toLowerCase();
@@ -14023,8 +14026,8 @@ SEEDRISE: function(pixel) {
 					if (!isNaN(num)) { answer2 = num }
 					else if (valueL === "nan") { answer2 = NaN }
 					currentPropValue = answer2;
-					logMessage("Prop: "+currentProp);
-					logMessage("Value: "+currentPropValue);
+					logMessage(langKey("guitemplate.log.property","Property: $1",{1:currentProp}));
+					logMessage(langKey("guitemplate.log.value","Value: $1",{1:currentPropValue}));
 				},
 				"Enter Value",currentPropValue
 			  )
@@ -14041,7 +14044,13 @@ SEEDRISE: function(pixel) {
 			currentPropValue = !!currentPropValue;
 		}
 		if (currentPropValue !== null && currentPropValue !== undefined && pixel[currentProp] !== null && pixel[currentProp] !== undefined && typeof pixel[currentProp] !== typeof currentPropValue) {
-			logMessage("Error: "+currentProp+" type is "+typeof pixel[currentProp]+", not "+typeof currentPropValue+".");
+			const existingType = typeof pixel[currentProp];
+			const requestedType = typeof currentPropValue;
+			logMessage(langKey("guitemplate.log.propertyTypeMismatch","Error: $1 type is $2, not $3.",{
+				1:currentProp,
+				2:langKey("valueType."+existingType,existingType),
+				3:langKey("valueType."+requestedType,requestedType)
+			}));
 			currentProp = null;
 			currentPropValue = null;
 			selectElement("unknown");
@@ -14066,7 +14075,7 @@ SEEDRISE: function(pixel) {
 				tryMove(pixel,coords.x,coords.y);
 			}
 			else {
-				logMessage("Cannot move pixel")
+				logMessage(langKey("gui.log.cannotMovePixel","Cannot move pixel"))
 			}
 			return;
 		}
@@ -14185,6 +14194,10 @@ function renderEachPixel(callback) {
 renderPostPixelList = [];
 function renderPostPixel(callback) {
 	renderPostPixelList.push(callback);
+}
+renderMidPixelList = [];
+function renderMidPixel(callback) {
+	renderMidPixelList.push(callback);
 }
 renderPrePixelList = [];
 function renderPrePixel(callback) {
@@ -14341,7 +14354,7 @@ keybinds["KeyH"] = ()=>{ // Hide rendering
 	hiding = !hiding;
 	var loadingP = document.getElementById("loadingP");
 	if (hiding) {
-		loadingP.innerHTML = "Canvas is hidden. Press H to unhide"
+		loadingP.innerHTML = langKey("gui.canvasHidden","Canvas is hidden. Press H to unhide")
 		loadingP.style.display = "block";
 		document.getElementById("canvasDiv").style.display = "none";
 	}
@@ -14504,17 +14517,33 @@ else if (!standalone && settings.lang !== null) {
 	catch (e) {}
 }
 // langCode = "test";
+function loadLanguageFile(url) {
+	const request = new XMLHttpRequest();
+	request.open("GET",url,false);
+	request.send(null);
+	if (!request.responseText || (request.status && (request.status < 200 || request.status >= 300))) {
+		throw new Error("Language request failed with status " + request.status);
+	}
+	return JSON.parse(request.responseText);
+}
 if (langCode) {
-	try {
-		var Httpreq = new XMLHttpRequest();
-		Httpreq.open("GET","https://sandboxels.r74n.com/lang/"+langCode+".json",false);
-		Httpreq.send(null);
+	if (!/^[a-z0-9_]+$/i.test(langCode)) langCode = null;
+	let languageLoaded = false;
+	const languageUrls = langCode ? [
+		"lang/"+encodeURIComponent(langCode)+".json",
+		"https://sandboxels.r74n.com/lang/"+encodeURIComponent(langCode)+".json"
+	] : [];
+	for (let languageUrl of languageUrls) {
 		try {
-			lang = JSON.parse(Httpreq.responseText.replace(/\\"/g,""));
+			lang = loadLanguageFile(languageUrl);
+			languageLoaded = true;
+			break;
 		}
 		catch (e) {
-			console.log(langCode+" Translation Error: "+e);
+			console.log(langCode+" Translation Error ("+languageUrl+"): "+e);
 		}
+	}
+	if (languageLoaded) {
 		// lang = {
 		//	 "gui.pauseButton": "STOPPPPPPPPPP",
 		//	 "gui.pauseButton.title": "STOP",
@@ -14530,7 +14559,10 @@ if (langCode) {
 			document.head.appendChild(style);
 		}
 	}
-	catch { langCode = null }
+	else {
+		lang = {};
+		langCode = null;
+	}
 }
 function langKey(key,fallback,template) {
 	if (template !== undefined) {
@@ -14679,11 +14711,16 @@ function langKey(key,fallback,template) {
 		function isLockedOverlapElement(element) {
 			return element === "civ_tunnel";
 		}
+		function isBuildingTunnelPair(firstElement,secondElement) {
+			return (firstElement === "civ_tunnel" && elementFlag(secondElement,"isBuildingCore")) ||
+				(secondElement === "civ_tunnel" && elementFlag(firstElement,"isBuildingCore"));
+		}
 		function isCivilizedHumanElement(element) {
 			return element === "civ_body" || element === "civ_head" || element === "civ_child";
 		}
 		function defaultElementsCanOverlap(firstElement,secondElement) {
 			if (!firstElement || !secondElement || !elements[firstElement] || !elements[secondElement]) return false;
+			if (isBuildingTunnelPair(firstElement,secondElement)) return false;
 			if (isLockedOverlapElement(firstElement) || isLockedOverlapElement(secondElement)) return true;
 			const firstBuilding = elementFlag(firstElement,"isBuildingCore");
 			const secondBuilding = elementFlag(secondElement,"isBuildingCore");
@@ -14709,6 +14746,11 @@ function langKey(key,fallback,template) {
 			if (!firstElement || !secondElement) return false;
 			const first = ensureElementOverlapEntry(firstElement);
 			const second = ensureElementOverlapEntry(secondElement);
+			if (elements[firstElement] && elements[secondElement] && isBuildingTunnelPair(firstElement,secondElement)) {
+				first.delete(secondElement);
+				second.delete(firstElement);
+				return false;
+			}
 			if (!allowed && elements[firstElement] && elements[secondElement] && (isLockedOverlapElement(firstElement) || isLockedOverlapElement(secondElement))) {
 				first.add(secondElement);
 				second.add(firstElement);
@@ -14744,7 +14786,8 @@ function langKey(key,fallback,template) {
 		function getElementOverlapDirectory(element) {
 			initializeElementOverlapCatalog();
 			Object.keys(elements).forEach(other => {
-				if (isLockedOverlapElement(element) || isLockedOverlapElement(other)) setCatalogPair(element,other,true);
+				if (isBuildingTunnelPair(element,other)) setCatalogPair(element,other,false);
+				else if (isLockedOverlapElement(element) || isLockedOverlapElement(other)) setCatalogPair(element,other,true);
 			});
 			return Array.from(ensureElementOverlapEntry(element)).sort();
 		}
@@ -14790,6 +14833,7 @@ function pixelFlag(pixel,flag) {
 		}
 		function pixelsCanOverlap(first,second) {
 			if (!first || !second || first === second) return true;
+			if (isBuildingTunnelPair(first.element,second.element)) return false;
 			if (isLockedOverlapElement(first.element) || isLockedOverlapElement(second.element)) return true;
 			if ((isCivilizedHumanPixel(first) && isCivilizationCollectiblePixel(second)) || (isCivilizedHumanPixel(second) && isCivilizationCollectiblePixel(first))) return true;
 			initializeElementOverlapCatalog();
@@ -15004,8 +15048,9 @@ function pixelFlag(pixel,flag) {
 		function attachPixelToGrid(pixel,x,y,forceOverlay=false,allowLegacyExclusiveConflict=false) {
 			if (outOfBounds(x,y)) return false;
 			const conflict = getInteractionConflictAt(pixel,x,y,pixel._r);
-			const legacyBaseConflict = conflict && conflict === pixelMap[x][y] && pixelFlag(pixel,"alwaysOverlay") && interactionRenderLayer(pixel) === "default" && interactionOverlapMode(pixel) !== "block" && interactionOverlapMode(conflict) !== "block";
-			if (conflict && !legacyBaseConflict && !(allowLegacyExclusiveConflict && getOverlayExclusiveGroup(pixel) && getOverlayExclusiveGroup(conflict) === getOverlayExclusiveGroup(pixel))) return false;
+			const legacyBaseConflict = conflict && conflict === pixelMap[x][y] && !isBuildingTunnelPair(pixel.element,conflict.element) && pixelFlag(pixel,"alwaysOverlay") && interactionRenderLayer(pixel) === "default" && interactionOverlapMode(pixel) !== "block" && interactionOverlapMode(conflict) !== "block";
+			const legacyBuildingTunnelConflict = allowLegacyExclusiveConflict && conflict && isBuildingTunnelPair(pixel.element,conflict.element);
+			if (conflict && !legacyBaseConflict && !legacyBuildingTunnelConflict && !(allowLegacyExclusiveConflict && getOverlayExclusiveGroup(pixel) && getOverlayExclusiveGroup(conflict) === getOverlayExclusiveGroup(pixel))) return false;
 			if (forceOverlay || requiresOverlayStoragePixel(pixel)) {
 				return addPixelToOverlap(pixel,x,y);
 			}
@@ -15328,7 +15373,7 @@ function pixelFlag(pixel,flag) {
 			const targetBase = pixelMap[x][y];
 			const overlayStorage = requiresOverlayStoragePixel(newPixel);
 			if (getExclusiveOverlayConflict(newPixel,x,y)) return null;
-			const legacyBaseConflict = targetBase && pixelFlag(newPixel,"alwaysOverlay") && interactionRenderLayer(newPixel) === "default" && interactionOverlapMode(newPixel) !== "block" && interactionOverlapMode(targetBase) !== "block";
+			const legacyBaseConflict = targetBase && !isBuildingTunnelPair(newPixel.element,targetBase.element) && pixelFlag(newPixel,"alwaysOverlay") && interactionRenderLayer(newPixel) === "default" && interactionOverlapMode(newPixel) !== "block" && interactionOverlapMode(targetBase) !== "block";
 			if (!legacyBaseConflict && !canPixelShareCell(newPixel,x,y)) return null;
 			if (!attachPixelToGrid(newPixel,x,y,overlayStorage || !!targetBase)) return null;
 			currentPixels.push(newPixel);
@@ -17443,26 +17488,26 @@ behaviorRules = {
 				pixel.temp = 10;
 			},
 		}
-		function loadSave(saveJSON, confirmed=0, skip=0) {
-			if (!saveJSON.pixelMap) { return }
-			var compressedMap = saveJSON.pixelMap;
-			if (!compressedMap) {
-				promptText("Invalid save file - missing pixelMap.", undefined, "Error"); return;
-			}
+			function loadSave(saveJSON, confirmed=0, skip=0) {
+				if (!saveJSON || !saveJSON.pixelMap) {
+					promptText(langKey("gui.prompt.invalidSaveMissingMap","Invalid save file - missing pixelMap."), undefined, "Error"); return;
+				}
+				var compressedMap = saveJSON.pixelMap;
 			var saveConfig = saveJSON.saveConfig || {};
 			var savePixelSize = parseInt(saveConfig.pixelSize)||6;
-			var version = parseInt(saveJSON.meta.saveVersion.split("sb")[1]);
+			var versionString = saveJSON.meta && saveJSON.meta.saveVersion;
+			var version = versionString ? parseInt(versionString.split("sb")[1]) : NaN;
 			if (!confirmed) {
 				if (version < 1 || !version) {
-					promptConfirm("This save was made in an unknown version of Sandboxels, and may not load correctly.", (r)=>{ if (!r) return; loadSave(saveJSON,1,skip) }, "Warning");
+					promptConfirm(langKey("gui.prompt.unknownSaveVersion","This save was made in an unknown version of Sandboxels, and may not load correctly."), (r)=>{ if (!r) return; loadSave(saveJSON,1,skip) }, "Warning");
 					return;
 				}
 				else if (version > saveVersion) {
-					promptConfirm("This save was made in a newer version of Sandboxels, and may not load correctly. Please use the latest version.", (r)=>{ if (!r) return; loadSave(saveJSON,1,skip) }, "Warning");
+					promptConfirm(langKey("gui.prompt.newerSaveVersion","This save was made in a newer version of Sandboxels, and may not load correctly. Please use the latest version."), (r)=>{ if (!r) return; loadSave(saveJSON,1,skip) }, "Warning");
 					return;
 				}
 				if (confirmed < 2 && saveConfig.height*saveConfig.width >= 1000000) {
-					promptConfirm("This save is very large. Are you sure you want to load it?", (r)=>{ if (!r) return; loadSave(saveJSON,2,skip) }, "Warning");
+					promptConfirm(langKey("gui.prompt.largeSave","This save is very large. Are you sure you want to load it?"), (r)=>{ if (!r) return; loadSave(saveJSON,2,skip) }, "Warning");
 					return;
 				}
 			}
@@ -17470,7 +17515,7 @@ behaviorRules = {
 				if (confirmed < 3) {
 					for (var i = 0; i < saveConfig.mods.length; i++) {
 						if (!modIsEnabled(saveConfig.mods[i])) {
-							promptConfirm("Install included mods for this save? Only continue if you trust this file's source. They may or may not be necessary.\n\n"+saveConfig.mods.join("\n"), (r)=>{ if (!r) loadSave(saveJSON,confirmed,3); else loadSave(saveJSON,3,skip); }, "Warning");
+							promptConfirm(langKey("gui.prompt.installSaveMods","Install included mods for this save? Only continue if you trust this file's source. They may or may not be necessary.")+"\n\n"+saveConfig.mods.join("\n"), (r)=>{ if (!r) loadSave(saveJSON,confirmed,3); else loadSave(saveJSON,3,skip); }, "Warning");
 							return;
 						}
 					}
@@ -17609,8 +17654,8 @@ behaviorRules = {
 				"loopY":saveConfig.loopY,
 				"oldTps":oldTps
 			}
-			if (saveJSON.meta.author) {
-				logMessage("Created by "+saveJSON.meta.author);
+				if (saveJSON.meta.author) {
+				logMessage(langKey("guitemplate.log.createdBy","Created by $1",{1:saveJSON.meta.author}));
 			}
 			if (showingMenu) closeMenu();
 			return pixelarray;
@@ -17918,7 +17963,7 @@ behaviorRules = {
 			}
 			if (paused || pixelTicks !== lastPixelDraw) {
 				if (!drawPixels() && !paused) {
-					logMessage("One or more of your mods are outdated and cannot render properly.");
+					logMessage(langKey("gui.log.outdatedMods","One or more of your mods are outdated and cannot render properly."));
 					paused = true;
 					manualPaused = true;
 					checkPause();
@@ -18277,6 +18322,13 @@ behaviorRules = {
 			// Draw the current pixels
 			if (!hiding) {
 				let pixelDrawList = pixelsUnderlay.concat(pixelsFirst,pixelsOverlay,pixelsLast);
+				let pixelsBelowBuildings = [];
+				let pixelsAboveBuildings = [];
+				for (let i = 0; i < pixelDrawList.length; i++) {
+					const pixel = pixelDrawList[i];
+					if (isPassableVegetationPixel(pixel) || isCreaturePixel(pixel)) pixelsAboveBuildings.push(pixel);
+					else pixelsBelowBuildings.push(pixel);
+				}
 				if (!viewInfo[view]) {
 					setView(1);
 				}
@@ -18288,9 +18340,10 @@ behaviorRules = {
 				if (viewInfo[view].pre) {
 					viewInfo[view].pre(ctx);
 				}
-				if (viewInfo[view].pixel) {
-					for (let i = 0; i < pixelDrawList.length; i++) {
-						let pixel = pixelDrawList[i];
+				const drawPixelLayer = function(drawList) {
+					if (!viewInfo[view].pixel) return;
+					for (let i = 0; i < drawList.length; i++) {
+						let pixel = drawList[i];
 						if (!isPixelStored(pixel) && !(pixelMap[pixel.x] && pixelMap[pixel.x][pixel.y] && pixelMap[pixel.x][pixel.y].con === pixel)) {continue}
 						if (pixel.con) { pixel = pixel.con }
 						if (elements[pixel.element].renderer && (settings.textures !== 0 || viewInfo[view].fancy === false)) {
@@ -18305,7 +18358,14 @@ behaviorRules = {
 							}
 						}
 					}
+				};
+				drawPixelLayer(pixelsBelowBuildings);
+				if (renderMidPixelList.length) {
+					for (let i = 0; i < renderMidPixelList.length; i++) {
+						renderMidPixelList[i](ctx);
+					}
 				}
+				drawPixelLayer(pixelsAboveBuildings);
 				if (renderPostPixelList.length) {
 					for (let i = 0; i < renderPostPixelList.length; i++) {
 						renderPostPixelList[i](ctx);
@@ -18782,7 +18842,7 @@ behaviorRules = {
 				closeMenu();
 				return;
 			}
-			promptInput("Enter the element's ID or name.",
+				promptInput(langKey("gui.prompt.selectElement","Enter the element's ID or name."),
 				(e) => {
 					if (!e) { return; }
 					// replace spaces with underscores
@@ -18802,7 +18862,7 @@ behaviorRules = {
 						}
 					}
 					else {
-						logMessage("Element \"" + e + "\" not found");
+						logMessage(langKey("guitemplate.log.elementNotFound","Element \"$1\" not found",{1:e}));
 					}
 					focusGame();
 				},
@@ -18852,13 +18912,13 @@ behaviorRules = {
 			if (promptState) { pause = promptState.wasPaused }
 			else if (paused) { pause = true }
 			promptState = {
-				text: "Are you sure you want to clear the whole scene?",
+					text: langKey("gui.prompt.clearCanvas","Are you sure you want to clear the whole scene?"),
 				title: "Clear Canvas",
 				handler: (r) => {
 					if (r) resetPrompt(true);
 					focusGame();
 				},
-				html: (standalone || !isOnSite) ? null : `<br><br><p style="text-align:center"><input id="playlightButton" class="button" type="button" onclick="loadPlaylight();" value="Play More Games" style=""></input></p>`,
+					html: (standalone || !isOnSite) ? null : `<br><br><p style="text-align:center"><input id="playlightButton" class="button" type="button" onclick="loadPlaylight();" value="${langKey("gui.playMoreGames","Play More Games")}" style=""></input></p>`,
 				type: "confirm",
 				wasPaused: pause
 			}
@@ -18894,13 +18954,13 @@ behaviorRules = {
 			}
 			return closest;
 		}
-		function updateSpeedButton() {
-			const speedButton = document.getElementById("speedButton");
-			if (!speedButton) return;
-			const multiplier = tps/30;
-			speedButton.textContent = (Number.isInteger(multiplier) ? multiplier : multiplier.toFixed(1))+"×";
-			speedButton.title = "Simulation speed target: "+tps+" TPS; actual: "+simulationActualTPS.toFixed(1)+" TPS";
-		}
+			function updateSpeedButton() {
+				const speedButton = document.getElementById("speedButton");
+				if (!speedButton) return;
+				const multiplier = tps/30;
+				speedButton.textContent = (Number.isInteger(multiplier) ? multiplier : multiplier.toFixed(1))+"×";
+				speedButton.title = langKey("guitemplate.speedButton.title","Simulation speed target: $1 TPS; actual: $2 TPS",{1:tps,2:simulationActualTPS.toFixed(1)});
+			}
 		function setTPS(newtps) {
 			tps = Math.max(1,Math.min(MAX_TPS,parseInt(newtps) || 30));
 			resetInterval(tps);
@@ -18920,20 +18980,20 @@ behaviorRules = {
 			focusGame();
 		}
 		function tpsPrompt() {
-			promptInput("Enter the new simulation Ticks Per Second (TPS) between 1 and 150. This is how many updates per second the simulation will run.\n\nThe default is 30.\n\nThe current TPS is " + tps + ".",
+				promptInput(langKey("guitemplate.prompt.changeTps","Enter the new simulation Ticks Per Second (TPS) between 1 and 150. This is how many updates per second the simulation will run.\n\nThe default is 30.\n\nThe current TPS is $1.",{1:tps}),
 				(r) => {
 					var newtps = parseInt(r);
 					if (r !== null) {
-						if (isNaN(newtps) || newtps == "") logMessage("You did not enter a valid TPS.");
+							if (isNaN(newtps) || newtps == "") logMessage(langKey("gui.log.invalidTps","You did not enter a valid TPS."));
 						else if (newtps > MAX_TPS) {
-							logMessage("You entered a TPS that is too high. The TPS will be set to the maximum, "+MAX_TPS+".");
+								logMessage(langKey("guitemplate.log.tpsTooHigh","You entered a TPS that is too high. The TPS will be set to the maximum, $1.",{1:MAX_TPS}));
 							tps = MAX_TPS;
 							delete currentSaveData.oldTps;
 						}
 						else {
 							newtps = parseInt(newtps);
 							if (isNaN(newtps) || newtps <= 0) {
-								logMessage("You did not enter a valid TPS.");
+									logMessage(langKey("gui.log.invalidTps","You did not enter a valid TPS."));
 							}
 							else {
 								tps = newtps;
@@ -18986,8 +19046,8 @@ behaviorRules = {
 			if (showingMenu == "prompt") {
 				closeMenu();
 			}
-			if (elements[element].locked === true) {
-				logMessage("This element is locked.");
+				if (elements[element].locked === true) {
+				logMessage(langKey("gui.log.elementLocked","This element is locked."));
 				return;
 			}
 			if (elements[currentElement].onUnselect) {
@@ -19154,6 +19214,115 @@ behaviorRules = {
 			if (string === "null" || string === "air") return "unknown";
 			return elements[string] ? string : "unknown";
 		}
+		const CIVILIZATION_PALETTE_ELEMENTS = new Set([
+			"civilized_human",
+			"dirt", "mud", "clay_soil", "mulch", "grass", "sand", "wet_sand", "clay", "mycelium",
+			"rock", "gravel", "limestone", "basalt",
+			"wood", "tree_branch", "evergreen", "bamboo",
+			"sapling", "pinecone", "bamboo_plant",
+			"copper", "iron", "iron_ore",
+			"water", "salt_water", "dirty_water",
+			"fire", "torch",
+			"erase", "drag", "pick", "lookup"
+		]);
+		const CIVILIZATION_PALETTE_EXCLUDED_ELEMENTS = new Set(["tin", "civ_tin_resource"]);
+		function normalizeElementPaletteMode(mode) {
+			return mode === "laboratory" ? "laboratory" : "civilization";
+		}
+		function getElementPaletteMode() {
+			return normalizeElementPaletteMode(settings && settings.elementPaletteMode);
+		}
+		function isCivilizationPaletteElement(element) {
+			const info = elements[element];
+			if (!info || CIVILIZATION_PALETTE_EXCLUDED_ELEMENTS.has(element) || info.civilizationRelevant === false) return false;
+			if (info.civilizationRelevant === true || CIVILIZATION_PALETTE_ELEMENTS.has(element)) return true;
+			if (info.isFood === true || info.humanCollectible === true) return true;
+			return info.category === "civilization" && info.hidden !== true;
+		}
+		function isElementVisibleInPaletteMode(element, mode) {
+			return normalizeElementPaletteMode(mode === undefined ? getElementPaletteMode() : mode) === "laboratory" || isCivilizationPaletteElement(element);
+		}
+		function applyElementPaletteButtonVisibility(button, element) {
+			if (!button) return false;
+			const visible = isElementVisibleInPaletteMode(element || button.getAttribute("element"));
+			button.style.display = visible ? "" : "none";
+			button.setAttribute("aria-hidden", visible ? "false" : "true");
+			return visible;
+		}
+		function paletteElementButtons() {
+			return Array.from(document.querySelectorAll("#category-tools .elementButton[element], #category-edit .elementButton[element], #elementControls .elementButton[element]"));
+		}
+		function firstVisiblePaletteElementButton(preferredElement) {
+			if (preferredElement) {
+				const preferred = document.getElementById("elementButton-" + preferredElement);
+				if (preferred && preferred.style.display !== "none") return preferred;
+			}
+			const buttons = paletteElementButtons();
+			for (let i = 0; i < buttons.length; i++) {
+				if (buttons[i].style.display !== "none") return buttons[i];
+			}
+			return null;
+		}
+		function firstVisiblePaletteCategoryButton() {
+			const buttons = document.querySelectorAll("#categoryControls .categoryButton");
+			for (let i = 0; i < buttons.length; i++) {
+				if (buttons[i].style.display !== "none") return buttons[i];
+			}
+			return null;
+		}
+		function refreshElementPaletteVisibility(ensureSelection) {
+			const buttons = paletteElementButtons();
+			for (let i = 0; i < buttons.length; i++) applyElementPaletteButtonVisibility(buttons[i]);
+
+			const categoryDivs = document.querySelectorAll("#elementControls .category");
+			for (let i = 0; i < categoryDivs.length; i++) {
+				const categoryDiv = categoryDivs[i];
+				const category = categoryDiv.getAttribute("category");
+				const categoryElements = categoryDiv.getElementsByClassName("elementButton");
+				let hasVisibleElement = false;
+				for (let j = 0; j < categoryElements.length; j++) {
+					if (categoryElements[j].getAttribute("element") && categoryElements[j].style.display !== "none") {
+						hasVisibleElement = true;
+						break;
+					}
+				}
+				const categoryButton = document.getElementById("categoryButton-" + category);
+				if (categoryButton) {
+					categoryButton.style.display = hasVisibleElement ? "" : "none";
+					categoryButton.setAttribute("aria-hidden", hasVisibleElement ? "false" : "true");
+				}
+				if (!hasVisibleElement) categoryDiv.style.display = "none";
+			}
+
+			const editButton = document.getElementById("editModeButton");
+			if (editButton) editButton.style.display = getElementPaletteMode() === "civilization" ? "none" : "";
+			if (getElementPaletteMode() === "civilization" && typeof editMode !== "undefined" && editMode) toggleEditMode();
+			if (ensureSelection === false || typeof currentElement === "undefined") return;
+
+			let currentButton = document.getElementById("elementButton-" + currentElement);
+			if (!currentButton || currentButton.style.display === "none") {
+				currentButton = firstVisiblePaletteElementButton(getElementPaletteMode() === "civilization" ? "civilized_human" : null);
+				if (!currentButton) return;
+				selectElement(currentButton.getAttribute("element"));
+			}
+			const category = elements[currentElement] && elements[currentElement].category;
+			const categoryButton = category && document.getElementById("categoryButton-" + category);
+			const activeCategory = document.querySelector("#categoryControls .categoryButton[current='true']");
+			if (categoryButton && categoryButton.style.display !== "none" && (!activeCategory || activeCategory !== categoryButton)) selectCategory(category);
+			else if (activeCategory && activeCategory.style.display === "none") {
+				const fallbackCategory = firstVisiblePaletteCategoryButton();
+				if (fallbackCategory) fallbackCategory.click();
+			}
+		}
+		function setElementPaletteMode(mode) {
+			const normalized = normalizeElementPaletteMode(mode);
+			settings.elementPaletteMode = normalized;
+			const select = document.getElementById("elementPaletteModeSelect");
+			if (select) select.value = normalized;
+			saveSettings();
+			refreshElementPaletteVisibility(true);
+			return normalized;
+		}
 		function createElementButton(element) {
 			var button = document.createElement("button");
 			// if the element has the attribute "name", use that as the button's text, otherwise use the element with underscores replaced by spaces
@@ -19227,6 +19396,7 @@ behaviorRules = {
 				categoryDiv.style.display = "none";
 			}
 			categoryDiv.appendChild(button);
+			applyElementPaletteButtonVisibility(button, element);
 		}
 		function createCategoryDiv(category) {
 			categoryButton = document.createElement("button");
@@ -19249,13 +19419,16 @@ behaviorRules = {
 				settings.unlocked[element] = true;
 				if (settings.unhide === 2) {
 					createElementButton(element);
+					refreshElementPaletteVisibility(false);
 					var categoryButton = document.querySelector(".categoryButton[current='true']");
-					var currentCategory = categoryButton.getAttribute("category");
-					if (currentCategory !== elements[element].category) {
-						document.getElementById("categoryButton-"+elements[element].category).classList.add("notify");
+					var currentCategory = categoryButton && categoryButton.getAttribute("category");
+					var unlockedButton = document.getElementById("elementButton-"+element);
+					var unlockedCategoryButton = document.getElementById("categoryButton-"+elements[element].category);
+					if (unlockedButton && unlockedButton.style.display !== "none" && currentCategory !== elements[element].category && unlockedCategoryButton) {
+						unlockedCategoryButton.classList.add("notify");
 					}
 					// add notify to the elementButton of the element
-					document.getElementById("elementButton-"+element).classList.add("notify");
+					if (unlockedButton && unlockedButton.style.display !== "none") unlockedButton.classList.add("notify");
 					hiddenCount--;
 					document.getElementById("hiddenCount").innerText = hiddenCount;
 				}
@@ -19452,21 +19625,22 @@ behaviorRules = {
 			4: "[ A]"
 		}
 		// Update stats
-		function updateStats() {
-			var statsDiv = document.getElementById("stats");
-			var stats = "<span id='stat-pos' class='stat'>x"+mousePos.x+",y"+mousePos.y+"</span>";
-			stats += "<span id='stat-pixels' class='stat"+ (currentPixels.length >= Math.min(maxPixelCount,(height+1)*(width+1)) ? " redText" : "") +"'>Pxls:" + currentPixels.length+"</span>";
-			stats += "<span id='stat-tps' class='stat'>" + tps+"tps</span>";
-			stats += "<span id='stat-ticks' class='stat'>" + pixelTicks+"</span>";
+				function updateStats() {
+					var statsDiv = document.getElementById("stats");
+					const statsColon = langKey("gui.info.colon",":");
+					var stats = "<span id='stat-pos' class='stat'>"+langKey("gui.stats.pos","Pos")+statsColon+"x"+mousePos.x+",y"+mousePos.y+"</span>";
+					stats += "<span id='stat-pixels' class='stat"+ (currentPixels.length >= Math.min(maxPixelCount,(height+1)*(width+1)) ? " redText" : "") +"'>"+langKey("gui.stats.pixels","Pixels")+statsColon + currentPixels.length+"</span>";
+					stats += "<span id='stat-tps' class='stat'>"+langKey("gui.stats.speed","Speed")+statsColon + tps+"</span>";
+					stats += "<span id='stat-ticks' class='stat'>"+langKey("gui.stats.ticks","Ticks")+statsColon + pixelTicks+"</span>";
 			if ((typeof pixelMap).length === 9) { return; }
 			if (pixelMap[mousePos.x] !== undefined) {
 				const hoveredPixels = getPixelsAt(mousePos.x,mousePos.y);
 				var currentPixel = hoveredPixels.length ? hoveredPixels[hoveredPixels.length-1] : undefined;
 				if (currentPixel !== undefined) {
-					stats += "<span id='stat-element' class='stat'>"+langKey("gui.stats.elem","Elem")+":<span>"+(elements[currentPixel.element].name || currentPixel.element).toUpperCase()+"</span></span>";
-					stats += "<span id='stat-temperature' class='stat'>"+langKey("gui.stats.temp","Temp")+":"+formatTemp(currentPixel.temp)+"</span>";
-					if (currentPixel.charge) {
-						stats += "<span id='stat-charge' class='stat'>C"+parseFloat(currentPixel.charge)+"</span>";
+						stats += "<span id='stat-element' class='stat'>"+langKey("gui.stats.elem","Elem")+statsColon+"<span>"+infoDisplayName(currentPixel.element).toUpperCase()+"</span></span>";
+						stats += "<span id='stat-temperature' class='stat'>"+langKey("gui.stats.temp","Temp")+statsColon+formatTemp(currentPixel.temp)+"</span>";
+						if (currentPixel.charge) {
+							stats += "<span id='stat-charge' class='stat'>"+langKey("gui.stats.charge","Charge")+statsColon+parseFloat(currentPixel.charge)+"</span>";
 					}
 					if (currentPixel.burning) {
 						stats += "<span id='stat-burning' class='stat'>"+langKey("gui.stats.burning","Burning")+"</span>";
@@ -19478,10 +19652,10 @@ behaviorRules = {
 						stats += "<span id='stat-hover' class='stat'>"+elements[currentElement].toolHoverStat(currentPixel).toString().replaceAll("<","&lt;")+"</span>";
 					}
 					else if (currentPixel.clone) {
-						stats += "<span id='stat-clone' class='stat'>"+currentPixel.clone.toString().toUpperCase().replaceAll("<","&lt;")+"</span>";
-					}
-					else if (currentPixel.con && currentPixel.con.element) {
-						stats += "<span id='stat-clone' class='stat'>"+currentPixel.con.element.toString().toUpperCase().replaceAll("<","&lt;")+"</span>";
+							stats += "<span id='stat-clone' class='stat'>"+infoDisplayList(currentPixel.clone).toUpperCase().replaceAll("<","&lt;")+"</span>";
+						}
+						else if (currentPixel.con && currentPixel.con.element) {
+							stats += "<span id='stat-clone' class='stat'>"+infoDisplayList(currentPixel.con.element).toUpperCase().replaceAll("<","&lt;")+"</span>";
 					}
 				}
 			}
@@ -19490,7 +19664,8 @@ behaviorRules = {
 			}
 			// If the view is not null, show the view in all caps
 			if (view !== null) {
-				stats += "<span id='stat-view' class='stat'>"+(viewInfo[view] ? viewInfo[view].name : view)+"</span>";
+					const viewName = viewInfo[view] ? viewInfo[view].name : view;
+					stats += "<span id='stat-view' class='stat'>"+langKey("view."+viewName,viewName)+"</span>";
 			}
 			statsDiv.innerHTML = stats;
 		}
@@ -19524,31 +19699,46 @@ behaviorRules = {
 			}
 		}
 
-		showingMenu = false;
-		function infoLink(l) {
-			if (l instanceof Array) {
-				var newtext = "";
-				for (var i = 0; i < l.length; i++) {
-					var element = l[i];
-					if (!element) { continue }
-					// add to newtext a span with the element's name and its onclick to showInfo(element)
-					if (element=="pixels" || element=="itself") { newtext += element+", "}
-					else if (!elements[element]) { continue }
-					else { newtext += "<span class='infoLink' onclick='showInfo(\""+element+"\")'>"+(elements[element].name || element).toUpperCase().replace(/_/g," ")+"</span>, ";}
+			showingMenu = false;
+				function infoDisplayName(value) {
+				if (value === null || value === "air") return langKey("gui.info.air","Air");
+				if (value === undefined || value === "[???]") return langKey("gui.info.unknown","[???]");
+				const specialNames = {
+					pixels: langKey("gui.info.pixels","pixels"), itself: langKey("gui.info.itself","itself"), all: langKey("gui.info.all","all"),
+					undiscovered: langKey("gui.info.undiscovered","undiscovered"), discovered: langKey("gui.info.discovered","discovered"), hidden: langKey("gui.info.hidden","hidden")
+				};
+				if (specialNames[value]) return specialNames[value];
+				if (elements[value]) return (lang[value] || elements[value].name || value).replace(/_/g," ");
+					return (lang[value] || value).replace(/_/g," ");
 				}
-				// remove the last comma and space
-				newtext = newtext.substring(0, newtext.length-2);
-				return newtext
+				function infoDisplayList(value) {
+					const values = value instanceof Array ? value : String(value).split(",");
+					return values.map((item) => infoDisplayName(String(item).trim())).join(langKey("gui.info.listSeparator",", "));
+				}
+			function infoLink(l) {
+				if (l instanceof Array) {
+					const links = [];
+					const seen = new Set();
+					for (var i = 0; i < l.length; i++) {
+						var element = l[i];
+						if (!element || seen.has(element)) { continue }
+						seen.add(element);
+						// add to newtext a span with the element's name and its onclick to showInfo(element)
+						if (element=="pixels" || element=="itself") { links.push(infoDisplayName(element)); }
+						else if (!elements[element]) { continue }
+						else { links.push("<span class='infoLink' onclick='showInfo(\""+element+"\")'>"+infoDisplayName(element)+"</span>"); }
+					}
+					return links.join(langKey("gui.info.listSeparator",", "));
 			}
 			else {
-				if (l === null) { return "air" }
-				if (l === undefined) { return "[???]" }
-				if (l=="pixels" || l=="[???]" || l=="itself") {return l}
-				else {return "<span class='infoLink' onclick='showInfo(\""+l+"\")'>"+l.toUpperCase().replace(/_/g," ")+"</span>";}
+				if (l === null || l === undefined || l=="pixels" || l=="[???]" || l=="itself") { return infoDisplayName(l); }
+				else {return "<span class='infoLink' onclick='showInfo(\""+l+"\")'>"+infoDisplayName(l)+"</span>";}
 			}
 		}
-function showInfo(element,back=false) { // this is such a mess please don't look at it
-	paused = true;
+	function showInfo(element,back=false) { // this is such a mess please don't look at it
+		const infoColon = langKey("gui.info.colon",": ");
+		const infoPeriod = langKey("gui.info.period",".");
+		paused = true;
 	checkPause();
 	showingMenu = "info";
 	var infoParent = document.getElementById("infoParent");
@@ -19564,13 +19754,13 @@ function showInfo(element,back=false) { // this is such a mess please don't look
 		infoSearch.value = element.toUpperCase();
 		let info = elements[element];
 		if (info) {
-			infoTitle.innerHTML = info.name || element.replace(/_/g," ");
+					infoTitle.innerHTML = infoDisplayName(element);
 			infoTitle.innerHTML = infoTitle.innerHTML.replace(/\w\S*/g, function(txt){return txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase();});
 			infoText.innerHTML = "";
-			if (info.hidden && !settings.unlocked[element]) { infoText.innerHTML += "\nYou haven't discovered this yet.\n" }
+			if (info.hidden && !settings.unlocked[element]) { infoText.innerHTML += "\n"+langKey("gui.info.notDiscovered","You haven't discovered this yet.")+"\n" }
 			if (info.color) {
 				if (!(info.color instanceof Array)) {
-					infoText.innerHTML += "\nColor: <span style='background-color:"+info.color+"'>	 </span>";
+					infoText.innerHTML += "\n"+langKey("gui.info.color","Color")+infoColon+"<span style='background-color:"+info.color+"'>	 </span>";
 				}
 				else {
 					//gradient
@@ -19580,14 +19770,14 @@ function showInfo(element,back=false) { // this is such a mess please don't look
 						gradientString += ", "+gradient[i]+" "+(i*100/gradient.length)+"%";
 					}
 					gradientString += ")";
-					infoText.innerHTML += "\nColor: <span style='background:"+gradientString+"'>	 </span>";
+					infoText.innerHTML += "\n"+langKey("gui.info.color","Color")+infoColon+"<span style='background:"+gradientString+"'>	 </span>";
 				}
 			}
-			if (info.desc) {
-				infoText.innerHTML += "\n"+info.desc;
-			}
-			else if (info.extraInfo) {
-				infoText.innerHTML += "\n"+info.extraInfo;
+			const translatedDescription = langKey("desc."+element,null);
+			const sourceDescription = translatedDescription || info.desc || info.extraInfo;
+			if (sourceDescription) {
+				const canShowSource = langCode !== "zh_cn" || translatedDescription || /[\u3400-\u9fff]/.test(sourceDescription);
+				infoText.innerHTML += "\n"+(canShowSource ? sourceDescription : langKey("gui.info.noDescription","No translated description is available."));
 			}
 
 			var moves = false;
@@ -19655,48 +19845,46 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 		swaps = swaps.filter(function(item, pos) {return swaps.indexOf(item) == pos;});
 		creates = creates.filter(function(item, pos) {return creates.indexOf(item) == pos;});
 		sticks = sticks.filter(function(item, pos) {return sticks.indexOf(item) == pos;});
-		if ((info.category == "tools" || info.category == "edit" || info.tool) && !info.canPlace) { infoText.innerHTML += "\nTool."}
-		else {
-			if (!moves && info.behavior) { infoText.innerHTML += "\nStationary."; }
-			if (info.category) { infoText.innerHTML += "\nCategory: "+infoLink(info.category)+"."; }
-		if (info.noMix) { infoText.innerHTML += "\nWon't mix without Shift."; }
-		if (info.conduct) { infoText.innerHTML += "\nConducts electricity."; }
-		if (swaps.length > 0) { infoText.innerHTML += "\nMoves through "+infoLink(swaps)+"."; }
-		if (creates.length > 0) { infoText.innerHTML += "\nMakes "+infoLink(creates)+"."; }
-		if (clones) { infoText.innerHTML += "\nClones self." }
-		if (deletes.length > 0) { infoText.innerHTML += "\nDeletes "+infoLink(deletes)+"."; }
-		if (heats) { infoText.innerHTML += "\nHeats pixels." }
-		if (cools) { infoText.innerHTML += "\nCools pixels." }
-		if (sticks.length > 0) { infoText.innerHTML += "\nSticks to "+infoLink(sticks)+"."; }
-		if (explodes) { infoText.innerHTML += "\nExplodes." }
-		if (info.hardness >= 1) { infoText.innerHTML += "\nUnbreakable." }
-		if (settings["unhide"]!==1 && info.hidden) { infoText.innerHTML += "\nHidden by default."; }
-		if (info.density != undefined) { infoText.innerHTML += "\nDensity: "+formatDensity(info.density)+"."; }
-		if (info.tempHigh != undefined) {
-			infoText.innerHTML += "\nTurns into "+infoLink(info.stateHigh)+" above "+formatTemp(info.tempHigh)+".";
-		}
-		if (info.tempLow != undefined) {
-			infoText.innerHTML += "\nTurns into "+infoLink(info.stateLow)+" below "+formatTemp(info.tempLow)+".";
-		}
-		if (info.breakInto === null) {
-			infoText.innerHTML += "\nDisappears when broken.";
-		}
-		else if (info.breakInto != undefined) {
-			infoText.innerHTML += "\nBreaks into "+infoLink(info.breakInto)+".";
-		}
-		else if (info.breakIntoColor != undefined) {
-			infoText.innerHTML += "\nChanges color when broken.";
-		}
-		if (info.burn != undefined) { infoText.innerHTML += "\nFlammability: "+info.burn+"%."; }
-		if (info.burnTime != undefined) {
-			infoText.innerHTML += "\nBurns for "+info.burnTime+" tick";
-			if (info.burnTime != 1) { infoText.innerHTML += "s"; }
-			infoText.innerHTML += ".";
-		}
-		if (info.burnInto) { infoText.innerHTML += "\nBurns into "+infoLink(info.burnInto)+"."; }
+			if ((info.category == "tools" || info.category == "edit" || info.tool) && !info.canPlace) { infoText.innerHTML += "\n"+langKey("gui.info.tool","Tool")+infoPeriod}
+			else {
+				if (!moves && info.behavior) { infoText.innerHTML += "\n"+langKey("gui.info.stationary","Stationary")+infoPeriod; }
+				if (info.category) { infoText.innerHTML += "\n"+langKey("gui.info.category","Category")+infoColon+infoLink(info.category)+infoPeriod; }
+			if (info.noMix) { infoText.innerHTML += "\n"+langKey("gui.info.noMix","Won't mix without Shift")+infoPeriod; }
+			if (info.conduct) { infoText.innerHTML += "\n"+langKey("gui.info.conducts","Conducts electricity")+infoPeriod; }
+			if (swaps.length > 0) { infoText.innerHTML += "\n"+langKey("gui.info.movesThrough","Moves through")+" "+infoLink(swaps)+infoPeriod; }
+			if (creates.length > 0) { infoText.innerHTML += "\n"+langKey("gui.info.makes","Makes")+" "+infoLink(creates)+infoPeriod; }
+			if (clones) { infoText.innerHTML += "\n"+langKey("gui.info.clones","Clones self")+infoPeriod }
+			if (deletes.length > 0) { infoText.innerHTML += "\n"+langKey("gui.info.deletes","Deletes")+" "+infoLink(deletes)+infoPeriod; }
+			if (heats) { infoText.innerHTML += "\n"+langKey("gui.info.heats","Heats pixels")+infoPeriod }
+			if (cools) { infoText.innerHTML += "\n"+langKey("gui.info.cools","Cools pixels")+infoPeriod }
+			if (sticks.length > 0) { infoText.innerHTML += "\n"+langKey("gui.info.sticksTo","Sticks to")+" "+infoLink(sticks)+infoPeriod; }
+			if (explodes) { infoText.innerHTML += "\n"+langKey("gui.info.explodes","Explodes")+infoPeriod }
+			if (info.hardness >= 1) { infoText.innerHTML += "\n"+langKey("gui.info.unbreakable","Unbreakable")+infoPeriod }
+			if (settings["unhide"]!==1 && info.hidden) { infoText.innerHTML += "\n"+langKey("gui.info.hiddenDefault","Hidden by default")+infoPeriod; }
+			if (info.density != undefined) { infoText.innerHTML += "\n"+langKey("gui.info.density","Density")+infoColon+formatDensity(info.density)+infoPeriod; }
+			if (info.tempHigh != undefined) {
+				infoText.innerHTML += "\n"+langKey("guitemplate.info.tempHigh","Turns into $1 above $2.",{1:infoLink(info.stateHigh),2:formatTemp(info.tempHigh)});
+			}
+			if (info.tempLow != undefined) {
+				infoText.innerHTML += "\n"+langKey("guitemplate.info.tempLow","Turns into $1 below $2.",{1:infoLink(info.stateLow),2:formatTemp(info.tempLow)});
+			}
+			if (info.breakInto === null) {
+				infoText.innerHTML += "\n"+langKey("gui.info.disappearsBroken","Disappears when broken")+infoPeriod;
+			}
+			else if (info.breakInto != undefined) {
+				infoText.innerHTML += "\n"+langKey("guitemplate.info.breaksInto","Breaks into $1.",{1:infoLink(info.breakInto)});
+			}
+			else if (info.breakIntoColor != undefined) {
+				infoText.innerHTML += "\n"+langKey("gui.info.changesColorBroken","Changes color when broken")+infoPeriod;
+			}
+			if (info.burn != undefined) { infoText.innerHTML += "\n"+langKey("gui.info.flammability","Flammability")+infoColon+info.burn+"%"+infoPeriod; }
+			if (info.burnTime != undefined) {
+				infoText.innerHTML += "\n"+langKey("guitemplate.info.burnTime","Burns for $1 ticks.",{1:info.burnTime});
+			}
+			if (info.burnInto) { infoText.innerHTML += "\n"+langKey("guitemplate.info.burnsInto","Burns into $1.",{1:infoLink(info.burnInto)}); }
 		if (info.fireColor) {
 			if (!(info.fireColor instanceof Array)) {
-				infoText.innerHTML += "\nFlame Color: <span style='background-color:"+info.fireColor+"'>	 </span>";
+					infoText.innerHTML += "\n"+langKey("gui.info.flameColor","Flame Color")+infoColon+"<span style='background-color:"+info.fireColor+"'>	 </span>";
 			}
 			else {
 				//gradient
@@ -19706,35 +19894,35 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 					gradientString += ", "+gradient[i]+" "+(i*100/gradient.length)+"%";
 				}
 				gradientString += ")";
-				infoText.innerHTML += "\nFlame Color: <span style='background:"+gradientString+"'>	 </span>";
+					infoText.innerHTML += "\n"+langKey("gui.info.flameColor","Flame Color")+infoColon+"<span style='background:"+gradientString+"'>	 </span>";
 			}
 		}
 		if (info.stain) {
-			if (info.stain < 0) { infoText.innerHTML += "\nCleans stains."; }
-			else { infoText.innerHTML += "\nStains solids."; }
-		}
-		if (info.customColor) { infoText.innerHTML += "\nColor is customizable."; }
+				if (info.stain < 0) { infoText.innerHTML += "\n"+langKey("gui.info.cleansStains","Cleans stains")+infoPeriod; }
+				else { infoText.innerHTML += "\n"+langKey("gui.info.stainsSolids","Stains solids")+infoPeriod; }
+			}
+			if (info.customColor) { infoText.innerHTML += "\n"+langKey("gui.info.customColor","Color is customizable")+infoPeriod; }
 		}
 
-		if (info.reactions) {
-			infoText.innerHTML += "\nReacts with " + infoLink(Object.keys(info.reactions)) + ".";
+			if (info.reactions) {
+				infoText.innerHTML += "\n"+langKey("gui.info.reactsWith","Reacts with")+" " + infoLink(Object.keys(info.reactions)) + infoPeriod;
 		}
 		if (info.related) {
 			infoText.innerHTML += "\n\n";
 			var related = info.related;
 			if (typeof related == "string") {related = [related];}
-			infoText.innerHTML += "See Also: "+infoLink(related)+".";
-		}
-		if (info.alias) {
+				infoText.innerHTML += langKey("gui.info.seeAlso","See Also")+infoColon+infoLink(related)+infoPeriod;
+			}
+			if (info.alias && langCode !== "zh_cn") {
 			infoText.innerHTML += "\n\n";
 			var alias = info.alias;
 			if (typeof alias == "string") {alias = [alias];}
 			infoText.innerHTML += "Also known as "+alias.join(", ").toUpperCase()+".";
 		}
-	}
-	else if (categoryList.indexOf(element) !== -1) {
-		infoTitle.innerHTML = element;
-		infoTitle.innerHTML = infoTitle.innerHTML.replace(/\w\S*/g, function(txt){return txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase();});
+		}
+		else if (categoryList.indexOf(element) !== -1) {
+			infoTitle.innerHTML = infoDisplayName(element);
+			infoTitle.innerHTML = infoTitle.innerHTML.replace(/\w\S*/g, function(txt){return txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase();});
 		var matchingCategory = [];
 		// loop through all elements, and add to matchingCategory if it matches the category
 		for (e in elements) {
@@ -19742,16 +19930,16 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				matchingCategory.push(e);
 			}
 		}
-		infoText.innerHTML = "\nCategory of "+matchingCategory.length+".\n\n";
+			infoText.innerHTML = "\n"+langKey("guitemplate.info.categoryCount","Category containing $1 elements.",{1:matchingCategory.length})+"\n\n";
 		// infoLink of each item in matchingCategory on new lines
 		var temptext = "";
 		for (var i = 0; i < matchingCategory.length; i++) {
 			temptext += infoLink(matchingCategory[i]) + "\n";
 		}
 		infoText.innerHTML += temptext;
-	}
-	else if (element.indexOf(",") !== -1) {
-		infoTitle.innerHTML = "Lookup";
+		}
+		else if (element.indexOf(",") !== -1) {
+			infoTitle.innerHTML = langKey("gui.info.lookup","Lookup");
 		// split by , and add an infoLink of each to infoText.innerHTML
 		var split = element.split(",");
 		var temptext = "";
@@ -19760,18 +19948,18 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 		}
 		infoText.innerHTML = temptext;
 		infoSearch.value = "";
-	}
-	else if (element === "") {
-		infoTitle.innerHTML = "Browse";
+		}
+		else if (element === "") {
+			infoTitle.innerHTML = langKey("gui.info.browse","Browse");
 		infoText.innerHTML = "\n"+infoLink("all")+" • "+infoLink("undiscovered")+" • "+infoLink("discovered")+"\n\n";
 		var temptext = "";
 		for (var i = 0; i < categoryList.length; i++) {
 			temptext += infoLink(categoryList[i]) + "\n";
 		}
 		infoText.innerHTML += temptext+infoLink("hidden");
-	}
-	else if (element === "undiscovered") {
-		infoTitle.innerHTML = "Undiscovered";
+		}
+		else if (element === "undiscovered") {
+			infoTitle.innerHTML = langKey("gui.info.undiscoveredTitle","Undiscovered");
 		var temptext = "";
 		var n = 0;
 		for (e in elements) {
@@ -19783,19 +19971,19 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 		// sort temptext lines alphabetically
 		temptext = temptext.split("\n"); temptext.sort(); temptext = temptext.join("\n");
 		infoTitle.innerHTML += " ("+n+")";
-		if (temptext === "") { temptext = "You discovered everything!\n\nJoin our <a href='https://discord.gg/ejUc6YPQuS'>Discord</a> to stay up to date with updates."; }
+			if (temptext === "") { temptext = langKey("gui.info.discoveredEverything.html","You discovered everything!\n\nJoin our <a href='https://discord.gg/ejUc6YPQuS'>Discord</a> to stay up to date with updates."); }
 		infoText.innerHTML = temptext;
-	}
-	else if (element === "all") {
-		infoTitle.innerHTML = "All ("+elementCount+")";
+		}
+		else if (element === "all") {
+			infoTitle.innerHTML = langKey("gui.info.allTitle","All")+" ("+elementCount+")";
 		var temptext = "";
 		for (e in elements) { temptext += infoLink(e) + "\n"; }
 		// sort temptext lines alphabetically
 		temptext = temptext.split("\n"); temptext.sort(); temptext = temptext.join("\n");
 		infoText.innerHTML = temptext;
-	}
-	else if (element === "discovered") {
-		infoTitle.innerHTML = "Discovered";
+		}
+		else if (element === "discovered") {
+			infoTitle.innerHTML = langKey("gui.info.discoveredTitle","Discovered");
 		var temptext = "";
 		var n = 0;
 		for (e in elements) {
@@ -19808,21 +19996,21 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 		temptext = temptext.split("\n"); temptext.sort(); temptext = temptext.join("\n");
 		infoTitle.innerHTML += " ("+n+")";
 		infoText.innerHTML = temptext;
-	}
-	else if (element === "hidden") {
-		infoTitle.innerHTML = "Hidden ("+hiddenCount+")";
+		}
+		else if (element === "hidden") {
+			infoTitle.innerHTML = langKey("gui.info.hiddenTitle","Hidden")+" ("+hiddenCount+")";
 		var temptext = "";
 		for (e in elements) {
 			if (elements[e].hidden) { temptext += infoLink(e) + "\n"; }
 		}
 		// sort temptext lines alphabetically
 		temptext = temptext.split("\n"); temptext.sort(); temptext = temptext.join("\n");
-		if (temptext === "") { temptext = "You discovered everything!\n\nJoin our <a href='https://discord.gg/ejUc6YPQuS'>Discord</a> to stay up to date with updates."; }
+			if (temptext === "") { temptext = langKey("gui.info.discoveredEverything.html","You discovered everything!\n\nJoin our <a href='https://discord.gg/ejUc6YPQuS'>Discord</a> to stay up to date with updates."); }
 		infoText.innerHTML = temptext;
-	}
-	else if (element === "air") {
-		infoTitle.innerHTML = "Air";
-		infoText.innerHTML = "\nColor: <span>	 </span>\nCategory: "+infoLink("gases")+".\nDensity: "+formatDensity(airDensity)+"."
+		}
+		else if (element === "air") {
+			infoTitle.innerHTML = langKey("gui.info.air","Air");
+			infoText.innerHTML = "\n"+langKey("gui.info.color","Color")+infoColon+"<span>	 </span>\n"+langKey("gui.info.category","Category")+infoColon+infoLink("gases")+infoPeriod+"\n"+langKey("gui.info.density","Density")+infoColon+formatDensity(airDensity)+infoPeriod
 	}
 	else {
 		infoTitle.innerHTML = "";
@@ -19938,7 +20126,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			url = url.replaceAll(/['‘’“”"\$\{\}\\]/g,"");
 			// if the url doesn't have a slash or a dot, alert
 			if (url.indexOf("/") == -1 && url.indexOf(".") == -1 && !noMessage) {
-				promptText("Invalid mod URL.\n\nYou usually want something like 'survival.js' (without the quotes)", showModManager, "Error");
+				promptText(langKey("gui.prompt.invalidModUrl","Invalid mod URL.\n\nYou usually want something like 'survival.js' (without the quotes)"), showModManager, "Error");
 				return;
 			}
 			// if the url doesn't start with http, add "mods/" to the beginning
@@ -19964,7 +20152,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			document.getElementById("modManagerRefresh").style.display = "block";
 			if (!noMessage) {
 				changedMods = true;
-				promptText((standalone ? "Reset the canvas" : "Refresh the page")+" to apply changes.", showModManager, "Added Mod");
+				promptText(standalone ? langKey("gui.prompt.resetToApply","Reset the canvas to apply changes.") : langKey("gui.prompt.refreshToApply","Refresh the page to apply changes."), showModManager, "Added Mod");
 			}
 			return url;
 		}
@@ -19993,7 +20181,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			}
 			if (!noMessage) {
 				changedMods = true;
-				promptText((standalone ? "Reset the canvas" : "Refresh the page")+" to apply changes.", showModManager, "Removed Mod");
+				promptText(standalone ? langKey("gui.prompt.resetToApply","Reset the canvas to apply changes.") : langKey("gui.prompt.refreshToApply","Refresh the page to apply changes."), showModManager, "Removed Mod");
 			}
 		}
 
@@ -20001,10 +20189,11 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 
 		rtf = null;
 		try {
-			rtf = new Intl.RelativeTimeFormat(langCode||"en", { style:"short", numeric:"auto" });
+			const relativeTimeLocale = (langCode || navigator.language || "en").replaceAll("_","-");
+			rtf = new Intl.RelativeTimeFormat(relativeTimeLocale, { style:"short", numeric:"auto" });
 		}
 		catch {
-			rtf = new Intl.RelativeTimeFormat("en", { style:"short", numeric:"auto" });
+			rtf = new Intl.RelativeTimeFormat(langCode === "zh_cn" ? "zh-CN" : "en", { style:"short", numeric:"auto" });
 		}
 
 		function saveMenuOptions(item) {
@@ -20067,9 +20256,15 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				let name = langKey("guitemplate.saves.slot","Slot $1",{1:i})
 				let time = null;
 				if (save) {
-					let parsed = JSON.parse(save);
-					name = parsed.meta.name || langKey("gui.saves.unnamed","Unnamed");
-					time = parsed.meta.updated || parsed.meta.created || null;
+					try {
+						let parsed = JSON.parse(save);
+						name = (parsed.meta && parsed.meta.name) || langKey("gui.saves.unnamed","Unnamed");
+						time = parsed.meta && (parsed.meta.updated || parsed.meta.created) || null;
+					}
+					catch (error) {
+						console.error("Local save parse failed",error);
+						name = langKey("gui.saves.damaged","Damaged save");
+					}
 				}
 
 				saveItems.push({
@@ -20090,7 +20285,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				callback();
 				return;
 			}
-			promptConfirm("Community-made saves are moderated, but some may not be appropriate for everyone. You must be 13 years old or older to view this content.\n\nConfirm if you are at least 13 years old.", (r) => {
+			promptConfirm(langKey("gui.prompt.communitySavesAge","Community-made saves are moderated, but some may not be appropriate for everyone. You must be 13 years old or older to view this content.\n\nConfirm if you are at least 13 years old."), (r) => {
 				if (r) {
 					settings.onlineWarning = true;
 					saveSettings();
@@ -20120,8 +20315,8 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 
 				displaySavesList("saveFeaturedList", saveItems, true);
 			})
-			.catch(error => {
-				document.getElementById("saveFeaturedList").innerText = "ERROR: Could not connect";
+				.catch(error => {
+					document.getElementById("saveFeaturedList").innerText = langKey("gui.saves.connectionError","ERROR: Could not connect");
 			});
 
 			document.getElementById("saveFeaturedList").setAttribute("done","true");
@@ -20164,8 +20359,8 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				response = await fetch(url, { method: 'GET' });
 				json = await response.json();
 			}
-			catch (e) {
-				saveDiscordList.innerText = "ERROR: Could not connect";
+				catch (e) {
+					saveDiscordList.innerText = langKey("gui.saves.connectionError","ERROR: Could not connect");
 				return;
 			}
 
@@ -20196,17 +20391,19 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			displaySavesList("saveDiscordList", saveItems, clear);
 			window.isLoadingDiscord = false;
 		}
-		function showDiscordSaves() {
-			const discordFilter = document.getElementById("discordFilter");
-			if (!discordFilter.getAttribute("data-loaded")) {
-				for (let tagID in saveTags) {
-					let tagName = tagID == "6" ? "Cooking" : saveTags[tagID];
-					tagID = parseInt(tagID);
-					if (tagID === 10 || tagID === 13 || tagID === 14) continue;
-					discordFilter.insertAdjacentHTML("beforeend",
-						`<option value="${tagName}">${tagName}</option>`
-					);
-				}
+			function showDiscordSaves() {
+				const discordFilter = document.getElementById("discordFilter");
+				if (!discordFilter.getAttribute("data-loaded")) {
+					for (let tagID in saveTags) {
+						let tagName = saveTags[tagID];
+						let translatedTagName = langKey("saveTag."+tagID,tagName);
+						tagID = parseInt(tagID);
+						if (tagID === 10 || tagID === 13 || tagID === 14) continue;
+						const option = document.createElement("option");
+						option.value = tagName;
+						option.textContent = translatedTagName;
+						discordFilter.appendChild(option);
+					}
 				discordFilter.setAttribute("data-loaded", "true");
 			}
 
@@ -20249,7 +20446,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				let slot = item.slot || null;
 				let url = item.url || null;
 				let author;
-				if (item.author) author = "by "+item.author;
+					if (item.author) author = langKey("guitemplate.saves.by","by $1",{1:item.author});
 
 				let time = item.time || null;
 				let days = null;
@@ -20278,7 +20475,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 
 				if (item.url || item.viewLink) {
 					let link = document.createElement("a");
-					link.innerText = "View";
+						link.innerText = langKey("gui.saves.view","View");
 					link.className = "texticon";
 					if (standalone && item.workshop) {
 						link.setAttribute("href",item.viewLink || item.url);
@@ -20288,12 +20485,12 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 							window.viewWorkshop(item.workshop);
 							return false;
 						})
-						link.setAttribute("title","Open Workshop");
+							link.setAttribute("title",langKey("gui.saves.openWorkshop","Open Workshop"));
 					}
 					else {
 						link.setAttribute("href",item.viewLink || item.url);
 						link.setAttribute("target","_blank");
-						link.setAttribute("title","Open external link");
+							link.setAttribute("title",langKey("gui.saves.openExternal","Open external link"));
 					}
 					nameSpan.insertAdjacentText("beforeend", " ")
 					nameSpan.appendChild(link);
@@ -20307,7 +20504,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 					subs.push(author);
 				}
 				if (item.modded) {
-					subs.push("Modded")
+						subs.push(langKey("gui.saves.modded","Modded"))
 				}
 				if (days) {
 					subs.push(days)
@@ -20325,8 +20522,8 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				saveList.appendChild(span);
 			}
 		}
-		function loadSaveURL(url) {
-			promptText("Please hold :)",undefined,"Loading Save...");
+			function loadSaveURL(url) {
+				promptText(langKey("gui.prompt.loadingSave","Please hold :)"),undefined,"Loading Save...");
 			fetch(url).then(res => res.text())
 			.then(res => {
 				loadSave(JSON.parse(res));
@@ -20334,26 +20531,35 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 
 				// closeMenu();
 			})
-			.catch(error => {
-				promptText("There was an error loading this save:\n\n"+error,undefined,"Error!");
-			});
+				.catch(error => {
+					console.error("Save URL load failed",error);
+					const reason = langCode === "zh_cn" ? langKey("gui.saves.invalidData","The save data is invalid or the network connection failed.") : error;
+					promptText(langKey("guitemplate.prompt.saveLoadError","There was an error loading this save:\n\n$1",{1:reason}),undefined,"Error!");
+				});
 		}
 		function saveSlot(i) {
 			savingState = {slot:i};
-			document.getElementById("saveName").value = document.getElementById("saveSlot"+i).getAttribute("data-name") || "Slot "+i;
+				document.getElementById("saveName").value = document.getElementById("saveSlot"+i).getAttribute("data-name") || langKey("guitemplate.saves.slot","Slot $1",{1:i});
 			showSavePrompt();
 		}
-		function loadSlot(i) {
-			var save = localStorage.getItem("SandboxelsSaves/"+i);
-			if (save) {
-				lastSaveJSON = save;
-				loadSave(JSON.parse(save));
+			function loadSlot(i) {
+				var save = localStorage.getItem("SandboxelsSaves/"+i);
+				if (save) {
+					let parsedSave;
+					try { parsedSave = JSON.parse(save); }
+					catch (error) {
+						console.error("Local save parse failed",error);
+						promptText(langKey("gui.prompt.invalidSaveData","This save is invalid or damaged."),undefined,"Error");
+						return;
+					}
+					lastSaveJSON = save;
+					loadSave(parsedSave);
 				currentSaveData.slot = parseInt(i);
 				closeMenu();
 			}
 		}
 		function clearSlot(i) {
-			promptConfirm("Are you sure you want to erase save slot "+i+"? This cannot be undone.",
+			promptConfirm(langKey("guitemplate.prompt.eraseSave","Are you sure you want to erase save slot $1? This cannot be undone.",{1:i}),
 				(r) => {
 					if (r) localStorage.removeItem("SandboxelsSaves/"+i);
 					showSaves();
@@ -20366,7 +20572,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			if (!savingState) { return }
 			if (confirmed < 1 && savingState.slot && settings.resetwarning!==0 && localStorage["SandboxelsSaves/"+savingState.slot]) {
 				let tempState = savingState;
-				promptConfirm("Are you sure you want to overwrite the current save in slot "+savingState.slot+"? This cannot be undone.",
+				promptConfirm(langKey("guitemplate.prompt.overwriteSave","Are you sure you want to overwrite the current save in slot $1? This cannot be undone.",{1:savingState.slot}),
 					(r) => {
 						savingState = tempState;
 						if (r) confirmSave(1);
@@ -20375,7 +20581,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				)
 				return;
 			}
-			var saveName = document.getElementById("saveName").value || "Unnamed";
+				var saveName = document.getElementById("saveName").value || langKey("gui.saves.unnamed","Unnamed");
 			var saveTemp = document.getElementById("saveTemp").getAttribute("state") === "1";
 			var saveColors = document.getElementById("saveColors").getAttribute("state") === "1";
 			var saveMods = document.getElementById("saveMods").getAttribute("state") === "1";
@@ -20450,8 +20656,15 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				reader.readAsText(file,"UTF-8");
 				reader.onload = readerEvent => {
 					var content = readerEvent.target.result;
+					let parsedSave;
+					try { parsedSave = JSON.parse(content); }
+					catch (error) {
+						console.error("Save file parse failed",error);
+						promptText(langKey("gui.prompt.invalidSaveData","This save is invalid or damaged."),undefined,"Error");
+						return;
+					}
 					lastSaveJSON = content;
-					loadSave(JSON.parse(content));
+					loadSave(parsedSave);
 					currentSaveData.filename = file.name;
 				}
 				closeMenu();
@@ -20496,7 +20709,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				for (let tagID in saveTags) {
 					tagID = parseInt(tagID);
 					if (tagID >= 90) continue;
-					let tagName = saveTags[tagID];
+					let tagName = langKey("saveTag."+tagID,saveTags[tagID]);
 					saveTagsList.insertAdjacentHTML("beforeend",`<input type="button" value="${tagName}" data-tag="${tagID}" class="toggleInput" onclick="toggleInput(this,undefined,false)" state="0">`)
 				}
 				if (currentSaveData.tags) {
@@ -20510,14 +20723,25 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			showingMenu = "savePrompt";
 			document.getElementById("saveName").focus();
 		}
-		function showPromptScreen() {
+			function localizedPromptTitle(title) {
+				const titleKeys = {
+					"Notice": "notice", "Are you sure?": "confirm", "Input": "input", "Choose": "choose", "Direction": "direction",
+					"Warning": "warning", "WARNING": "warning", "Error": "error", "Error!": "error", "Debug": "debug",
+					"Select Element": "selectElement", "Clear Canvas": "clearCanvas", "Change TPS": "changeTps", "Added Mod": "addedMod",
+					"Removed Mod": "removedMod", "Loading Save...": "loadingSave", "Window Resized": "windowResized",
+					"Clear Slot": "clearSlot", "Overwrite Slot": "overwriteSlot", "Enter Value": "enterValue", "Enter Property": "enterProperty"
+				};
+				const key = titleKeys[title];
+				return key ? langKey("gui.promptTitle."+key,title) : title;
+			}
+			function showPromptScreen() {
 			if (!promptState) return;
 			closeMenu("prompt");
 			paused = true;
 			checkPause();
 			var promptParent = document.getElementById("promptParent");
 			var menuTitle = document.querySelector("#promptMenu .menuTitle");
-			menuTitle.innerText = promptState.title || "Notice";
+				menuTitle.innerText = localizedPromptTitle(promptState.title || "Notice");
 			menuTitle.style.color = promptState.titleColor || "unset";
 			var promptMenuText = document.getElementById("promptMenuText");
 			promptMenuText.innerText = promptState.text || "";
@@ -20588,12 +20812,12 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 		function toggleInput(input,setting,updateText) {
 			if (input.getAttribute("state") === "0") {
 				input.setAttribute("state","1");
-				if (updateText !== false) { input.value = "ON"; }
+				if (updateText !== false) { input.value = langKey("gui.toggleOn","ON"); }
 				if (setting) { setSetting(setting,1); }
 			}
 			else {
 				input.setAttribute("state","0");
-				if (updateText !== false) { input.value = "OFF"; }
+				if (updateText !== false) { input.value = langKey("gui.toggleOff","OFF"); }
 				if (setting) { setSetting(setting,0); }
 			}
 		}
@@ -20615,7 +20839,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			let color;
 			let mousecolor;
 			if (key === "url") {
-				promptInput("Enter a URL for a background image.", (url) => {
+				promptInput(langKey("gui.prompt.backgroundUrl","Enter a URL for a background image."), (url) => {
 					if (!url) return;
 					if (!url.startsWith("http")) url = "https://"+url;
 					setCanvasBackground(url);
@@ -20719,7 +20943,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			else if (settings.border === 2) { d.loopX = true; d.loopY = true; }
 			else if (settings.border === 3) { d.loopX = true; }
 		}
-		function promptText(text, handler, title) {
+			function promptText(text, handler, title) {
 			let pause = false;
 			if (promptState) { pause = promptState.wasPaused }
 			else if (paused) { pause = true }
@@ -20727,12 +20951,12 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				type: "text",
 				text: text,
 				handler: handler,
-				title: title || "Notice",
+					title: localizedPromptTitle(title || "Notice"),
 				wasPaused: pause
 			}
 			showPromptScreen();
 		}
-		function promptConfirm(text, handler, title, danger) {
+			function promptConfirm(text, handler, title, danger) {
 			let pause = false;
 			if (promptState) { pause = promptState.wasPaused }
 			else if (paused) { pause = true }
@@ -20740,13 +20964,13 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				type: "confirm",
 				text: text,
 				handler: handler,
-				title: title || "Are you sure?",
+					title: localizedPromptTitle(title || "Are you sure?"),
 				wasPaused: pause,
 				danger: danger
 			}
 			showPromptScreen();
 		}
-		function promptInput(text, handler, title, defaultInput) {
+			function promptInput(text, handler, title, defaultInput) {
 			let pause = false;
 			if (promptState) { pause = promptState.wasPaused }
 			else if (paused) { pause = true }
@@ -20754,13 +20978,13 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				type: "input",
 				text: text,
 				handler: handler,
-				title: title || "Input",
+					title: localizedPromptTitle(title || "Input"),
 				wasPaused: pause,
 				defaultInput: defaultInput
 			}
 			showPromptScreen();
 		}
-		function promptChoose(text, choices, handler, title) {
+			function promptChoose(text, choices, handler, title) {
 			let pause = false;
 			if (promptState) { pause = promptState.wasPaused }
 			else if (paused) { pause = true }
@@ -20769,12 +20993,12 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				text: text,
 				choices: choices,
 				handler: handler,
-				title: title || "Choose",
+					title: localizedPromptTitle(title || "Choose"),
 				wasPaused: pause
 			}
 			showPromptScreen();
 		}
-		function promptDir(text, handler, title) {
+			function promptDir(text, handler, title) {
 			let pause = false;
 			if (promptState) { pause = promptState.wasPaused }
 			else if (paused) { pause = true }
@@ -20782,7 +21006,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				type: "dir",
 				text: text,
 				handler: handler,
-				title: title || "Direction",
+					title: localizedPromptTitle(title || "Direction"),
 				wasPaused: pause
 			}
 			showPromptScreen();
@@ -21264,6 +21488,7 @@ function addElement(key,obj) {
 		if (isCurrent) {
 			document.getElementById("elementButton-"+key).setAttribute("current","true");
 		}
+		refreshElementPaletteVisibility(typeof currentElement !== "undefined");
 	}
 	else {
 		hiddenCount++;
@@ -21356,10 +21581,11 @@ window.onload = function() {
 	let viewSelect = document.getElementById("viewSelect");
 	for (let viewNum in viewInfo) {
 		if (viewNum === "1") {continue;}
-		var opt = document.createElement("option");
-		opt.value = viewNum;
-		opt.innerText = viewInfo[viewNum].name.replace(/(^| )./g, function (match) {return match.toUpperCase();});
-		viewSelect.appendChild(opt);
+			var opt = document.createElement("option");
+			opt.value = viewNum;
+			const viewName = viewInfo[viewNum].name;
+			opt.innerText = langKey("view."+viewName,viewName.replace(/(^| )./g, function (match) {return match.toUpperCase();}));
+			viewSelect.appendChild(opt);
 	}
 
 	// Load settings
@@ -21391,6 +21617,11 @@ window.onload = function() {
 				}
 			}
 		}
+	}
+	var buildingScaleInput = document.getElementById("setting-humanSocietyBuildingScale");
+	if (buildingScaleInput) {
+		buildingScaleInput.value = Math.max(50,Math.min(200,parseInt(buildingScaleInput.value) || 100));
+		if (buildingScaleInput.nextElementSibling) buildingScaleInput.nextElementSibling.textContent = buildingScaleInput.value + "%";
 	}
 	
 	if (settings.theme) setThemeElement(settings.theme);
@@ -21494,7 +21725,7 @@ window.onload = function() {
 		let option = document.createElement("option");
 		option.value = key;
 		option.id = "setting-bg-"+key;
-		option.innerText = elemTitleCase(key);
+		option.innerText = langKey("background."+key,elemTitleCase(key));
 		bgSelect.appendChild(option);
 	}
 	if (settings.bgimg) {
@@ -21594,7 +21825,7 @@ window.onload = function() {
 				}
 				if (currentPixels.length === 0 || settings.resetwarning === 0) fn();
 				else {
-					promptConfirm("Clear this scene and load save file?", (r) => { if (r) fn(); }, "Clear Canvas" );
+					promptConfirm(langKey("gui.prompt.clearForSave","Clear this scene and load save file?"), (r) => { if (r) fn(); }, "Clear Canvas" );
 				}
 			}
 		}
@@ -21629,7 +21860,7 @@ window.onload = function() {
 				}
 				if (currentPixels.length === 0 || settings.resetwarning === 0) fn();
 				else {
-					promptConfirm("Clear this scene and load save file?", (r) => { if (r) fn(); }, "Clear Canvas" );
+					promptConfirm(langKey("gui.prompt.clearForSave","Clear this scene and load save file?"), (r) => { if (r) fn(); }, "Clear Canvas" );
 				}
 			}
 		}
@@ -21804,7 +22035,7 @@ window.onload = function() {
 				clearAll();
 			}
 			else if (!settings.resizeNotice) {
-				promptText("Reset the canvas by pressing 'R' or the 'Reset' button.",()=>{ saveSettings(); },"Window Resized")
+				promptText(langKey("gui.prompt.windowResized","Reset the canvas by pressing 'R' or the 'Reset' button."),()=>{ saveSettings(); },"Window Resized")
 				settings.resizeNotice = true;
 			}
 		}
@@ -21832,15 +22063,17 @@ window.onload = function() {
 		}
 		createElementButton(element);
 	}
+	refreshElementPaletteVisibility(false);
 	if (document.getElementById("categoryButton-states")) {
 		// move it to the end of its parent
 		document.getElementById("categoryButton-states").parentNode.appendChild(document.getElementById("categoryButton-states"));
 	}
 	// Set the first button in categoryControls div to be the current category
-	document.getElementById("categoryControls").children[0].click()
+	var firstCategoryButton = firstVisiblePaletteCategoryButton();
+	if (firstCategoryButton) firstCategoryButton.click();
 	document.getElementById("extraInfo").insertAdjacentHTML("beforeend", "<small class='extraInfo-right'><p><span id='extraInfo-name'>Sandboxels </span>v" + currentversion + " • <span id='elementCountSpan'>" +
 		langKey("guitemplate.elementCount","$1 elements, with $2 hidden",{1:elementCount,2:hiddenCount}) +
-		"</span>.</p></small><small id='attribution'><p>©2021-" + new Date().getFullYear() + ". <a href='https://sandboxels.R74n.com/license.txt' rel='license' target='_blank' id='copyrightLabel'>All Rights Reserved</a>. <a style='color:#00ffff' rel='author' href='https://r74n.com'>R74n</a></p></small>");
+		"</span>.</p></small><small id='attribution'><p>©2021-" + new Date().getFullYear() + ". <a href='https://sandboxels.R74n.com/license.txt' rel='license' target='_blank' id='copyrightLabel'>"+langKey("gui.copyrightLabel","All Rights Reserved")+"</a>. <a style='color:#00ffff' rel='author' href='https://r74n.com'>R74n</a></p></small>");
 	selectElement(currentElement);
 	focusGame();
 	// For every button element, onkeyup="event.preventDefault()"
@@ -21851,18 +22084,27 @@ window.onload = function() {
 		}
 	}
 
-	if (location.ancestorOrigins && location.ancestorOrigins[0] && standaloneType !== "discord" && location.hostname !== "neal.fun") {
-		//lol
-		var _0x3f4094=_0x2f29;function _0x2f29(_0x3c9905,_0x43fa2c){var _0x35230b=_0x3523();return _0x2f29=function(_0x2f29a1,_0x2c7678){_0x2f29a1=_0x2f29a1-0x133;var _0x12514f=_0x35230b[_0x2f29a1];return _0x12514f;},_0x2f29(_0x3c9905,_0x43fa2c);}(function(_0x408068,_0x2c46ce){var _0x22155d=_0x2f29,_0x9c939f=_0x408068();while(!![]){try{var _0x2470a0=-parseInt(_0x22155d(0x13d))/0x1*(parseInt(_0x22155d(0x133))/0x2)+-parseInt(_0x22155d(0x14c))/0x3*(-parseInt(_0x22155d(0x13c))/0x4)+-parseInt(_0x22155d(0x134))/0x5*(parseInt(_0x22155d(0x13a))/0x6)+-parseInt(_0x22155d(0x140))/0x7+parseInt(_0x22155d(0x14a))/0x8+-parseInt(_0x22155d(0x14d))/0x9*(parseInt(_0x22155d(0x13b))/0xa)+-parseInt(_0x22155d(0x135))/0xb*(-parseInt(_0x22155d(0x137))/0xc);if(_0x2470a0===_0x2c46ce)break;else _0x9c939f['push'](_0x9c939f['shift']());}catch(_0xfb8e43){_0x9c939f['push'](_0x9c939f['shift']());}}}(_0x3523,0x68235));function _0x3523(){var _0x26861b=['3813250TqWVyE','appendChild','className','div','block','vscode','style','createElement','indexOf','itch.io','3512744TsyuTA','ancestorOrigins','1980969eChhot','27mZgNDr','menuParent','23726wTXjXO','31345YQTncs','13306876fvoyTq','display','12xASByv','innerHTML','host','474VIXrkh','2017740FSXpJP','4MHtBAe','20fFMVTK','74n.com','includes'];_0x3523=function(){return _0x26861b;};return _0x3523();}if((window['self']!==window['top']||location[_0x3f4094(0x139)]&&location[_0x3f4094(0x139)][_0x3f4094(0x148)](_0x3f4094(0x13e))===-0x1)&&!(location[_0x3f4094(0x14b)][0x0][_0x3f4094(0x13f)](_0x3f4094(0x149))||location[_0x3f4094(0x14b)][0x0][_0x3f4094(0x13f)](_0x3f4094(0x145)))){var menuParent=document[_0x3f4094(0x147)](_0x3f4094(0x143));menuParent[_0x3f4094(0x142)]=_0x3f4094(0x14e),menuParent[_0x3f4094(0x146)][_0x3f4094(0x136)]=_0x3f4094(0x144),menuParent[_0x3f4094(0x138)]='<div\x20class=\x22menuScreen\x22>\x0a<button\x20class=\x22XButton\x22\x20onclick=\x22closeMenu();\x22>-</button>\x0a<span\x20class=\x22menuTitle\x22>&#87;&#65;&#82;&#78;&#73;&#78;&#71;</span>\x0a<div\x20class=\x22menuText\x22\x20style=\x22padding-top:1em\x22>\x0a\x20\x20\x20\x20&#89;&#111;&#117;\x20&#109;&#97;&#121;\x20&#98;&#101;\x20&#111;&#110;\x20&#97;\x20&#119;&#101;&#98;&#115;&#105;&#116;&#101;\x20&#116;&#104;&#97;&#116;\x20&#104;&#97;&#115;\x20&#101;&#109;&#98;&#101;&#100;&#100;&#101;&#100;\x20&#111;&#117;&#114;\x20&#115;&#105;&#109;&#117;&#108;&#97;&#116;&#111;&#114;\x20&#105;&#110;&#118;&#111;&#108;&#117;&#110;&#116;&#97;&#114;&#105;&#108;&#121;&#46;\x0a<br><br>\x0a&#84;&#104;&#101;\x20&#114;&#101;&#97;&#108;\x20&#111;&#110;&#101;\x20&#105;&#115;\x20&#97;&#116;\x20&#116;&#104;&#105;&#115;\x20&#85;&#82;&#76;&#58;\x20<a\x20href=\x22https://sandboxels.r74n.com\x22\x20target=\x22_blank\x22>sandboxels.R74n.com</a>.\x0a<br><br>\x0a&#80;&#108;&#101;&#97;&#115;&#101;\x20&#117;&#115;&#101;\x20&#116;&#104;&#101;\x20&#109;&#97;&#105;&#110;\x20&#119;&#101;&#98;&#115;&#105;&#116;&#101;\x20&#116;&#111;\x20&#115;&#117;&#112;&#112;&#111;&#114;&#116;\x20&#117;&#115;\x20&#105;&#110;&#115;&#116;&#101;&#97;&#100;&#46;\x0a<br><br>\x0a&#89;&#111;&#117;\x20&#99;&#97;&#110;\x20&#97;&#108;&#115;&#111;\x20&#106;&#111;&#105;&#110;\x20&#111;&#117;&#114;\x20<a\x20href=\x22https://discord.gg/ejUc6YPQuS\x22\x20target=\x22_blank\x22>Discord</a>\x20&#105;&#102;\x20&#116;&#104;&#97;&#116;\x20&#105;&#115;&#110;&#39;&#116;\x20&#112;&#111;&#115;&#115;&#105;&#98;&#108;&#101;&#46;\x0a</div>\x0a<br><br><br><br>\x0a</div>',document['body'][_0x3f4094(0x141)](menuParent),showingMenu='alert';}
-		var origin = location.ancestorOrigins[0];
+		if (location.ancestorOrigins && location.ancestorOrigins[0] && standaloneType !== "discord" && location.hostname !== "neal.fun") {
+			//lol
+			var _0x3f4094=_0x2f29;function _0x2f29(_0x3c9905,_0x43fa2c){var _0x35230b=_0x3523();return _0x2f29=function(_0x2f29a1,_0x2c7678){_0x2f29a1=_0x2f29a1-0x133;var _0x12514f=_0x35230b[_0x2f29a1];return _0x12514f;},_0x2f29(_0x3c9905,_0x43fa2c);}(function(_0x408068,_0x2c46ce){var _0x22155d=_0x2f29,_0x9c939f=_0x408068();while(!![]){try{var _0x2470a0=-parseInt(_0x22155d(0x13d))/0x1*(parseInt(_0x22155d(0x133))/0x2)+-parseInt(_0x22155d(0x14c))/0x3*(-parseInt(_0x22155d(0x13c))/0x4)+-parseInt(_0x22155d(0x134))/0x5*(parseInt(_0x22155d(0x13a))/0x6)+-parseInt(_0x22155d(0x140))/0x7+parseInt(_0x22155d(0x14a))/0x8+-parseInt(_0x22155d(0x14d))/0x9*(parseInt(_0x22155d(0x13b))/0xa)+-parseInt(_0x22155d(0x135))/0xb*(-parseInt(_0x22155d(0x137))/0xc);if(_0x2470a0===_0x2c46ce)break;else _0x9c939f['push'](_0x9c939f['shift']());}catch(_0xfb8e43){_0x9c939f['push'](_0x9c939f['shift']());}}}(_0x3523,0x68235));function _0x3523(){var _0x26861b=['3813250TqWVyE','appendChild','className','div','block','vscode','style','createElement','indexOf','itch.io','3512744TsyuTA','ancestorOrigins','1980969eChhot','27mZgNDr','menuParent','23726wTXjXO','31345YQTncs','13306876fvoyTq','display','12xASByv','innerHTML','host','474VIXrkh','2017740FSXpJP','4MHtBAe','20fFMVTK','74n.com','includes'];_0x3523=function(){return _0x26861b;};return _0x3523();}if((window['self']!==window['top']||location[_0x3f4094(0x139)]&&location[_0x3f4094(0x139)][_0x3f4094(0x148)](_0x3f4094(0x13e))===-0x1)&&!(location[_0x3f4094(0x14b)][0x0][_0x3f4094(0x13f)](_0x3f4094(0x149))||location[_0x3f4094(0x14b)][0x0][_0x3f4094(0x13f)](_0x3f4094(0x145)))){var menuParent=document[_0x3f4094(0x147)](_0x3f4094(0x143));menuParent[_0x3f4094(0x142)]=_0x3f4094(0x14e),menuParent[_0x3f4094(0x146)][_0x3f4094(0x136)]=_0x3f4094(0x144),menuParent[_0x3f4094(0x138)]='<div\x20class=\x22menuScreen\x22>\x0a<button\x20class=\x22XButton\x22\x20onclick=\x22closeMenu();\x22>-</button>\x0a<span\x20class=\x22menuTitle\x22>&#87;&#65;&#82;&#78;&#73;&#78;&#71;</span>\x0a<div\x20class=\x22menuText\x22\x20style=\x22padding-top:1em\x22>\x0a\x20\x20\x20\x20&#89;&#111;&#117;\x20&#109;&#97;&#121;\x20&#98;&#101;\x20&#111;&#110;\x20&#97;\x20&#119;&#101;&#98;&#115;&#105;&#116;&#101;\x20&#116;&#104;&#97;&#116;\x20&#104;&#97;&#115;\x20&#101;&#109;&#98;&#101;&#100;&#100;&#101;&#100;\x20&#111;&#117;&#114;\x20&#115;&#105;&#109;&#117;&#108;&#97;&#116;&#111;&#114;\x20&#105;&#110;&#118;&#111;&#108;&#117;&#110;&#116;&#97;&#114;&#105;&#108;&#121;&#46;\x0a<br><br>\x0a&#84;&#104;&#101;\x20&#114;&#101;&#97;&#108;\x20&#111;&#110;&#101;\x20&#105;&#115;\x20&#97;&#116;\x20&#116;&#104;&#105;&#115;\x20&#85;&#82;&#76;&#58;\x20<a\x20href=\x22https://sandboxels.r74n.com\x22\x20target=\x22_blank\x22>sandboxels.R74n.com</a>.\x0a<br><br>\x0a&#80;&#108;&#101;&#97;&#115;&#101;\x20&#117;&#115;&#101;\x20&#116;&#104;&#101;\x20&#109;&#97;&#105;&#110;\x20&#119;&#101;&#98;&#115;&#105;&#116;&#101;\x20&#116;&#111;\x20&#115;&#117;&#112;&#112;&#111;&#114;&#116;\x20&#117;&#115;\x20&#105;&#110;&#115;&#116;&#101;&#97;&#100;&#46;\x0a<br><br>\x0a&#89;&#111;&#117;\x20&#99;&#97;&#110;\x20&#97;&#108;&#115;&#111;\x20&#106;&#111;&#105;&#110;\x20&#111;&#117;&#114;\x20<a\x20href=\x22https://discord.gg/ejUc6YPQuS\x22\x20target=\x22_blank\x22>Discord</a>\x20&#105;&#102;\x20&#116;&#104;&#97;&#116;\x20&#105;&#115;&#110;&#39;&#116;\x20&#112;&#111;&#115;&#115;&#105;&#98;&#108;&#101;&#46;\x0a</div>\x0a<br><br><br><br>\x0a</div>',document['body'][_0x3f4094(0x141)](menuParent),showingMenu='alert';}
+			if (typeof menuParent !== "undefined" && menuParent) {
+				const warningTitle = menuParent.querySelector(".menuTitle");
+				const warningText = menuParent.querySelector(".menuText");
+				if (warningTitle) warningTitle.textContent = langKey("gui.embedWarning.title","WARNING");
+				if (warningText) warningText.innerHTML = langKey("gui.embedWarning.html","This website may have embedded our simulator without permission.<br><br>The official version is at <a href='https://sandboxels.r74n.com' target='_blank'>sandboxels.R74n.com</a>.<br><br>Please use the official website to support us.<br><br>You can also join our <a href='https://discord.gg/ejUc6YPQuS' target='_blank'>Discord</a> if that is not possible.");
+			}
+			var origin = location.ancestorOrigins[0];
 		if (origin.indexOf("game") !== -1 || origin.indexOf("browser") !== -1 || origin.indexOf("yizhif") !== -1 || origin.indexOf(".io") !== -1) {
 			gameCanvas.style.display = "none";
 		}
 	}
 	//get the first .elementButton in the first .category, and selectElement(button.element)
-	var firstDiv = document.querySelector("#elementControls .category");
-	var firstElementButton = firstDiv.getElementsByClassName("elementButton")[0];
-	selectElement(firstElementButton.getAttribute("element"));
+	var firstElementButton = firstVisiblePaletteElementButton(getElementPaletteMode() === "civilization" ? "civilized_human" : null);
+	if (firstElementButton) {
+		var firstPaletteElement = firstElementButton.getAttribute("element");
+		if (elements[firstPaletteElement] && document.getElementById("categoryButton-" + elements[firstPaletteElement].category)) selectCategory(elements[firstPaletteElement].category);
+		selectElement(firstPaletteElement);
+	}
 
 	//post-load
 	let tempSave = localStorage.getItem("SandboxelsTempSave");
@@ -21888,9 +22130,9 @@ window.onload = function() {
 	</script>
 	<script src="scripts/human_society_core.js?v=20260725"></script>
 	<script src="scripts/human_society_tech_data.js?v=20260725"></script>
-	<script src="scripts/human_society_world.js?v=20260725"></script>
+	<script src="scripts/human_society_world.js?v=20260726"></script>
 	<script src="scripts/human_society_pathfinding.js?v=20260725"></script>
-	<script src="scripts/human_society.js?v=20260725"></script>
+	<script src="scripts/human_society.js?v=20260726"></script>
 	<link rel="stylesheet" type="text/css" href="style.css?nocache=4">
 </head>
 
@@ -21900,29 +22142,24 @@ window.onload = function() {
 	<div id="totalWrapper">
 	<div id="gameWrapper">
 	<div id="gameDiv">
-		<p id="loadingP">Loading...</p>
+		<p id="loadingP"></p>
 		<script>
+			document.getElementById("loadingP").textContent = langKey("gui.loadingP","Loading...");
 			if (enabledModNames.length > 0) {
-				document.getElementById("loadingP").innerHTML += ` Not loading? <a href="#" onclick="localStorage.removeItem('enabledMods');location.reload()">Click to Clear Mods</a>`
+				document.getElementById("loadingP").innerHTML += " " + langKey("gui.loadingModsHelp","Not loading?") + ` <a href="#" onclick="localStorage.removeItem('enabledMods');location.reload()">${langKey("gui.loadingClearMods","Click to Clear Mods")}</a>`
 				document.getElementById("loadingP").style.fontSize = "0.8em"
 			}
 		</script>
 		<div id="canvasDiv" style="display:none">
-			<canvas id="game" width="800" height="600">
-				Your browser does not support the HTML5 canvas tag.<br>
-				Please update your browser to the latest version.<br>
-				<a href="https://www.google.com/chrome/" tabindex="-1">Chrome</a> 4.0+<br>
-				<a href="https://www.mozilla.org/firefox/new/" tabindex="-1">Firefox</a> 2.0+<br>
-				<a href="http://www.apple.com/safari/" tabindex="-1">Safari</a> 3.1+<br>
-				<a href="http://www.opera.com/" tabindex="-1">Opera</a> 9.0+<br>
-				<a href="https://www.microsoft.com/edge" tabindex="-1">Microsoft Edge</a> 12.0+<br>
-			</canvas>
+				<canvas id="game" width="800" height="600">
+					<span id="canvasUnsupported">Your browser does not support the HTML5 canvas tag.<br>Please update your browser to the latest version.<br><a href="https://www.google.com/chrome/" tabindex="-1">Chrome</a> 4.0+<br><a href="https://www.mozilla.org/firefox/new/" tabindex="-1">Firefox</a> 2.0+<br><a href="http://www.apple.com/safari/" tabindex="-1">Safari</a> 3.1+<br><a href="http://www.opera.com/" tabindex="-1">Opera</a> 9.0+<br><a href="https://www.microsoft.com/edge" tabindex="-1">Microsoft Edge</a> 12.0+<br></span>
+				</canvas>
 			<input id="colorSelector" type="color" value="#ff0000" onchange="currentColorMap[currentElement]=this.value;
 			document.getElementById('elementButton-'+currentElement).style.removeProperty('background-image');
 			document.getElementById('elementButton-'+currentElement).style.background = currentColorMap[currentElement];" oninput="currentColorMap[currentElement]=this.value;
 			document.getElementById('elementButton-'+currentElement).style.removeProperty('background-image');
 			document.getElementById('elementButton-'+currentElement).style.background = currentColorMap[currentElement];">
-			<label for="colorSelector" hidden>Custom color</label>
+				<label id="colorSelectorLabel" for="colorSelector" hidden>Custom color</label>
 			<div id="logDiv"><span id="logText"></span></div>
 		</div>
 		<div id="underDiv">
@@ -21936,10 +22173,10 @@ window.onload = function() {
 					if (!standalone && new Date().getMonth() == 3 && new Date().getDate() <= 3) {
 						// if url contains "fools=true"
 						if (!window.location.href.includes("fools=true")) {
-							var foolsButton = `<button id="foolsButton" title="Enable FOOLS Mode" class="controlButton" onclick="window.location.href = '?fools=true'" style="background: linear-gradient(90deg, #ff0000, #ff7f00, #ffff00, #00ff00, #0000ff, #4b0082, #9400d3); background-size: 800% 800%; animation: rainbow 15s ease infinite; -webkit-background-clip: text; -webkit-text-fill-color: transparent; border-color: #ff00ff; outline: none; text-shadow: 0px 0px 10px #ff00ff;">Fools</button>`
+							var foolsButton = `<button id="foolsButton" title="${langKey("gui.foolsEnable.title","Enable FOOLS Mode")}" class="controlButton" onclick="window.location.href = '?fools=true'" style="background: linear-gradient(90deg, #ff0000, #ff7f00, #ffff00, #00ff00, #0000ff, #4b0082, #9400d3); background-size: 800% 800%; animation: rainbow 15s ease infinite; -webkit-background-clip: text; -webkit-text-fill-color: transparent; border-color: #ff00ff; outline: none; text-shadow: 0px 0px 10px #ff00ff;">${langKey("gui.foolsEnable","Fools")}</button>`
 						}
 						else {
-							var foolsButton = `<button id="foolsButton" title="Disable FOOLS Mode" class="controlButton" onclick="window.location.href = '?fools=false'" style="background: linear-gradient(90deg, #ff0000, #ff7f00, #ffff00, #00ff00, #0000ff, #4b0082, #9400d3); background-size: 800% 800%; animation: rainbow 15s ease infinite; -webkit-background-clip: text; -webkit-text-fill-color: transparent; border-color: #ff00ff; text-shadow: 0px 0px 10px #ff00ff;">Escape</button>`
+							var foolsButton = `<button id="foolsButton" title="${langKey("gui.foolsDisable.title","Disable FOOLS Mode")}" class="controlButton" onclick="window.location.href = '?fools=false'" style="background: linear-gradient(90deg, #ff0000, #ff7f00, #ffff00, #00ff00, #0000ff, #4b0082, #9400d3); background-size: 800% 800%; animation: rainbow 15s ease infinite; -webkit-background-clip: text; -webkit-text-fill-color: transparent; border-color: #ff00ff; text-shadow: 0px 0px 10px #ff00ff;">${langKey("gui.foolsDisable","Escape")}</button>`
 						}
 						// insert before pauseButton
 						document.getElementById("pauseButton").insertAdjacentHTML("beforebegin", foolsButton);
@@ -21953,7 +22190,7 @@ window.onload = function() {
 				<div id="categoryControls"></div>
 				<div id="elementControls"></div>
 			</div>
-			<nav id="extraInfo"><small id="extraLinks"><a href="https://sandboxels.r74n.com/changelog" id="changelogButton" target="_blank">Changelog</a> <a href="https://sandboxels.R74n.com/feedback" target="_blank" style="color:lime;" id="feedbackButton">Feedback</a> <a href="https://store.steampowered.com/app/3664820/Sandboxels/" target="_blank" id="steamButton" title="View Sandboxels on Steam" style="color:#2cb4ee;">STEAM</a> <a href="https://sandboxels.wiki.gg/" target="_blank" id="wikiButton" title="Official Sandboxels Wiki - wiki.gg" style="color:white;">Wiki</a> <a id="moreSocial" href="https://twitter.com/R74nCom" rel="me" target="_blank">Twitter</a> <a href="https://discord.gg/ejUc6YPQuS" target="_blank" style="color:#2f60ff;">Discord</a><span id="install-button" style="display:none">&nbsp;<a onclick="deferredPrompt.prompt(); return false" href="#" style="text-shadow: 0px 2px 10px #ff00ff; cursor:pointer">Install Offline</a></span>
+				<nav id="extraInfo"><small id="extraLinks"><a href="https://sandboxels.r74n.com/changelog" id="changelogButton" target="_blank">Changelog</a> <a href="https://sandboxels.R74n.com/feedback" target="_blank" style="color:lime;" id="feedbackButton">Feedback</a> <a href="https://store.steampowered.com/app/3664820/Sandboxels/" target="_blank" id="steamButton" title="View Sandboxels on Steam" style="color:#2cb4ee;">STEAM</a> <a href="https://sandboxels.wiki.gg/" target="_blank" id="wikiButton" title="Official Sandboxels Wiki - wiki.gg" style="color:white;">Wiki</a> <a id="moreSocial" href="https://twitter.com/R74nCom" rel="me" target="_blank">Twitter</a> <a href="https://discord.gg/ejUc6YPQuS" target="_blank" style="color:#2f60ff;">Discord</a><span style="display:none" id="installButtonWrapper">&nbsp;<a id="install-button" onclick="deferredPrompt.prompt(); return false" href="#" style="text-shadow: 0px 2px 10px #ff00ff; cursor:pointer">Install Offline</a></span>
 				<!--<br><br><a style="color:lime" target="_blank" href="https://docs.google.com/forms/d/e/1FAIpQLSeYMbngtbBHZ7hkz8jpbHl7TiAItqukrhtntKgAHjH30fY08A/viewform?usp=sf_link">FILL OUT THE CENSUS<span style="color:red">(NEW)</span></a>-->
 				<!-- <br><br><a style="color:lime" target="_blank" href="https://store.steampowered.com/app/3664820/Sandboxels/">SANDBOXELS ON STEAM<span style="color:red">(NEW)</span></a> -->
 				<!--<br><br><a style="color:lime" target="_blank" href="https://r74n.com/">PLAY AD-FREE ON STEAM<span style="color:red">(NEW)</span></a>-->
@@ -21999,16 +22236,16 @@ window.onload = function() {
 				<span class='infoLink noselect' id="infoBackButton" onclick='infoBack()' style='text-decoration:none!important;display:none'>←&nbsp;</span><span class="menuTitle" id="infoTitle">Title</span>
 				<div class="menuText" id="infoText">Text</div>
 			</div>
-			<input type="text" id="infoSearch" placeholder="Element..." oninput="showInfo(this.value);" enterkeyhint="done"></input>
+				<input type="text" id="infoSearch" placeholder="Element..." oninput="showInfo(this.value);" enterkeyhint="done"></input>
 		</div>
 	
 		<!--Mod Manager Page with the list of current mods and a url input box with a plus button to add it-->
 		<div id="modParent">
 			<div id="modManager">
 				<button class="XButton" onclick="closeMenu();">-</button>
-				<span class="menuTitle">Enabled Mods</span>
+					<span class="menuTitle" id="modManagerTitle">Enabled Mods</span>
 				<ul class="menuText" id="modManagerList"></ul>
-				<span id="noMods" style="display:none">You have no mods enabled.<br><br></span>
+					<span id="noMods" style="display:none">You have no mods enabled.<br><br></span>
 				<script>
 					// If enabledMods has items, add an li to modManagerList for each item with the href to the item, target blank, and the item's name, with "<span class="removeModX" onclick='removeMod('>X</span>" after the link
 					if (enabledMods.length > 0) {
@@ -22024,7 +22261,7 @@ window.onload = function() {
 						document.getElementById("noMods").style.display = "block";
 					}
 				</script>
-				<span id="modManagerTagline">See the <a href="https://sandboxels.R74n.com/mod-list" target="_blank">Mod List</a> or <a href="https://github.com/R74nCom/sandboxels/" target="_blank">GitHub</a>.</span>
+					<span id="modManagerTagline">See the <a href="https://sandboxels.R74n.com/mod-list" target="_blank">Mod List</a> or <a href="https://github.com/R74nCom/sandboxels/" target="_blank">GitHub</a>.</span>
 				<a id="modManagerRefresh" style="padding-top:1em;display:none" href="#" onclick="location.reload();return false;">Reload to apply changes!</a>
 				<input type="text" id="modManagerUrl" placeholder=".JS or URL..." onkeydown="if (event.keyCode == 13) {addMod(this.value);this.value = '';};this.focus();" enterkeyhint="done"></input>
 			</div>
@@ -22048,18 +22285,18 @@ window.onload = function() {
 				</div>
 				<div class="menuTab" data-tab="featured">
 					<div class="menuText" id="saveFeaturedList">Loading saves...</div>
-					<span class="menuBottomButton" onclick="window.open('https://github.com/R74nCom/Sandboxels-Featured-Saves/tree/main', '_blank').focus();">View Source</span>
+					<span class="menuBottomButton" id="savesViewSource" onclick="window.open('https://github.com/R74nCom/Sandboxels-Featured-Saves/tree/main', '_blank').focus();">View Source</span>
 				</div>
 				<div class="menuTab" data-tab="workshop">
 					<span class="menuTopBar" style="display:none">
 						<input type="text" placeholder="Search..." id="workshopSearch">
 						<select id="workshopFilter">
-							<option value="" disabled selected>Filter...</option>
-							<option value="0">All Saves</option>
+						<option value="" id="workshopFilterLabel" disabled selected>Filter...</option>
+						<option value="0" id="workshopFilterAll">All Saves</option>
 						</select>
 					</span>
 					<div class="menuText" id="saveWorkshopList">
-						<div style="margin-top:1em">Get <a href="https://store.steampowered.com/app/3664820/Sandboxels/" target="_blank">Sandboxels on Steam</a> to browse saves and publish your own!</div>
+						<div style="margin-top:1em" id="workshopSteamMessage">Get <a href="https://store.steampowered.com/app/3664820/Sandboxels/" target="_blank">Sandboxels on Steam</a> to browse saves and publish your own!</div>
 					</div>
 					<span class="menuBottomButton" onclick="openWorkshopPopup();" style="display:none" id="savesOpenWorkshop">Open Workshop</span>
 					<span class="menuBottomButton" onclick="window.open('https://store.steampowered.com/app/3664820/Sandboxels/', '_blank').focus();" id="savesGetOnSteam">Get on Steam</span>
@@ -22068,20 +22305,20 @@ window.onload = function() {
 					<span class="menuTopBar">
 						<input type="text" placeholder="Search..." id="discordSearch" oninput="discordSearchChange();">
 						<select id="discordFilter" onchange="showDiscordSaves();">
-							<option value="" disabled selected>Filter...</option>
-							<option value="Popular">Popular</option>
-							<option value="Recent">Recent</option>
+						<option value="" id="discordFilterLabel" disabled selected>Filter...</option>
+						<option value="Popular" id="discordFilterPopular">Popular</option>
+						<option value="Recent" id="discordFilterRecent">Recent</option>
 						</select>
 					</span>
 					<div class="menuText" id="saveDiscordList">Loading saves...</div>
-					<span class="menuBottomButton" onclick="window.open('https://discord.gg/ejUc6YPQuS', '_blank').focus();">Join Server</span>
+					<span class="menuBottomButton" id="discordJoinServer" onclick="window.open('https://discord.gg/ejUc6YPQuS', '_blank').focus();">Join Server</span>
 				</div>
 			</div>
 		</div>
 		<div id="savePromptParent" class="menuParent">
 			<div id="savePromptMenu" class="menuScreen">
 				<button class="XButton" onclick="closeMenu();">-</button>
-				<span class="menuTitle">Save to Slot</span>
+					<span class="menuTitle" id="savePromptTitle">Save to Slot</span>
 				<div class="menuText" style="padding-top:1em">
 					<span class="setting-span"><span id="saveNameLabel">Name</span>: <input type="text" id="saveName" placeholder="Save Name..."></span>
 					<span class="setting-span multisetting">
@@ -22106,7 +22343,7 @@ window.onload = function() {
 		<div id="promptParent" class="menuParent">
 			<div id="promptMenu" class="menuScreen">
 				<button class="XButton" onclick="closeMenu();">-</button>
-				<span class="menuTitle">Prompt</span>
+					<span class="menuTitle" id="promptTitle">Prompt</span>
 				<div class="menuText" style="padding-top:1em">
 					<span id="promptMenuText">Are you sure?</span>
 					<br><br><br>
@@ -22147,7 +22384,7 @@ window.onload = function() {
 				<button class="XButton" onclick="closeMenu();">-</button>
 				<span class="menuTitle" id="settingsMenuTitle">Settings</span>
 				<div class="menuText" style="padding-top:1em">
-					<span setting="units" class="setting-span multisetting" title="Default: Metric">
+					<span setting="units" id="settingRow-units" class="setting-span multisetting" title="Default: Metric">
 						<span id="settingLabel-units">Units</span> <select onchange="setSetting('units',this.value);">
 							<option value="m" id="setting-units-m" selected>Metric</option>
 							<option value="i" id="setting-units-i">Imperial</option>
@@ -22155,7 +22392,7 @@ window.onload = function() {
 						</select>
 						&nbsp;
 					</span>
-					<span setting="unhide" class="setting-span multisetting" title="Default: Hide Some Elements">
+					<span setting="unhide" id="settingRow-unhide" class="setting-span multisetting" title="Default: Hide Some Elements">
 						<span id="settingLabel-unhide">Hiding</span> <select onchange="setSetting('unhide',parseInt(this.value));this.nextElementSibling.innerText=langKey('gui.settingsRefresh','Refresh Page')">
 							<option value="0" id="setting-unhide-0" selected>Hide Some</option>
 							<option value="1" id="setting-unhide-1">Unhide All</option>
@@ -22164,13 +22401,20 @@ window.onload = function() {
 						<a onclick="window.location.reload();" href="#" class="settingsRefresh"></a>
 						&nbsp;
 					</span>
-					<span setting="view" class="setting-span multisetting" title="Default: Unset">
+					<span setting="elementPaletteMode" id="settingRow-elementPaletteMode" class="setting-span multisetting" title="只改变元素选择面板，不影响世界中已有元素">
+						<span id="settingLabel-elementPaletteMode">元素面板</span> <select id="elementPaletteModeSelect" onchange="setElementPaletteMode(this.value)">
+							<option value="civilization" id="setting-elementPaletteMode-civilization" selected>文明发展</option>
+							<option value="laboratory" id="setting-elementPaletteMode-laboratory">实验室</option>
+						</select>
+						&nbsp;
+					</span>
+					<span setting="view" id="settingRow-view" class="setting-span multisetting" title="Default: Unset">
 						<span id="settingLabel-view">Default View</span> <select id="viewSelect" onchange="setSetting('view',parseInt(this.value));setView(parseInt(this.value))">
 							<option value="0" id="setting-view-0" selected>Unset</option>
 						</select>
 					</span>
 					<br>
-					<span setting="bg" class="setting-span multisetting" title="Default: Black (#000000)">
+					<span setting="bg" id="settingRow-bg" class="setting-span multisetting" title="Default: Black (#000000)">
 						<span id="settingLabel-bg">Background</span> <input onchange="setSetting('bg',this.value); this.nextElementSibling.value = 'color';" oninput="setSetting('bg',this.value); clearCanvasBackground();" type="color" value="#000000">
 						<select onchange="if (this.value !== 'custom') setCanvasBackground(this.value)">
 							<option value="custom" id="setting-bg-custom" disabled>Custom</option>
@@ -22179,7 +22423,7 @@ window.onload = function() {
 						</select>
 						&nbsp;
 					</span>
-					<span setting="theme" class="setting-span multisetting" title="Default: Dark">
+					<span setting="theme" id="settingRow-theme" class="setting-span multisetting" title="Default: Dark">
 						<span id="settingLabel-theme">Theme</span> <select onchange="setSetting('theme',this.value); setThemeElement(this.value)">
 							<option value="" id="setting-theme-default" selected>Dark</option>
 							<option value="brick" id="setting-theme-brick">Brick</option>
@@ -22194,7 +22438,7 @@ window.onload = function() {
 						&nbsp;
 					</span>
 					<br>
-					<span setting="pixelsize" class="setting-span multisetting" title="Default: Medium">
+					<span setting="pixelsize" id="settingRow-pixelsize" class="setting-span multisetting" title="Default: Medium">
 						<span id="settingLabel-pixelsize">Canvas Size</span> <select onchange="setSetting('pixelsize',this.value); if(!currentPixels.length){autoResizeCanvas()} else {this.nextElementSibling.innerText=langKey('gui.settingsReset','Reset Scene')}">
 							<option value="12" id="setting-pixelsize-12">Tiny</option>
 							<option value="8" id="setting-pixelsize-8">Small</option>
@@ -22205,7 +22449,7 @@ window.onload = function() {
 						<span onclick="resetPrompt()" class="settingsReset"></span>
 						&nbsp;
 					</span>
-					<span setting="border" class="setting-span multisetting" title="Default: Solid">
+					<span setting="border" id="settingRow-border" class="setting-span multisetting" title="Default: Solid">
 						<span id="settingLabel-border">Border</span> <select onchange="setSetting('border',isNaN(this.value) ? this.value : parseInt(this.value));updateBorder();">
 							<option value="0" id="setting-border-0" selected>Solid</option>
 							<option value="1" id="setting-border-1">Void</option>
@@ -22227,7 +22471,7 @@ window.onload = function() {
 						<input type="button" value="Reset Warning" id="settingLabel-resetwarning" class="toggleInput" onclick="toggleInput(this,'resetwarning',false)" state="1">
 					</span>
 					<span setting="textures" class="setting-span multisetting" title="Default: ON">
-						<input type="button" value="Fancy Pixels" id="settingLabel-textures" class="toggleInput" onclick="toggleInput(this,'textures',false)" state="1"><span class="helpMark" title="Toggles special textures, like Brick, and element-specific renderers, like heat glow. May decrease performance.">?</span>
+						<input type="button" value="Fancy Pixels" id="settingLabel-textures" class="toggleInput" onclick="toggleInput(this,'textures',false)" state="1"><span class="helpMark" id="settingTexturesHelp" title="Toggles special textures, like Brick, and element-specific renderers, like heat glow. May decrease performance.">?</span>
 					</span>
 					<span setting="precision" class="setting-span multisetting" title="Default: OFF">
 						<input type="button" value="Precision Dot" id="settingLabel-precision" class="toggleInput" onclick="toggleInput(this,'precision',false)" state="0">
@@ -22241,6 +22485,11 @@ window.onload = function() {
 					<span setting="humanSocietySpeech" class="setting-span multisetting" title="控制文明人类头顶语言气泡">
 						<input type="button" value="人类说话" id="settingLabel-humanSocietySpeech" class="toggleInput" onclick="toggleInput(this,'humanSocietySpeech',false)" state="1">
 					</span>
+					<span setting="humanSocietyBuildingScale" id="settingRow-humanSocietyBuildingScale" class="setting-span multisetting" title="建筑贴图的显示大小，不改变建筑的逻辑占地">
+						<span id="settingLabel-humanSocietyBuildingScale">Building Sprite Size</span>
+						<input id="setting-humanSocietyBuildingScale" type="range" min="50" max="200" step="5" value="100" oninput="setSetting('humanSocietyBuildingScale',parseInt(this.value));this.nextElementSibling.textContent=this.value+'%'">
+						<output>100%</output>
+					</span>
 					<span setting="lang" class="setting-span" title="Default: Disabled" style="display:none" id="setting-span-lang">
 						<span id="settingLabel-lang">Language</span>
 					</span>
@@ -22253,8 +22502,8 @@ window.onload = function() {
 							<option value="0.25" id="setting-events-0.25">Overdrive (DANGEROUS)</option>
 						</select>&nbsp;
 					</span>
-					<span setting="tps" class="setting-span multisetting" title="Simulation speed in Ticks Per Second. Default: 30">
-						<span id="settingLabel-airtemp">Speed</span> <input type="number" min="1" max="150" value="30" placeholder="30" onchange="if(this.value===''){this.value=30} setTPS(Math.abs(parseInt(this.value)) || 30); this.value=tps; setSetting('tps',tps)">&nbsp;
+					<span setting="tps" id="settingRow-tps" class="setting-span multisetting" title="Simulation speed in Ticks Per Second. Default: 30">
+						<span id="settingLabel-tps">Speed</span> <input type="number" min="1" max="150" value="30" placeholder="30" onchange="if(this.value===''){this.value=30} setTPS(Math.abs(parseInt(this.value)) || 30); this.value=tps; setSetting('tps',tps)">&nbsp;
 					</span>
 					<span setting="airtemp" class="setting-span multisetting" title="Temperature that pixels spawn in at. Default: 20 (°C)">
 						<span id="settingLabel-airtemp">Air Temp</span> <input type="number" value="20" placeholder="20" onchange="if(this.value===''){this.value=20} airTemp=parseFloat(this.value); setSetting('airtemp',airTemp)">&nbsp;
@@ -22266,10 +22515,10 @@ window.onload = function() {
 						<span id="settingLabel-abszero">Abs Zero</span> <input type="number" value="-273.15" placeholder="-273.15" onchange="if(this.value===''){this.value=-273.15} absoluteZero=parseFloat(this.value); setSetting('abszero',absoluteZero)">&nbsp;
 					</span>
 					<span class="setting-span" style="text-align:center">
-						<input type="button" value="Reset Discovered" id="resetDiscovered" onclick="promptConfirm('This action will RESET ALL DISCOVERED ELEMENTS and refresh the page.', (r)=>{if (!r)return;settings.unlocked={};saveSettings();location.reload()}, 'WARNING', true)" class="settingsButton">
-						<input type="button" value="Reset All" id="resetAll" onclick="promptConfirm('This action will RESET ALL YOUR DATA, not including save slots, and refresh the page.', (r)=>{if (!r)return;localStorage.removeItem('settings');location.reload()}, 'WARNING', true)" class="settingsButton">
-						<input type="button" value="Clear Mods" id="clearMods" onclick="promptConfirm('This action will remove all enabled mods and refresh the page.', (r)=>{if (!r)return;localStorage.removeItem('enabledMods');location.reload()}, 'WARNING', true)" class="settingsButton">
-						<input type="button" value="Clear Saves" id="clearSaves" onclick="promptConfirm('This action will PERMANENTLY ERASE all local save slots.', (r)=>{if (!r)return;for (var i = 1; i <= 12; i++) {localStorage.removeItem('SandboxelsSaves/'+i)}}, 'WARNING', true)" class="settingsButton">
+						<input type="button" value="Reset Discovered" id="resetDiscovered" onclick="promptConfirm(langKey('gui.prompt.resetDiscovered','This action will RESET ALL DISCOVERED ELEMENTS and refresh the page.'), (r)=>{if (!r)return;settings.unlocked={};saveSettings();location.reload()}, 'WARNING', true)" class="settingsButton">
+						<input type="button" value="Reset All" id="resetAll" onclick="promptConfirm(langKey('gui.prompt.resetAll','This action will RESET ALL YOUR DATA, not including save slots, and refresh the page.'), (r)=>{if (!r)return;localStorage.removeItem('settings');location.reload()}, 'WARNING', true)" class="settingsButton">
+						<input type="button" value="Clear Mods" id="clearMods" onclick="promptConfirm(langKey('gui.prompt.clearMods','This action will remove all enabled mods and refresh the page.'), (r)=>{if (!r)return;localStorage.removeItem('enabledMods');location.reload()}, 'WARNING', true)" class="settingsButton">
+						<input type="button" value="Clear Saves" id="clearSaves" onclick="promptConfirm(langKey('gui.prompt.clearSaves','This action will PERMANENTLY ERASE all local save slots.'), (r)=>{if (!r)return;for (var i = 1; i <= 12; i++) {localStorage.removeItem('SandboxelsSaves/'+i)}}, 'WARNING', true)" class="settingsButton">
 					</span>
 					<span setting="imageelem" class="setting-span multisetting" title="Default: Wood">
 						<span id="settingLabel-imageelem">Image Elem</span> <input type="text" value="wood" placeholder="wood" onchange="if(this.value===''){this.value='wood'}; setSetting('imageelem',this.value.trim())">
@@ -22287,7 +22536,7 @@ window.onload = function() {
 <div id="bottomInfoBox">
 	<div id="bottomTopBox">
 		<!-- <iframe src="promo.html" style="border:none;width: 300px; height: 250px;"></iframe> -->
-		<p id="langSelectP">🌐 <span id="langSelectLabel">Language</span> <a href="https://sandboxels.R74n.com/translate" target="_blank">[BETA]</a>: <select onchange="if (this.value === 'en'){setSetting('lang',null)}else{setSetting('lang',this.value)}window.location.reload()" id="langSelect">
+		<p id="langSelectP">🌐 <span id="langSelectLabel">Language</span> <a href="https://sandboxels.R74n.com/translate" target="_blank" id="translationBeta">[BETA]</a>: <select onchange="if (this.value === 'en'){setSetting('lang',null)}else{setSetting('lang',this.value)}window.location.reload()" id="langSelect">
 			<option selected value="en">English (American)</option>
 			<option value="en_gb">English (British)</option>
 			<option value="en_ca">English (Canadian)</option>
@@ -22344,7 +22593,9 @@ if (document.referrer && document.referrer.indexOf("r74n.") === -1) {
 					if (!isOnSite && !skipDialog) { location.href = "https://r74n.com"; return }
 					if (typeof playlightSDK === "undefined") {
 						let button = document.getElementById("playlightButton");
-						if (button) button.value = "Loading...";
+						if (button) button.value = langKey("gui.loading","Loading...");
+						const playlightMoreText = JSON.stringify(langKey("gui.moreGames","More Games"));
+						const playlightErrorText = JSON.stringify(langKey("gui.loadError","Error..."));
 						document.head.insertAdjacentHTML("beforeend",`<link rel="stylesheet" href="https://sdk.playlight.dev/playlight-sdk.css">`);
 						let script = document.createElement("script");
 						script.setAttribute("type","module");
@@ -22360,10 +22611,10 @@ if (document.referrer && document.referrer.indexOf("r74n.") === -1) {
 		}
 	});
 	${!skipDialog ? "playlightSDK.setDiscovery(true);" : ""}
-	${!skipDialog ? "document.getElementById('playlightButton').value = 'More Games';" : "" }
+	${!skipDialog ? "document.getElementById('playlightButton').value = "+playlightMoreText+";" : "" }
   } catch (error) {
     console.error("Error loading the Playlight SDK:", error);
-	${!skipDialog ? "document.getElementById('playlightButton').value = 'Error...';" : "" }
+	${!skipDialog ? "document.getElementById('playlightButton').value = "+playlightErrorText+";" : "" }
   }`;
 						document.head.appendChild(script);
 					}
@@ -22378,16 +22629,16 @@ if (document.referrer && document.referrer.indexOf("r74n.") === -1) {
 		</script>
 		<div id="bottomTopBoxColumns">
 			<div>
-				<div id="newsletterFrame"><a href="https://news.r74n.com/" target="_blank">R74n Newsletter</a>: Be notified when Sandboxels and other R74n projects are updated, along with ramblings from the developer!<br><br>
+				<div id="newsletterFrame"><a id="newsletterTitle" href="https://news.r74n.com/" target="_blank">R74n Newsletter</a>: <span id="newsletterDesc">Be notified when Sandboxels and other R74n projects are updated, along with ramblings from the developer!</span><br><br>
 					<form action="https://news.r74n.com/api/v1/free?nojs=true" method="post" class="form _form_1mxvn_6" novalidate="" target="_blank"><input type="hidden" name="first_url" value="https://news.r74n.com/embed"><input type="hidden" name="first_referrer"><input type="hidden" name="current_url" value="https://news.r74n.com/embed"><input type="hidden" name="current_referrer"><input type="hidden" name="referral_code"><input type="hidden" name="source" value="embed"><input type="hidden" name="referring_pub_id"><input type="hidden" name="additional_referring_pub_ids">
-					<input type="email" placeholder="Type your email..." name="email" autocomplete="email" style="padding:15px;margin-right:0;border-color:#F4ABFF;border-right:none"><input type="submit" value="Subscribe" style="background: #F4ABFF; padding:15px; border:solid 2px #F4ABFF; border-radius: 0"></input>
+				<input id="newsletterEmail" type="email" placeholder="Type your email..." name="email" autocomplete="email" style="padding:15px;margin-right:0;border-color:#F4ABFF;border-right:none"><input id="newsletterSubscribe" type="submit" value="Subscribe" style="background: #F4ABFF; padding:15px; border:solid 2px #F4ABFF; border-radius: 0"></input>
 					</form>
 				</div>
 			</div>
 			<div>
-				<p>More R74n games: <a href="https://R74n.com/gentown/" target="_blank">GenTown <span style="color:red">(NEW)</span>, <a href="https://R74n.com/cook/" target="_blank">Infinite Chef</a></a></p>
-				<p>Email us at <a href="mailto:contact@R74n.com?subject=%5BSandboxels%5D">contact@R74n.com</a> for advertising, help, or education!</p>
-				<p>Support development by subscribing on <a href="https://www.patreon.com/R74n" style="color:#f96854" rel="me" target="_blank">our Patreon</a>! Many benefits!!</p>
+				<p id="moreGames">More R74n games: <a href="https://R74n.com/gentown/" target="_blank">GenTown <span style="color:red">(NEW)</span>, <a href="https://R74n.com/cook/" target="_blank">Infinite Chef</a></a></p>
+				<p id="contactUs">Email us at <a href="mailto:contact@R74n.com?subject=%5BSandboxels%5D">contact@R74n.com</a> for advertising, help, or education!</p>
+				<p id="supportUs">Support development by subscribing on <a href="https://www.patreon.com/R74n" style="color:#f96854" rel="me" target="_blank">our Patreon</a>! Many benefits!!</p>
 			</div>
 		</div>
 		<style>
@@ -22409,7 +22660,7 @@ if (document.referrer && document.referrer.indexOf("r74n.") === -1) {
 				else if (settings.lang) { langSelect.value = settings.lang }
 				else { langSelect.value = "en" }
 				if (lang["#lang.credit"]) {
-					document.getElementById("langCredit").innerText = "Translation by "+lang["#lang.credit"]
+					document.getElementById("langCredit").innerText = langKey("guitemplate.translationBy","Translation by $1",{1:lang["#lang.credit"]})
 					document.getElementById("langCredit").style.display = "block";
 				}
 			})
@@ -22453,7 +22704,7 @@ if (document.referrer && document.referrer.indexOf("r74n.") === -1) {
 		</script>
 	</div>
 	<div id="bottomRightBox">
-		<h2>Controls</h2>
+		<h2 id="controlsTitle">Controls</h2>
 		<table id="controlsTable">
 			<tr><td>Draw pixels</td>   <td><kbd>Left Click</kbd></td></tr>
 			<tr><td>Erase pixels</td>   <td><kbd>Right Click</kbd></td></tr>
@@ -22483,7 +22734,7 @@ if (document.referrer && document.referrer.indexOf("r74n.") === -1) {
 	window.addEventListener('beforeinstallprompt', (e) => {
 		e.preventDefault();
 		deferredPrompt = e;
-		document.getElementById("install-button").style.display = "inline-block";
+		document.getElementById("installButtonWrapper").style.display = "inline-block";
 		//showInAppInstallPromotion();
 	});
 </script>
@@ -22495,24 +22746,29 @@ if (document.referrer && document.referrer.indexOf("r74n.") === -1) {
 			if (!lang[key]) continue;
 			if (key.indexOf("gui.") === 0) {
 				let id = key.substr(4);
-				let qual;
-				if (id.indexOf(".") !== -1) {
-					let split = id.split(".");
-					id = split[0];
-					qual = split[1];
+				let qual = null;
+				for (const candidate of ["title","placeholder","content","html","alt","ariaLabel"]) {
+					const suffix = "."+candidate;
+					if (id.endsWith(suffix)) {
+						id = id.slice(0,-suffix.length);
+						qual = candidate;
+						break;
+					}
 				}
 				let e = document.getElementById(id);
 				if (e) {
 					if (!qual) {
-						if (e.getAttribute("type") === "button") e.value = lang[key];
-						if (e.hasAttribute("placeholder")) e.setAttribute("placeholder",lang[key]);
-						if (e.hasAttribute("content")) e.setAttribute("content",lang[key]);
+						if (e.getAttribute("type") === "button" || e.getAttribute("type") === "submit") e.value = lang[key];
+						else if (e.hasAttribute("placeholder")) e.setAttribute("placeholder",lang[key]);
+						else if (e.hasAttribute("content")) e.setAttribute("content",lang[key]);
 						else e.innerText = lang[key];
 					}
 					else if (qual === "title") e.title = lang[key];
-				}
-				else {
-					console.log(langCode+" Invalid GUI Element '"+id+"'");
+					else if (qual === "placeholder") e.setAttribute("placeholder",lang[key]);
+					else if (qual === "content") e.setAttribute("content",lang[key]);
+					else if (qual === "html") e.innerHTML = lang[key];
+					else if (qual === "alt") e.setAttribute("alt",lang[key]);
+					else if (qual === "ariaLabel") e.setAttribute("aria-label",lang[key]);
 				}
 			}
 		}
@@ -22521,12 +22777,19 @@ if (document.referrer && document.referrer.indexOf("r74n.") === -1) {
 			const opt = themeOptions[i];
 			if (lang[opt.value]) opt.innerText = elemTitleCase(lang[opt.value]);
 		}
+		document.querySelectorAll("[setting][title]").forEach((settingRow) => {
+			const settingName = settingRow.getAttribute("setting");
+			settingRow.title = langKey("gui.settingRow-"+settingName+".title",settingRow.title);
+		});
+		for (const tagId in saveTags) {
+			saveTags[tagId] = langKey("saveTag."+tagId,saveTags[tagId]);
+		}
 	}
 
 	if (standalone) {
 		document.getElementById("bottomInfoBox").style.display = "none";
 		document.getElementById("pagetitle").style.display = "none";
-		document.getElementById("noMods").insertAdjacentHTML("afterend","Requires Internet connection.<br><br>")
+		document.getElementById("noMods").insertAdjacentHTML("afterend",langKey("gui.requiresInternet.html","Requires Internet connection.<br><br>"))
 		document.getElementById("gameDiv").classList.add("standalone");
 		if (isMobile) {
 			document.getElementById("gameDiv").classList.add("mobile");

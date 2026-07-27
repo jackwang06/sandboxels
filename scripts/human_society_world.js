@@ -8,25 +8,106 @@
     const BUILDING_SPRITE_WIDTH = 3;
     const BUILDING_SPRITE_HEIGHT = 3;
     const BUILDING_SPRITE_GAP = 2;
+    const BUILDING_SPRITE_ERA_ORDER = ["tribal", "stone", "agriculture", "bronze", "iron", "castle"];
+    const BUILDING_SPRITE_ERAS = Object.freeze({
+        town_center: BUILDING_SPRITE_ERA_ORDER.slice(),
+        hut: BUILDING_SPRITE_ERA_ORDER.slice(),
+        hearth: BUILDING_SPRITE_ERA_ORDER.slice(),
+        lumberyard: BUILDING_SPRITE_ERA_ORDER.slice(),
+        workshop: ["stone", "agriculture", "bronze", "iron", "castle"],
+        quarry: ["stone", "agriculture", "bronze", "iron", "castle"],
+        gate: ["stone", "agriculture", "bronze", "iron", "castle"],
+        market: ["agriculture", "bronze", "iron", "castle"],
+        foundry: ["bronze", "iron", "castle"],
+        kiln: ["iron", "castle"],
+        forge: ["castle"],
+        watchtower: ["iron", "castle"],
+        keep: ["castle"],
+        siege_workshop: ["castle"],
+        library: ["castle"]
+    });
+    const BUILDING_SPRITE_ALIASES = Object.freeze({
+        civ_banner: "town_center",
+        civ_hut_core: "hut",
+        civ_hearth_core: "hearth",
+        civ_lumberyard_core: "lumberyard",
+        civ_workshop_core: "workshop",
+        civ_quarry_core: "quarry",
+        civ_gate: "gate",
+        palisade: "gate",
+        palisade_gate: "gate",
+        stone_gate: "gate",
+        civ_market_core: "market",
+        civ_foundry_core: "foundry",
+        civ_kiln_core: "kiln",
+        civ_forge_core: "forge",
+        civ_tower_core: "watchtower",
+        civ_keep_core: "keep",
+        civ_siege_workshop_core: "siege_workshop",
+        civ_library_core: "library"
+    });
     const MAX_CHRONICLE_EVENTS = 2000;
     const ERA_POPULATION_TARGETS = [6, 8, 12, 16, 20, 24];
     const ERA_ROLE_WEIGHTS = [
         {food: 2, wood: 2, builder: 1, flex: 1},
         {food: 2, wood: 2, miner: 2, builder: 1, artisan: 1},
         {food: 4, wood: 2, miner: 1, builder: 1, forester: 1, artisan: 1, military: 1, flex: 1},
-        {food: 4, wood: 2, miner: 3, builder: 2, forester: 1, artisan: 1, industry: 1, scholar: 1, military: 1},
-        {food: 5, wood: 2, miner: 4, builder: 2, forester: 1, artisan: 1, industry: 2, scholar: 1, military: 2},
-        {food: 6, wood: 2, miner: 4, builder: 2, forester: 1, artisan_trade: 2, industry: 2, scholar: 2, military: 3}
+        {food: 4, wood: 2, miner: 3, builder: 2, forester: 1, artisan: 2, scholar: 1, military: 1},
+        {food: 5, wood: 2, miner: 4, builder: 2, forester: 1, artisan: 3, scholar: 1, military: 2},
+        {food: 6, wood: 2, miner: 4, builder: 2, forester: 2, artisan_trade: 3, scholar: 2, military: 3}
     ];
 
     function number(value, fallback) {
         return Number.isFinite(Number(value)) ? Number(value) : fallback;
     }
 
-    function buildingSpriteRect(x, y) {
+    function buildingSpriteRect(x, y, sourceWidth, sourceHeight, scalePercent) {
         x = Math.round(number(x, 0));
         y = Math.round(number(y, 0));
-        return {left: x - 1, right: x + 1, top: y - 2, bottom: y, width: 3, height: 3, coreX: x, coreY: y};
+        const intrinsicWidth = Math.max(1, number(sourceWidth, 1));
+        const intrinsicHeight = Math.max(1, number(sourceHeight, 1));
+        const percent = Math.max(50, Math.min(200, number(scalePercent, 100)));
+        const desiredLongestSide = BUILDING_SPRITE_WIDTH * percent / 100;
+        const unitsPerSourcePixel = Math.max(
+            desiredLongestSide / Math.max(intrinsicWidth, intrinsicHeight),
+            1 / intrinsicWidth,
+            1 / intrinsicHeight
+        );
+        const spriteWidth = intrinsicWidth * unitsPerSourcePixel;
+        const spriteHeight = intrinsicHeight * unitsPerSourcePixel;
+        const left = x + 0.5 - spriteWidth / 2;
+        const bottom = y + 1;
+        return {
+            left,
+            right: left + spriteWidth,
+            top: bottom - spriteHeight,
+            bottom,
+            width: spriteWidth,
+            height: spriteHeight,
+            coreX: x,
+            coreY: y
+        };
+    }
+
+    function buildingSpriteDescriptor(buildingType, requestedEraId) {
+        const rawType = String(buildingType || "");
+        const type = BUILDING_SPRITE_ALIASES[rawType] || rawType;
+        const availableEras = BUILDING_SPRITE_ERAS[type];
+        if (!availableEras || !availableEras.length) return null;
+        const requestedIndex = BUILDING_SPRITE_ERA_ORDER.indexOf(String(requestedEraId || ""));
+        let eraId = availableEras[0];
+        if (requestedIndex >= 0) {
+            for (let i = 0; i < availableEras.length; i++) {
+                const candidateIndex = BUILDING_SPRITE_ERA_ORDER.indexOf(availableEras[i]);
+                if (candidateIndex <= requestedIndex) eraId = availableEras[i];
+                else break;
+            }
+        }
+        return {
+            type,
+            eraId,
+            fileName: "building_" + eraId + "_" + type + ".png"
+        };
     }
 
     function rectGap(a, b) {
@@ -36,11 +117,12 @@
     }
 
     function buildingSpacingValid(a, b, gap) {
-        const first = a && a.left !== undefined ? a : buildingSpriteRect(a.x, a.y);
-        const second = b && b.left !== undefined ? b : buildingSpriteRect(b.x, b.y);
-        const required = Math.max(0, Math.floor(number(gap, BUILDING_SPRITE_GAP)));
-        const spacing = rectGap(first, second);
-        return spacing.horizontal >= required || spacing.vertical >= required;
+        if (!a || !b) return false;
+        const firstX = Math.round(number(a.coreX !== undefined ? a.coreX : a.x, 0));
+        const firstY = Math.round(number(a.coreY !== undefined ? a.coreY : a.y, 0));
+        const secondX = Math.round(number(b.coreX !== undefined ? b.coreX : b.x, 0));
+        const secondY = Math.round(number(b.coreY !== undefined ? b.coreY : b.y, 0));
+        return firstX !== secondX || firstY !== secondY;
     }
 
     function compareClaimOrder(a, b) {
@@ -319,12 +401,15 @@
         BUILDING_SPRITE_WIDTH,
         BUILDING_SPRITE_HEIGHT,
         BUILDING_SPRITE_GAP,
+        BUILDING_SPRITE_ERA_ORDER: BUILDING_SPRITE_ERA_ORDER.slice(),
+        BUILDING_SPRITE_ERAS,
         MAX_CHRONICLE_EVENTS,
         ERA_POPULATION_TARGETS: ERA_POPULATION_TARGETS.slice(),
         ERA_ROLE_WEIGHTS: ERA_ROLE_WEIGHTS.map((weights) => Object.assign({}, weights)),
         TerritoryIndex,
         ResourceReservations,
         buildingSpriteRect,
+        buildingSpriteDescriptor,
         buildingSpacingValid,
         resourcePriority,
         chooseResource,

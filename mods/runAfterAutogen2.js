@@ -40,14 +40,17 @@ function createButtonsAndCountElements() {
 		}
 		createElementButton(element);
 	}
+	if (typeof refreshElementPaletteVisibility === "function") refreshElementPaletteVisibility(false);
 	if (document.getElementById("categoryButton-states")) {
 		// move it to the end of its parent
 		document.getElementById("categoryButton-states").parentNode.appendChild(document.getElementById("categoryButton-states"));
 	}
 	// Set the first button in categoryControls div to be the current category
-	document.getElementById("categoryControls").children[0].click()
+	let firstCategoryButton = typeof firstVisiblePaletteCategoryButton === "function" ? firstVisiblePaletteCategoryButton() : document.getElementById("categoryControls").children[0];
+	if (firstCategoryButton) firstCategoryButton.click();
 	document.getElementById("extraInfo").insertAdjacentHTML("beforeend", "<small><p>v" + currentversion + " • " + elementCount + " elements, including " + hiddenCount + " hidden ones.</p><p>©2021-" + new Date().getFullYear() + ". All Rights Reserved. <a style='color:#00ffff' href='https://r74n.com'>R74n</a></p></small>");
 	selectElement(currentElement);
+	if (typeof refreshElementPaletteVisibility === "function") refreshElementPaletteVisibility(true);
 	}, 10);
 };
 

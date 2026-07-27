@@ -34,6 +34,7 @@ function createHarness(options) {
     const everyTickCallbacks = [];
     const resetCallbacks = [];
     const pixelLifecycleListeners = [];
+    const overlayPixels = Array.isArray(opts.overlayPixels) ? opts.overlayPixels : [];
     const wallBehavior = Object.freeze([["XX", "XX", "XX"], ["XX", "XX", "XX"], ["XX", "XX", "XX"]]);
     const powderBehavior = Object.freeze([["XX", "XX", "XX"], ["XX", "XX", "XX"], ["M2", "M1", "M2"]]);
 
@@ -134,10 +135,27 @@ function createHarness(options) {
         }, cloneProperties(definition.properties), cloneProperties(initialProperties));
         pixel.color = pixelColorPick(pixel);
         currentPixels.push(pixel);
-        pixelMap[x][y] = pixel;
+        if (Array.isArray(opts.overlayStorageElements) && opts.overlayStorageElements.includes(elementName)) {
+            pixel._overlap = true;
+            overlayPixels.push(pixel);
+        }
+        else pixelMap[x][y] = pixel;
         if (definition.onPlace) definition.onPlace(pixel);
         pixelLifecycleListeners.slice().forEach((listener) => listener({type: "create", pixel}));
         return pixel;
+    }
+
+    function deletePixelObject(pixel) {
+        if (!pixel || pixel.del) return false;
+        const old = {element: pixel.element, x: pixel.x, y: pixel.y, treeLineage: pixel.treeLineage, treeId: pixel.treeId, civPlantedTreeId: pixel.civPlantedTreeId};
+        pixel.del = true;
+        const definition = elements[pixel.element];
+        if (definition && definition.onDelete) definition.onDelete(pixel);
+        if (pixelMap[pixel.x] && pixelMap[pixel.x][pixel.y] === pixel) pixelMap[pixel.x][pixel.y] = undefined;
+        const overlayIndex = overlayPixels.indexOf(pixel);
+        if (overlayIndex !== -1) overlayPixels.splice(overlayIndex, 1);
+        pixelLifecycleListeners.slice().forEach((listener) => listener({type: "delete", pixel, old}));
+        return true;
     }
 
     function deletePixel(x, y) {
@@ -200,7 +218,8 @@ function createHarness(options) {
             return {x, y, element: "civ_tunnel"};
         }
         const pixel = getPixel(x, y);
-        return pixel && pixel.element === elementName ? pixel : null;
+        if (pixel && pixel.element === elementName) return pixel;
+        return overlayPixels.find((candidate) => candidate && !candidate.del && candidate.x === x && candidate.y === y && candidate.element === elementName) || null;
     }
 
     let domCanvasListeners = null;
@@ -259,7 +278,7 @@ function createHarness(options) {
     }
 
     const sandbox = {
-        HumanSocietyCore: Core,
+        HumanSocietyCore: opts.core || Core,
         HumanSocietyWorld: World,
         elements,
         behaviors: {WALL: wallBehavior, POWDER: powderBehavior},
@@ -312,14 +331,14 @@ function createHarness(options) {
         getPixelsAt(x, y) {
             const pixel = getPixel(x, y);
             const pixels = pixel ? [pixel] : [];
-            if (Array.isArray(opts.overlayPixels)) {
-                opts.overlayPixels.forEach((overlay) => {
-                    if (overlay && !overlay.del && overlay.x === x && overlay.y === y) pixels.push(overlay);
-                });
-            }
+            overlayPixels.forEach((overlay) => {
+                if (overlay && !overlay.del && overlay.x === x && overlay.y === y) pixels.push(overlay);
+            });
             return pixels;
         }
     };
+
+    if (Array.isArray(opts.overlayStorageElements)) sandbox.deletePixelObject = deletePixelObject;
 
     if (Array.isArray(opts.overlapElements)) {
         sandbox.pixelsCanOverlap = function (first, second) {
@@ -1344,6 +1363,38 @@ test("civilization buildings use the engine WALL behavior", () => {
     }
 });
 
+test("logical building cores fall onto solid terrain, carry metadata, and stop above tunnels", () => {
+    const harness = createHarness();
+    harness.createPixel("rock", 40, 7);
+    const workshop = harness.createPixel("civ_workshop_core", 40, 4, {
+        factionId: 1,
+        settlementId: 1,
+        buildingId: 100,
+        originX: 40,
+        originY: 4
+    });
+    harness.sandbox.HumanSociety.forceReindex();
+    assert.equal(workshop.buildingType, "workshop");
+
+    harness.sandbox.pixelTicks = 1;
+    harness.everyTickCallbacks[0]();
+    harness.sandbox.pixelTicks = 2;
+    harness.everyTickCallbacks[0]();
+    harness.sandbox.pixelTicks = 3;
+    harness.everyTickCallbacks[0]();
+
+    assert.equal(workshop.y, 6);
+    assert.equal(workshop.originY, 6);
+
+    const tunnel = harness.createPixel("civ_tunnel", 45, 6);
+    const hut = harness.createPixel("civ_hut_core", 45, 5, {factionId: 1, settlementId: 1, buildingId: 101, originX: 45, originY: 5});
+    harness.sandbox.HumanSociety.forceReindex();
+    harness.sandbox.pixelTicks = 4;
+    harness.everyTickCallbacks[0]();
+    assert.equal(hut.y, 5);
+    assert.equal(harness.getPixel(45, 6), tunnel);
+});
+
 test("two nearby grounded adults autonomously found a camp after the stability window", () => {
     const harness = createHarness();
     for (let x = 3; x <= 20; x++) harness.createPixel("rock", x, 10);
@@ -1428,7 +1479,7 @@ test("erasing a town-center core removes its sprite permanently instead of auto-
     assert.equal(banner.destroyedCause, "erased");
 });
 
-test("a camp researches technologies and advances only after six of eight era technologies", () => {
+test("a camp advances only after clearing the current era's dynamic seventy-percent threshold", () => {
     const harness = createHarness({techData: true});
     for (let x = 1; x <= 40; x++) harness.createPixel("rock", x, 10);
     for (const x of [8, 12, 16, 20]) harness.createPixel("civilized_human", x, 8);
@@ -1443,24 +1494,27 @@ test("a camp researches technologies and advances only after six of eight era te
     banner.stock.wood = 1000;
     banner.stock.materials.wood = 1000;
     banner.research.knowledge = 10000;
-    const tribalTechIds = TechData.ERAS.find((era) => era.id === "tribal").techIds;
+    const tribalEra = TechData.ERAS.find((era) => era.id === "tribal");
+    const tribalTechIds = tribalEra.techIds;
+    const required = tribalEra.requiredTechsToAdvance;
     const researchedCount = () => tribalTechIds.filter((techId) => banner.research.unlocked[techId]).length;
 
-    for (const tick of [120, 150, 180, 210, 240]) {
+    for (let index = 0; index < required - 1; index++) {
+        const tick = 120 + index * 30;
         harness.sandbox.pixelTicks = tick;
         harness.everyTickCallbacks[0]();
     }
-    assert.equal(researchedCount(), 5);
+    assert.equal(researchedCount(), required - 1);
     assert.equal(banner.eraId, "tribal");
 
-    harness.sandbox.pixelTicks = 270;
+    harness.sandbox.pixelTicks = 120 + (required - 1) * 30;
     harness.everyTickCallbacks[0]();
-    assert.equal(researchedCount(), 6);
-    assert.equal(banner.research.eraCompleted, 6);
+    assert.equal(researchedCount(), required);
+    assert.equal(banner.research.eraCompleted, required);
     assert.equal(banner.eraId, "stone");
 });
 
-test("agriculture keeps generating knowledge and autonomously completes six technologies", () => {
+test("agriculture keeps generating knowledge and autonomously clears its compact technology tree", () => {
     const harness = createHarness({techData: true});
     for (let x = 1; x <= 50; x++) harness.createPixel("rock", x, 15);
     harness.createPixel("wheat_seed", 55, 12);
@@ -1477,56 +1531,52 @@ test("agriculture keeps generating knowledge and autonomously completes six tech
     const factionId = banner.factionId;
     for (const eraId of ["tribal", "stone"]) {
         const era = TechData.ERAS.find((candidate) => candidate.id === eraId);
-        era.techIds.slice(0, 6).forEach((techId) => assert.equal(api.setTechnologyState(factionId, techId, "researched"), true));
+        era.techIds.forEach((techId) => assert.equal(api.setTechnologyState(factionId, techId, "researched"), true));
     }
     assert.equal(banner.eraId, "agriculture");
     api.setSettlementResources(factionId, banner.settlementId, {food: 200, wood: 200, stone: 200});
     api.forceReindex();
-    const seedSelection = api.getFactionSnapshot(factionId, banner.settlementId).technologies.find((tech) => tech.id === "seed_selection");
-    const seedCondition = seedSelection.conditionStates.find((state) => state.condition.type === "resource_encountered" && state.condition.resource === "seed");
-    assert.ok(seedCondition.current >= 2, "standalone seed pixels must satisfy the seed discovery condition");
+    const foodPreservation = api.getFactionSnapshot(factionId, banner.settlementId).technologies.find((tech) => tech.id === "food_preservation");
+    const foodCondition = foodPreservation.conditionStates.find((state) => state.condition.type === "resource_stock" && state.condition.resource === "food");
+    assert.ok(foodCondition.current >= 12, "food stock satisfies food preservation without a crop-seed subsystem");
 
     for (let tick = 120; tick <= 2400 && banner.eraId === "agriculture"; tick += 30) {
         harness.sandbox.pixelTicks = tick;
         harness.everyTickCallbacks[0]();
     }
     const snapshot = api.getFactionSnapshot(factionId, banner.settlementId);
+    const agricultureEra = TechData.ERAS.find((era) => era.id === "agriculture");
     assert.ok(snapshot.totalKnowledgeGenerated > 0);
     assert.ok(snapshot.knowledgeGain > 0);
-    assert.equal(snapshot.technologies.filter((tech) => tech.eraId === "agriculture" && tech.unlocked).length >= 6, true);
+    assert.equal(snapshot.technologies.filter((tech) => tech.eraId === "agriculture" && tech.unlocked).length >= agricultureEra.requiredTechsToAdvance, true);
     assert.equal(banner.eraId, "bronze");
 });
 
-test("a 900-tick mineral blocker converts only owned rock into the missing ore", () => {
+test("civilization ticks never synthesize ore into surrounding rock", () => {
     const harness = createHarness({techData: true});
     for (let x = 1; x <= 90; x++) harness.createPixel("rock", x, 15);
-    for (const x of [8, 12, 16, 20]) harness.createPixel("civilized_human", x, 13);
-    for (const tick of [30, 60, 90]) {
-        harness.sandbox.pixelTicks = tick;
-        harness.everyTickCallbacks[0]();
-    }
+    const banner = harness.createPixel("civ_banner", 20, 14, {
+        factionId: 7,
+        settlementId: 17,
+        factionColor: "#336699",
+        eraId: "castle",
+        housing: 100
+    });
     const api = harness.sandbox.HumanSociety;
-    const banner = harness.currentPixels.find((pixel) => !pixel.del && pixel.element === "civ_banner");
-    const factionId = banner.factionId;
-    for (const eraId of ["tribal", "stone", "agriculture"]) {
-        const era = TechData.ERAS.find((candidate) => candidate.id === eraId);
-        era.techIds.slice(0, 6).forEach((techId) => assert.equal(api.setTechnologyState(factionId, techId, "researched"), true));
-    }
-    assert.equal(banner.eraId, "bronze");
-    api.setSettlementResources(factionId, banner.settlementId, {food: 200, wood: 200, stone: 200});
     api.forceReindex();
+    TechData.TECHNOLOGIES.forEach((technology) => {
+        banner.research.unlocked[technology.id] = true;
+    });
 
-    let deposits = [];
-    for (let tick = 120; tick <= 3000 && deposits.length === 0; tick += 30) {
+    const originalRock = harness.currentPixels.filter((pixel) => !pixel.del && pixel.element === "rock").slice();
+    for (let tick = 120; tick <= 3000; tick += 30) {
         harness.sandbox.pixelTicks = tick;
         harness.everyTickCallbacks[0]();
-        deposits = harness.currentPixels.filter((pixel) => !pixel.del && (pixel.element === "copper" || pixel.element === "tin" || pixel.element === "iron"));
     }
 
-    assert.ok(deposits.length >= 3, "the blocked civilization should discover an ore deposit");
-    deposits.forEach((pixel) => assert.equal(api.territoryOwnerAt(pixel.x, pixel.y).factionId, factionId));
-    assert.equal(banner.element, "civ_banner", "the town center must not be converted");
-    assert.equal(harness.currentPixels.some((pixel) => pixel.element === "copper" && api.territoryOwnerAt(pixel.x, pixel.y) === null), false);
+    assert.ok(originalRock.every((pixel) => !pixel.del && pixel.element === "rock"));
+    assert.equal(harness.currentPixels.some((pixel) => !pixel.del && ["copper", "tin", "iron", "iron_ore"].includes(pixel.element)), false);
+    assert.equal(banner.element, "civ_banner");
 });
 
 test("resource editing, irreversible forced research, condition progress, and real-time logs are public", () => {
@@ -1542,7 +1592,7 @@ test("resource editing, irreversible forced research, condition progress, and re
     }
     const api = harness.sandbox.HumanSociety;
     const initial = api.getFactionSnapshot(harness.getPixel(8, 9).factionId);
-    assert.equal(api.setSettlementResources(initial.id, initial.selectedSettlementId, {wood: 3, food: 9, seeds: {sapling: 2}}), true);
+    assert.equal(api.setSettlementResources(initial.id, initial.selectedSettlementId, {wood: 3, food: 9, sapling: 2}), true);
     assert.equal(api.setTechnologyState(initial.id, "controlled_fire", "focused"), true);
     const queued = api.getFactionSnapshot(initial.id, initial.selectedSettlementId);
     assert.ok(queued.technologies.find((tech) => tech.id === "organized_gathering").focused, "prerequisite closure is queued first");
@@ -1551,14 +1601,14 @@ test("resource editing, irreversible forced research, condition progress, and re
     assert.equal(api.setTechnologyState(initial.id, "steelmaking", "researched"), true, "future-era technologies can be force-completed");
     const snapshot = api.getFactionSnapshot(initial.id, initial.selectedSettlementId);
     assert.equal(snapshot.stock.wood, 3);
-    assert.equal(snapshot.stock.treeSaplings.sapling, 2);
+    assert.equal(snapshot.stock.sapling, 2);
     const controlledFire = snapshot.technologies.find((tech) => tech.id === "controlled_fire");
     assert.equal(controlledFire.state, "researched");
     assert.equal(controlledFire.forced, true);
     assert.equal(snapshot.technologies.find((tech) => tech.id === "steelmaking").forced, true);
     assert.equal(controlledFire.conditionStates[0].current, 3);
     assert.equal(snapshot.technologies.find((tech) => tech.id === "copper_prospecting").conditionStates[0].current, 1, "remote ore is globally known");
-    assert.equal(snapshot.technologies.find((tech) => tech.id === "irrigation").conditionStates[0].current, 1, "remote water is globally known");
+    assert.equal(snapshot.technologies.find((tech) => tech.id === "irrigation"), undefined, "retired farming technology is absent from the public tree");
     const chronicle = api.getFactionChronicle(initial.id, {settlementId: initial.selectedSettlementId});
     assert.ok(chronicle.some((event) => event.type === "resource_edit"));
     assert.ok(chronicle.some((event) => event.type === "technology" && event.technologyId === "controlled_fire"));
@@ -1581,41 +1631,24 @@ test("hostility incidents alone never start a war", () => {
     assert.equal(harness.sandbox.HumanSociety.atWar(firstFaction, secondFaction), false);
 });
 
-test("unlocked ranged weapon technologies craft the registered bow and crossbow", () => {
-    const harness = createHarness({techData: true});
-    for (let x = 1; x <= 40; x++) harness.createPixel("rock", x, 10);
-    for (const x of [4, 6, 8, 10, 12, 14, 16, 18]) harness.createPixel("civilized_human", x, 8);
-    for (const tick of [30, 60, 90]) {
-        harness.sandbox.pixelTicks = tick;
-        harness.everyTickCallbacks[0]();
-    }
+test("unlocked ranged weapons participate in era quotas without a workshop", () => {
+    const agriculture = createEquipmentScenario({
+        eraId: "agriculture",
+        adultCount: 2,
+        soldierCount: 2,
+        unlocked: ["polished_axes", "bowmaking"]
+    });
+    stepCivilization(agriculture.harness, 30);
+    assert.deepEqual(countWeapons(agriculture.adults), {stone_spear: 1, bow: 1});
 
-    const banner = harness.currentPixels.find((pixel) => !pixel.del && pixel.element === "civ_banner");
-    const workshop = harness.createPixel("civ_workshop_core", 20, 9);
-    workshop.factionId = banner.factionId;
-    workshop.factionColor = banner.factionColor;
-    workshop.settlementId = banner.settlementId;
-    workshop.buildingId = 700;
-    banner.stock.wood = 10;
-    banner.stock.materials.wood = 10;
-    banner.eraId = "stone";
-    banner.research.unlocked.bowmaking = true;
-    harness.sandbox.HumanSociety.forceReindex();
-
-    harness.sandbox.pixelTicks = 120;
-    harness.everyTickCallbacks[0]();
-    const adults = harness.currentPixels.filter((pixel) => !pixel.del && pixel.element === "civ_body");
-    assert.equal(adults.some((actor) => actor.weapon === "bow"), true);
-    assert.equal(banner.stock.wood, 7);
-
-    banner.research.unlocked.crossbow = true;
-    banner.stock.steel = 1;
-    banner.stock.materials.steel = 1;
-    harness.sandbox.pixelTicks = 240;
-    harness.everyTickCallbacks[0]();
-    assert.equal(adults.some((actor) => actor.weapon === "crossbow"), true);
-    assert.equal(banner.stock.wood, 5);
-    assert.equal(banner.stock.steel, 0);
+    const castle = createEquipmentScenario({
+        eraId: "castle",
+        adultCount: 3,
+        soldierCount: 3,
+        unlocked: ["carburizing_tempering", "crossbow"]
+    });
+    stepCivilization(castle.harness, 30);
+    assert.deepEqual(countWeapons(castle.adults), {steel_blade: 1, steel_spear: 1, crossbow: 1});
 });
 
 test("camp planning builds the tribal lumberyard as a one-cell logical construction", () => {
@@ -1758,7 +1791,7 @@ test("surface-mined non-food and non-wood resource sources become clean dirt", (
 });
 
 test("underground natural stone and ores leave faction-marked tunnels when harvested", () => {
-    for (const [elementName, resourceKind] of [["rock", "stone"], ["copper", "copper"], ["tin", "tin"], ["iron", "raw_iron"]]) {
+    for (const [elementName, resourceKind] of [["rock", "stone"], ["copper", "copper"], ["iron", "raw_iron"]]) {
         const harness = createHarness();
         for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
         harness.createPixel("civilized_human", 8, 8);
@@ -1814,7 +1847,43 @@ test("adults interrupt ordinary work to extinguish fires and record the response
     assert.ok(snapshot.chronicle.some((event) => event.type === "fire_extinguished" && event.humanId === body.humanId));
 });
 
-test("felling a civilization-planted tree halves wood, drops one sapling per woody cell, and satisfies seed selection", () => {
+test("a settlement limits simultaneous fire responders instead of abandoning every job", () => {
+    const harness = createHarness();
+    harness.createPixel("civ_banner", 7, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 40,
+        factionColor: "#336699"
+    });
+    const actors = Array.from({length: 5}, (_, index) => harness.createPixel("civ_body", 8 + index * 2, 15, {
+        humanId: 100 + index,
+        factionId: 7,
+        settlementId: 17,
+        factionColor: "#336699",
+        role: "worker",
+        task: "planning",
+        hp: 100,
+        maxHp: 100,
+        birthTick: 0,
+        naturalDeathTick: 100000,
+        weapon: "fists"
+    }));
+    for (let x = 5; x <= 40; x++) harness.createPixel("dirt", x, 16);
+    harness.createPixel("fire", 35, 15);
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+
+    actors.forEach((actor, index) => {
+        const baseTick = 100 + index * api.config.THINK_INTERVAL;
+        harness.sandbox.pixelTicks = baseTick + ((api.config.THINK_INTERVAL - ((baseTick + actor.humanId) % api.config.THINK_INTERVAL)) % api.config.THINK_INTERVAL);
+        harness.elements.civ_body.tick(actor);
+    });
+
+    assert.equal(actors.filter((actor) => actor.task === "extinguish").length, api.config.MAX_FIRE_RESPONDERS_PER_SETTLEMENT);
+    assert.ok(actors.some((actor) => actor.task !== "extinguish"), "non-responders must continue ordinary work");
+});
+
+test("felling a whole tree halves wood and rolls one sapling drop per tree", () => {
     const harness = createHarness({techData: true});
     for (let x = 1; x <= 30; x++) harness.createPixel("rock", x, 10);
     harness.createPixel("civilized_human", 8, 8);
@@ -1831,6 +1900,7 @@ test("felling a civilization-planted tree halves wood, drops one sapling per woo
     harness.sandbox.HumanSociety.forceReindex();
     body.role = "wood";
     body.task = "idle";
+    harness.sandbox.Math.random = () => 0.799999;
 
     let tick = 100 + ((10 - ((100 + body.humanId) % 10)) % 10);
     harness.sandbox.pixelTicks = tick;
@@ -1845,14 +1915,11 @@ test("felling a civilization-planted tree halves wood, drops one sapling per woo
     const woodDrops = harness.currentPixels.filter((pixel) => !pixel.del && pixel.element === "civ_wood_resource");
     const saplingDrops = harness.currentPixels.filter((pixel) => !pixel.del && pixel.element === "civ_tree_sapling_resource");
     assert.equal(woodDrops.length, 1);
-    assert.equal(saplingDrops.length, 2);
+    assert.equal(saplingDrops.length, 1, "the 80% branch drops exactly one sapling for the whole tree");
     assert.ok(saplingDrops.every((drop) => drop.treeSapling === "sapling"));
     assert.equal(woodDrops[0].y, trunkTop.y, "wood should begin falling from a woody tree cell");
     assert.ok(saplingDrops.every((drop) => drop.y === root.y), "saplings should appear along the former base, not in the canopy");
     assert.equal(body.carry.wood, undefined);
-    const seedSelection = harness.sandbox.HumanSociety.getFactionSnapshot(body.factionId, body.settlementId).technologies.find((tech) => tech.id === "seed_selection");
-    const seedCondition = seedSelection.conditionStates.find((state) => state.condition.resource === "seed");
-    assert.ok(seedCondition.current >= 2);
 });
 
 test("felling refreshes live tree membership after indexing and removes detached same-lineage growth", () => {
@@ -1865,11 +1932,12 @@ test("felling refreshes live tree membership after indexing and removes detached
     const lateBranch = harness.createPixel("tree_branch", 10, 8, {naturalVegetation: true, treeLineage: "growing-tree"});
     const lateLeaf = harness.createPixel("plant", 11, 7, {naturalVegetation: true, treeLineage: "growing-tree"});
     const detachedLeaf = harness.createPixel("plant", 18, 4, {naturalVegetation: true, treeLineage: "growing-tree"});
+    harness.sandbox.Math.random = () => 0.8;
     const result = harness.sandbox.HumanSociety.fellTreeAt(detachedLeaf.x, detachedLeaf.y);
 
     assert.equal(result.removedPixels, 5);
     assert.equal(result.woodDrops, 1);
-    assert.equal(result.saplingDrops, 2);
+    assert.equal(result.saplingDrops, 2, "the 20% branch drops exactly two saplings for the whole tree");
     assert.ok([root, initialLeaf, lateBranch, lateLeaf, detachedLeaf].every((pixel) => pixel.del === true));
     harness.sandbox.HumanSociety.forceReindex();
     assert.equal(harness.sandbox.HumanSociety.getTreeAt(root.x, root.y), null);
@@ -1887,6 +1955,7 @@ test("legacy untagged canopies are attached to closure instead of leaving leaves
         harness.createPixel("plant", 22, 4)
     ];
     harness.sandbox.HumanSociety.forceReindex();
+    harness.sandbox.Math.random = () => 0;
     const result = harness.sandbox.HumanSociety.fellTreeAt(root.x, root.y);
 
     assert.equal(result.removedPixels, 6);
@@ -1928,10 +1997,12 @@ test("collecting a tree sapling resource preserves its species for planting", ()
     harness.elements.civ_body.tick(body);
 
     const snapshot = harness.sandbox.HumanSociety.getFactionSnapshot(body.factionId, body.settlementId);
+    const banner = harness.currentPixels.find((pixel) => !pixel.del && pixel.element === "civ_banner" && pixel.settlementId === body.settlementId);
     assert.equal(drop.del, true);
     assert.equal(snapshot.stock.wood + (body.carry.wood || 0), 0);
-    assert.equal((snapshot.stock.treeSaplings.pinecone || 0) + (body.carry["tree_sapling:pinecone"] || 0), 1);
-    assert.equal(snapshot.stock.treeSaplings.sapling || 0, 0);
+    assert.equal((banner.stock.treeSaplings.pinecone || 0) + (body.carry["tree_sapling:pinecone"] || 0), 1);
+    assert.equal(banner.stock.treeSaplings.sapling || 0, 0);
+    assert.equal(snapshot.stock.sapling + (body.carry["tree_sapling:pinecone"] || 0), 1);
 });
 
 test("legacy truncated tree sapling inventory keys migrate once into valid species", () => {
@@ -1953,8 +2024,9 @@ test("legacy truncated tree sapling inventory keys migrate once into valid speci
     api.forceReindex();
     api.forceReindex();
 
-    const stock = api.getFactionSnapshot(banner.factionId, banner.settlementId).stock.treeSaplings;
-    assert.deepEqual(JSON.parse(JSON.stringify(stock)), {sapling: 726, pinecone: 3, bamboo_plant: 4});
+    const stock = api.getFactionSnapshot(banner.factionId, banner.settlementId).stock;
+    assert.equal(stock.sapling, 733);
+    assert.deepEqual(JSON.parse(JSON.stringify(banner.stock.treeSaplings)), {sapling: 726, pinecone: 3, bamboo_plant: 4});
 });
 
 test("delivered tree saplings can be planted by a forester", () => {
@@ -1981,6 +2053,126 @@ test("delivered tree saplings can be planted by a forester", () => {
     const planted = harness.currentPixels.find((pixel) => !pixel.del && pixel.element === "sapling" && Number.isFinite(pixel.civPlantedTreeId));
     assert.ok(planted, "the abstract sapling stock should create a plantable sapling pixel");
     assert.equal(banner.stock.treeSaplings.sapling, 0);
+
+    harness.sandbox.HumanSociety.forceReindex();
+    for (let tick = 501; tick <= 650; tick++) {
+        harness.sandbox.pixelTicks = tick;
+        harness.elements.civ_body.tick(body);
+    }
+    assert.equal(planted.del, undefined, "an immature planted tree must not be re-indexed as harvestable wood");
+});
+
+test("foresters reserve root-spaced planting sites across all owned territory", () => {
+    const harness = createHarness({relationMovement: true});
+    for (let x = 30; x <= 61; x++) harness.createPixel("dirt", x, 16);
+    const banner = harness.createPixel("civ_banner", 10, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 40,
+        factionColor: "#336699",
+        eraId: "castle"
+    });
+    harness.createPixel("civ_lumberyard_core", 50, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 41,
+        factionColor: "#336699"
+    });
+    harness.createPixel("wood", 44, 15, {naturalVegetation: true, treeLineage: "spacing-tree"});
+    harness.createPixel("plant", 39, 13);
+    const foresters = [
+        harness.createPixel("civ_body", 30, 15, {
+            humanId: 100, factionId: 7, settlementId: 17, factionColor: "#336699",
+            role: "forester", task: "planning", hp: 100, maxHp: 100,
+            birthTick: 0, naturalDeathTick: 100000, weapon: "fists", _r: 1000
+        }),
+        harness.createPixel("civ_body", 31, 15, {
+            humanId: 110, factionId: 7, settlementId: 17, factionColor: "#336699",
+            role: "forester", task: "planning", hp: 100, maxHp: 100,
+            birthTick: 0, naturalDeathTick: 100000, weapon: "fists", _r: 1001
+        })
+    ];
+    harness.createPixel("civ_head", 30, 14, {factionId: 7, settlementId: 17, _r: 1000});
+    harness.createPixel("civ_head", 31, 14, {factionId: 7, settlementId: 17, _r: 1001});
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    banner.stock.treeSaplings.sapling = 2;
+    assert.equal(api.territoryOwnerAt(39, 15).factionId, 7);
+    assert.deepEqual(foresters.map((forester) => forester.role), ["forester", "forester"]);
+    harness.sandbox.pixelTicks = 100;
+    foresters.forEach((forester) => harness.elements.civ_body.tick(forester));
+
+    foresters.forEach((forester) => {
+        assert.equal(forester.task, "plant_tree");
+        assert.ok(forester.targetX >= 39 && forester.targetX <= 61, "the search reaches owned columns beyond the old banner radius");
+        assert.equal(api.territoryOwnerAt(forester.targetX, forester.targetY).factionId, 7);
+        assert.ok(Math.abs(forester.targetX - 44) > 2, "an indexed tree root reserves two columns on each side");
+    });
+    assert.ok(Math.abs(foresters[0].targetX - foresters[1].targetX) > 2, "active planting tasks act as temporary roots");
+    assert.ok(foresters.some((forester) => forester.targetX === 39), "an untagged leaf does not count as a tree root");
+});
+
+test("foresters recheck planting every think interval but deliver cargo first", () => {
+    function prepare(carry) {
+        const harness = createHarness({relationMovement: true});
+        for (let x = 1; x <= 35; x++) harness.createPixel("dirt", x, 16);
+        const banner = harness.createPixel("civ_banner", 8, 15, {
+            factionId: 7, settlementId: 17, buildingId: 40, factionColor: "#336699"
+        });
+        harness.createPixel("civ_lumberyard_core", 6, 15, {
+            factionId: 7, settlementId: 17, buildingId: 41, factionColor: "#336699"
+        });
+        harness.createPixel("wood", 21, 15, {naturalVegetation: true, treeLineage: "priority-tree"});
+        const forester = harness.createPixel("civ_body", 20, 15, {
+            humanId: 100, factionId: 7, settlementId: 17, factionColor: "#336699",
+            role: "forester", task: "harvest", targetX: 34, targetY: 15,
+            targetKind: "wood", hp: 100, maxHp: 100, birthTick: 0,
+            naturalDeathTick: 100000, weapon: "fists", carry: carry || {}, _r: 1000
+        });
+        harness.createPixel("civ_head", 20, 14, {factionId: 7, settlementId: 17, _r: 1000});
+        const api = harness.sandbox.HumanSociety;
+        api.forceReindex();
+        banner.stock.treeSaplings.sapling = 1;
+        assert.equal(forester.role, "forester");
+        harness.sandbox.pixelTicks = 100;
+        harness.elements.civ_body.tick(forester);
+        return {forester, banner};
+    }
+
+    const empty = prepare({});
+    assert.equal(empty.forester.task, "plant_tree", "ordinary harvesting is interrupted for an available planting site");
+    assert.ok(Math.abs(empty.forester.targetX - 21) > 2);
+
+    const carrying = prepare({wood: 1});
+    assert.equal(carrying.forester.task, "deliver", "cargo is returned before a planting task begins");
+    assert.equal(carrying.banner.stock.treeSaplings.sapling, 1);
+});
+
+test("forester quotas stay with woodcutters until managed forestry is researched", () => {
+    const harness = createHarness({techData: true});
+    for (let x = 1; x <= 40; x++) harness.createPixel("dirt", x, 16);
+    const banner = harness.createPixel("civ_banner", 20, 15, {
+        factionId: 7, settlementId: 17, buildingId: 40, factionColor: "#336699",
+        eraId: "agriculture", housing: 20
+    });
+    for (let index = 0; index < 12; index++) {
+        harness.createPixel("civ_body", 5 + index, 15, {
+            humanId: 100 + index, factionId: 7, settlementId: 17, factionColor: "#336699",
+            role: "worker", task: "planning", hp: 100, maxHp: 100,
+            birthTick: 0, naturalDeathTick: 100000, weapon: "fists"
+        });
+    }
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    api.setSettlementResources(7, 17, {food: 100, wood: 100, stone: 100});
+    stepCivilization(harness, 30);
+    assert.equal(harness.currentPixels.some((pixel) => !pixel.del && pixel.element === "civ_body" && pixel.role === "forester"), false);
+    assert.equal(banner.roleQuotas.forester, 0);
+
+    assert.equal(api.setTechnologyState(7, "managed_forestry", "researched"), true);
+    stepCivilization(harness, 60);
+    assert.equal(harness.currentPixels.some((pixel) => !pixel.del && pixel.element === "civ_body" && pixel.role === "forester"), true);
+    assert.ok(banner.roleQuotas.forester > 0);
 });
 
 test("every role can carve traversal tunnels but only permanent miners collect stone", () => {
@@ -2385,4 +2577,1144 @@ test("clicking or touching a banner never opens the civilization panel", () => {
 
     assert.equal(api.openCivilizationPanel(7), true, "the toolbar/API path remains available");
     assert.equal(parent.style.display, "block");
+});
+
+function createEquipmentScenario(options) {
+    const settings = Object.assign({eraId: "tribal", adultCount: 1, soldierCount: 1, unlocked: []}, options || {});
+    const quota = {soldiers: settings.soldierCount};
+    const equipmentCore = Object.assign({}, Core, {
+        eraPopulationTarget() {
+            return settings.adultCount;
+        },
+        eraJobAllocation(era, workerCount) {
+            const soldiers = Math.max(0, Math.min(workerCount, quota.soldiers));
+            return {military: soldiers, flex: workerCount - soldiers};
+        }
+    });
+    const harness = createHarness({techData: true, core: equipmentCore});
+    const banner = harness.createPixel("civ_banner", 46, 20, {
+        factionId: 7,
+        settlementId: 17,
+        factionColor: "#336699",
+        eraId: settings.eraId,
+        housing: Math.max(4, settings.adultCount)
+    });
+    const adults = [];
+    for (let index = 0; index < settings.adultCount; index++) {
+        adults.push(harness.createPixel("civ_body", 4 + index * 2, 8, {
+            humanId: 100 + index,
+            factionId: 7,
+            settlementId: 17,
+            factionColor: "#336699",
+            role: "worker",
+            task: "planning",
+            hp: 100,
+            maxHp: 100,
+            baseMaxHp: 100,
+            healthDamage: 0,
+            birthTick: 0,
+            naturalDeathTick: 100000,
+            weapon: "fists",
+            armor: "none",
+            equipmentSchemaVersion: 3
+        }));
+    }
+    const child = harness.createPixel("civ_child", 90, 8, {
+        humanId: 999,
+        factionId: 7,
+        settlementId: 17,
+        factionColor: "#336699",
+        role: "child",
+        hp: 40,
+        maxHp: 40,
+        baseMaxHp: 40,
+        healthDamage: 0,
+        birthTick: 0,
+        naturalDeathTick: 100000,
+        weapon: "fists",
+        armor: "none",
+        equipmentSchemaVersion: 3
+    });
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    banner.eraId = settings.eraId;
+    settings.unlocked.forEach((techId) => { banner.research.unlocked[techId] = true; });
+    api.setSettlementResources(7, 17, Object.assign({
+        food: 100,
+        wood: 100,
+        stone: 100,
+        copper: 100,
+        bronze: 100,
+        raw_iron: 100,
+        iron: 100,
+        steel: 100,
+        sapling: 0
+    }, settings.stock || {}));
+    return {harness, api, banner, adults, child, quota};
+}
+
+function stepCivilization(harness, tick) {
+    harness.sandbox.pixelTicks = tick;
+    harness.everyTickCallbacks[0]();
+}
+
+function countWeapons(actors) {
+    return actors.reduce((counts, actor) => {
+        counts[actor.weapon] = (counts[actor.weapon] || 0) + 1;
+        return counts;
+    }, {});
+}
+
+test("public stock exposes exactly nine resources and legacy saves migrate once", () => {
+    const harness = createHarness({techData: true});
+    const banner = harness.createPixel("civ_banner", 46, 20, {
+        factionId: 7,
+        settlementId: 17,
+        factionColor: "#336699",
+        stock: {
+            food: 2,
+            wood: 4,
+            stone: 5,
+            copper: 7,
+            tin: 3,
+            charcoal: 2,
+            bronze: 8,
+            raw_iron: 9,
+            iron: 10,
+            steel: 11,
+            materials: {wood: 4, stone: 5, copper: 7, tin: 3, charcoal: 2, bronze: 8, raw_iron: 9, iron: 10, steel: 11},
+            seeds: {wheat_seed: 2, corn_seed: 1, sapling: 2},
+            treeSaplings: {pinecone: 3}
+        }
+    });
+    const veteran = harness.createPixel("civ_body", 8, 8, {
+        humanId: 100,
+        factionId: 7,
+        settlementId: 17,
+        factionColor: "#336699",
+        role: "guard",
+        task: "planning",
+        hp: 100,
+        maxHp: 100,
+        birthTick: 0,
+        naturalDeathTick: 100000,
+        weapon: "spear"
+    });
+    const tinDrop = harness.createPixel("civ_tin_resource", 20, 8, {resourceKind: "tin", resourceAmount: 2});
+    const charcoalDrop = harness.createPixel("civ_charcoal_resource", 22, 8, {resourceKind: "charcoal", resourceAmount: 2});
+    const seedDrop = harness.createPixel("civ_seed_resource", 24, 8, {resourceKind: "seed:wheat_seed"});
+    const api = harness.sandbox.HumanSociety;
+
+    api.forceReindex();
+    const first = api.getFactionSnapshot(7, 17);
+    assert.deepEqual(Object.keys(first.stock).sort(), [
+        "bronze", "copper", "food", "iron", "raw_iron", "sapling", "steel", "stone", "wood"
+    ]);
+    assert.deepEqual(JSON.parse(JSON.stringify(first.stock)), {
+        food: 5,
+        wood: 10,
+        stone: 5,
+        copper: 10,
+        bronze: 8,
+        raw_iron: 9,
+        iron: 10,
+        steel: 11,
+        sapling: 5
+    });
+    assert.equal(veteran.weapon, "stone_spear");
+    assert.deepEqual(JSON.parse(JSON.stringify(veteran.weaponPaidCost)), {wood: 1, stone: 1});
+    assert.equal(tinDrop.element, "civ_copper_resource");
+    assert.equal(tinDrop.resourceKind, "copper");
+    assert.equal(charcoalDrop.element, "civ_wood_resource");
+    assert.equal(charcoalDrop.resourceKind, "wood");
+    assert.equal(charcoalDrop.resourceAmount, 6);
+    assert.equal(seedDrop.element, "civ_food_resource");
+    assert.equal(seedDrop.resourceKind, "food");
+
+    api.forceReindex();
+    assert.deepEqual(JSON.parse(JSON.stringify(api.getFactionSnapshot(7, 17).stock)), JSON.parse(JSON.stringify(first.stock)));
+    assert.equal(banner.stock.resourceSchemaVersion > 0, true);
+});
+
+test("legacy farms and granaries retire into ruins while crops and workers migrate", () => {
+    const harness = createHarness({techData: true});
+    const banner = harness.createPixel("civ_banner", 7, 20, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 40,
+        factionColor: "#336699",
+        stock: {food: 0, wood: 0, materials: {}, seeds: {}, treeSaplings: {}}
+    });
+    const farm = harness.createPixel("civ_farm_marker", 12, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 55,
+        factionColor: "#336699"
+    });
+    const granary = harness.createPixel("civ_granary_core", 15, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 56,
+        factionColor: "#336699"
+    });
+    const unfinished = harness.createPixel("civ_construction", 18, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 57,
+        factionColor: "#336699",
+        blueprintType: "farm",
+        costs: {wood: 8, stone: 3},
+        workDone: 3,
+        workRequired: 4
+    });
+    const immatureCrop = harness.createPixel("civ_farm_crop", 21, 15, {mature: false, matureTick: 100});
+    const matureCrop = harness.createPixel("civ_farm_crop", 23, 15, {mature: true, matureTick: 0});
+    const farmer = harness.createPixel("civ_body", 25, 15, {
+        humanId: 100,
+        factionId: 7,
+        settlementId: 17,
+        factionColor: "#336699",
+        role: "farmer",
+        task: "farm",
+        targetId: farm.buildingId,
+        hp: 100,
+        maxHp: 100,
+        birthTick: 0,
+        naturalDeathTick: 100000,
+        weapon: "fists"
+    });
+    const industryWorker = harness.createPixel("civ_body", 27, 15, {
+        humanId: 101,
+        factionId: 7,
+        settlementId: 17,
+        factionColor: "#336699",
+        role: "industry",
+        task: "facility",
+        targetId: granary.buildingId,
+        hp: 100,
+        maxHp: 100,
+        birthTick: 0,
+        naturalDeathTick: 100000,
+        weapon: "fists"
+    });
+    const api = harness.sandbox.HumanSociety;
+
+    api.forceReindex();
+
+    assert.equal(farm.element, "civ_ruin");
+    assert.equal(granary.element, "civ_ruin");
+    assert.equal(unfinished.del, true);
+    assert.equal(api.getFactionSnapshot(7, 17).stock.wood, 8, "removed construction refunds every paid wood unit regardless of progress");
+    assert.equal(api.getFactionSnapshot(7, 17).stock.stone, 3, "removed construction refunds every paid stone unit regardless of progress");
+    assert.equal(immatureCrop.element, "civ_food_resource");
+    assert.equal(immatureCrop.resourceAmount, 1);
+    assert.equal(matureCrop.element, "civ_food_resource");
+    assert.equal(matureCrop.resourceAmount, 2);
+    assert.equal(farmer.role, "food");
+    assert.equal(farmer.task, "planning");
+    assert.equal(industryWorker.role, "worker");
+    assert.equal(industryWorker.task, "planning");
+    assert.ok(TechData.TECHNOLOGIES.every((technology) => (technology.effects || []).every((effect) => {
+        return effect.type !== "unlock" || effect.target !== "building" || (effect.id !== "farm" && effect.id !== "granary");
+    })));
+    assert.equal(banner.element, "civ_banner");
+});
+
+test("ordinary construction cancellation still refunds half of only unfinished work", () => {
+    const harness = createHarness({techData: true});
+    harness.createPixel("civ_banner", 7, 20, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 40,
+        factionColor: "#336699",
+        stock: {food: 0, wood: 0, stone: 0, materials: {}, seeds: {}, treeSaplings: {}}
+    });
+    const site = harness.createPixel("civ_construction", 18, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 57,
+        factionColor: "#336699",
+        blueprintType: "workshop",
+        costs: {wood: 10, stone: 8},
+        workDone: 3,
+        workRequired: 6
+    });
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+
+    harness.sandbox.deletePixel(site.x, site.y);
+
+    assert.equal(api.getFactionSnapshot(7, 17).stock.wood, 2);
+    assert.equal(api.getFactionSnapshot(7, 17).stock.stone, 2);
+});
+
+test("specialists without a usable facility gather resources instead of patrolling", () => {
+    const harness = createHarness({techData: true});
+    const banner = harness.createPixel("civ_banner", 7, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 40,
+        factionColor: "#336699",
+        stock: {food: 0, wood: 0, stone: 0, materials: {}, seeds: {}, treeSaplings: {}}
+    });
+    const automaticFoundry = harness.createPixel("civ_foundry_core", 50, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 50,
+        factionColor: "#336699"
+    });
+    for (let x = 5; x <= 50; x++) harness.createPixel("dirt", x, 16);
+    const specialists = ["artisan", "scholar", "merchant"].map((role, index) => harness.createPixel("civ_body", 10 + index * 2, 15, {
+        humanId: 100 + index,
+        factionId: 7,
+        settlementId: 17,
+        factionColor: "#336699",
+        role,
+        task: role === "merchant" ? "facility" : "planning",
+        targetId: role === "merchant" ? automaticFoundry.buildingId : undefined,
+        targetX: role === "merchant" ? automaticFoundry.x : undefined,
+        targetY: role === "merchant" ? automaticFoundry.y : undefined,
+        hp: 100,
+        maxHp: 100,
+        birthTick: 0,
+        naturalDeathTick: 100000,
+        weapon: "fists"
+    }));
+    [20, 30, 40].forEach((x) => harness.createPixel("civ_food_resource", x, 15, {
+        resourceKind: "food",
+        resourceAmount: 1
+    }));
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    assert.deepEqual(specialists.map((actor) => actor.role), ["artisan", "scholar", "merchant"]);
+
+    specialists.forEach((actor, index) => {
+        const baseTick = 1 + index * api.config.THINK_INTERVAL;
+        harness.sandbox.pixelTicks = baseTick + ((api.config.THINK_INTERVAL - ((baseTick + actor.humanId) % api.config.THINK_INTERVAL)) % api.config.THINK_INTERVAL);
+        harness.elements.civ_body.tick(actor);
+        assert.equal(actor.task, "harvest", `${actor.role} should fall back to resource gathering`);
+        assert.equal(actor.workTrip && actor.workTrip.resourceKind, "food");
+        assert.notEqual(actor.task, "patrol");
+    });
+    assert.equal(banner.element, "civ_banner");
+});
+
+test("peacetime guards patrol even when collectible resources are available", () => {
+    const harness = createHarness({techData: true});
+    harness.sandbox.Math.random = () => 0;
+    const banner = harness.createPixel("civ_banner", 7, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 40,
+        factionColor: "#336699"
+    });
+    const guard = harness.createPixel("civ_body", 10, 15, {
+        humanId: 100,
+        factionId: 7,
+        settlementId: 17,
+        factionColor: "#336699",
+        role: "guard",
+        task: "planning",
+        hp: 100,
+        maxHp: 100,
+        birthTick: 0,
+        naturalDeathTick: 100000,
+        weapon: "fists"
+    });
+    for (let x = 5; x <= 24; x++) harness.createPixel("dirt", x, 16);
+    harness.createPixel("apple", 20, 15);
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    const baseTick = 1;
+    harness.sandbox.pixelTicks = baseTick + ((api.config.THINK_INTERVAL - ((baseTick + guard.humanId) % api.config.THINK_INTERVAL)) % api.config.THINK_INTERVAL);
+    harness.elements.civ_body.tick(guard);
+
+    assert.equal(guard.task, "patrol");
+    assert.equal(guard.targetId, banner.buildingId);
+    assert.equal(guard.harvestX, undefined);
+});
+
+test("automatic metal workshops consume the exact bronze, iron, and steel recipes", () => {
+    const fuelRequests = [];
+    const industryCore = Object.assign({}, Core, {
+        eraPopulationTarget() {
+            return 1;
+        },
+        eraJobAllocation(era, workerCount) {
+            return {flex: workerCount};
+        },
+        selectFuelCombination(available, requiredFuel, fuelValues) {
+            fuelRequests.push({available: Object.assign({}, available), requiredFuel});
+            return Core.selectFuelCombination(available, requiredFuel, fuelValues);
+        }
+    });
+    const cases = [
+        {
+            name: "bronze",
+            facility: "civ_foundry_core",
+            tech: "bronze_foundry",
+            eraId: "bronze",
+            stock: {wood: 49, copper: 1},
+            expected: {wood: 48, bronze: 1}
+        },
+        {
+            name: "iron",
+            facility: "civ_kiln_core",
+            tech: "iron_smelting",
+            eraId: "iron",
+            stock: {wood: 66, bronze: 1, raw_iron: 1},
+            expected: {wood: 64, iron: 1}
+        },
+        {
+            name: "steel",
+            facility: "civ_forge_core",
+            tech: "steelmaking",
+            eraId: "castle",
+            stock: {wood: 100, bronze: 1, iron: 2},
+            expected: {wood: 96, steel: 1}
+        }
+    ];
+
+    for (const entry of cases) {
+        fuelRequests.length = 0;
+        const harness = createHarness({techData: true, core: industryCore});
+        const banner = harness.createPixel("civ_banner", 20, 20, {
+            factionId: 7,
+            settlementId: 17,
+            buildingId: 40,
+            factionColor: "#336699",
+            eraId: entry.eraId
+        });
+        const facility = harness.createPixel(entry.facility, 20, 15, {
+            factionId: 7,
+            settlementId: 17,
+            buildingId: 50,
+            factionColor: "#336699",
+            lastProcessTick: 0
+        });
+        const legacyKiln = harness.createPixel("civ_kiln_core", 22, 15, {
+            factionId: 7,
+            settlementId: 17,
+            buildingId: 52,
+            factionColor: "#336699"
+        });
+        harness.createPixel("civ_lumberyard_core", 30, 15, {
+            factionId: 7,
+            settlementId: 17,
+            buildingId: 51,
+            factionColor: "#336699"
+        });
+        const worker = harness.createPixel("civ_body", 21, 15, {
+            humanId: 100,
+            factionId: 7,
+            settlementId: 17,
+            factionColor: "#336699",
+            role: "worker",
+            task: "planning",
+            hp: 100,
+            maxHp: 100,
+            birthTick: 0,
+            naturalDeathTick: 100000,
+            weapon: "fists"
+        });
+        harness.createPixel("dirt", 21, 16);
+        const api = harness.sandbox.HumanSociety;
+        api.forceReindex();
+        banner.research.unlocked[entry.tech] = true;
+        api.setSettlementResources(7, 17, Object.assign({
+            food: 100,
+            wood: 0,
+            stone: 0,
+            copper: 0,
+            bronze: 0,
+            raw_iron: 0,
+            iron: 0,
+            steel: 0,
+            sapling: 0
+        }, entry.stock));
+
+        stepCivilization(harness, 150);
+
+        assert.equal(worker.role, "worker", `${entry.name} production must not create an industry job`);
+        assert.equal(facility.lastProcessTick, 150, `${entry.name} runs in the real facility processing loop`);
+        assert.deepEqual(JSON.parse(JSON.stringify(api.getFactionSnapshot(7, 17).stock)), Object.assign({
+            food: 100,
+            wood: 0,
+            stone: 0,
+            copper: 0,
+            bronze: 0,
+            raw_iron: 0,
+            iron: 0,
+            steel: 0,
+            sapling: 0
+        }, entry.expected));
+
+        worker.task = "planning";
+        harness.sandbox.pixelTicks = 160;
+        harness.elements.civ_body.tick(worker);
+        assert.notEqual(worker.task, "facility");
+        assert.notEqual(worker.targetId, legacyKiln.buildingId);
+    }
+});
+
+test("automatic workshops never burn below the current era wood reserve", () => {
+    const cases = [
+        {eraId: "bronze", reserve: 48, heat: 1, facility: "civ_foundry_core", tech: "bronze_foundry", inputs: {copper: 1}, output: "bronze"},
+        {eraId: "iron", reserve: 64, heat: 2, facility: "civ_kiln_core", tech: "iron_smelting", inputs: {raw_iron: 1, bronze: 1}, output: "iron"},
+        {eraId: "castle", reserve: 96, heat: 4, facility: "civ_forge_core", tech: "steelmaking", inputs: {iron: 2, bronze: 1}, output: "steel"}
+    ];
+    for (const entry of cases) {
+        const harness = createHarness({techData: true});
+        const banner = harness.createPixel("civ_banner", 20, 15, {
+            factionId: 7, settlementId: 17, buildingId: 40, factionColor: "#336699", eraId: entry.eraId
+        });
+        const facility = harness.createPixel(entry.facility, 24, 15, {
+            factionId: 7, settlementId: 17, buildingId: 41, factionColor: "#336699", lastProcessTick: 0
+        });
+        const api = harness.sandbox.HumanSociety;
+        api.forceReindex();
+        banner.research.unlocked[entry.tech] = true;
+        api.setSettlementResources(7, 17, Object.assign({food: 0, wood: entry.reserve + entry.heat - 1}, entry.inputs));
+        stepCivilization(harness, 30);
+        assert.equal(facility.lastProcessTick, 0, `${entry.eraId} pauses one wood below the protected batch threshold`);
+        assert.equal(api.getFactionSnapshot(7, 17).stock[entry.output], 0);
+
+        api.setSettlementResources(7, 17, {wood: entry.reserve + entry.heat});
+        stepCivilization(harness, 60);
+        const snapshot = api.getFactionSnapshot(7, 17);
+        assert.equal(facility.lastProcessTick, 60);
+        assert.equal(snapshot.stock.wood, entry.reserve);
+        assert.equal(snapshot.stock[entry.output], 1);
+        assert.equal(snapshot.woodSmeltingReserve, entry.reserve);
+    }
+});
+
+test("same-tick workshop reservations share one protected wood ledger", () => {
+    const harness = createHarness({techData: true});
+    const banner = harness.createPixel("civ_banner", 20, 15, {
+        factionId: 7, settlementId: 17, buildingId: 40, factionColor: "#336699", eraId: "castle"
+    });
+    const facilities = [
+        harness.createPixel("civ_foundry_core", 24, 15, {factionId: 7, settlementId: 17, buildingId: 41, factionColor: "#336699", lastProcessTick: 0}),
+        harness.createPixel("civ_foundry_core", 26, 15, {factionId: 7, settlementId: 17, buildingId: 42, factionColor: "#336699", lastProcessTick: 0}),
+        harness.createPixel("civ_kiln_core", 28, 15, {factionId: 7, settlementId: 17, buildingId: 43, factionColor: "#336699", lastProcessTick: 0}),
+        harness.createPixel("civ_forge_core", 30, 15, {factionId: 7, settlementId: 17, buildingId: 44, factionColor: "#336699", lastProcessTick: 0})
+    ];
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    ["bronze_foundry", "iron_smelting", "steelmaking"].forEach((techId) => { banner.research.unlocked[techId] = true; });
+    api.setSettlementResources(7, 17, {food: 0, wood: 100, copper: 2, bronze: 2, raw_iron: 1, iron: 2});
+    stepCivilization(harness, 30);
+    const stock = api.getFactionSnapshot(7, 17).stock;
+    assert.equal(stock.wood, 96);
+    assert.equal(stock.steel, 0, "the later forge cannot spend wood reserved by earlier proposals");
+    assert.deepEqual(facilities.map((facility) => facility.lastProcessTick), [30, 30, 30, 0]);
+});
+
+test("legacy facility assignments retire instead of creating industry workers", () => {
+    const industryCore = Object.assign({}, Core, {
+        eraPopulationTarget() {
+            return 2;
+        },
+        eraJobAllocation(era, workerCount) {
+            return {flex: workerCount};
+        }
+    });
+    const harness = createHarness({techData: true, core: industryCore});
+    const banner = harness.createPixel("civ_banner", 46, 20, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 40,
+        factionColor: "#336699",
+        eraId: "castle"
+    });
+    const foundry = harness.createPixel("civ_foundry_core", 25, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 50,
+        factionColor: "#336699"
+    });
+    const forge = harness.createPixel("civ_forge_core", 70, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 51,
+        factionColor: "#336699"
+    });
+    harness.createPixel("civ_lumberyard_core", 46, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 52,
+        factionColor: "#336699"
+    });
+    const workers = [100, 110].map((humanId, index) => harness.createPixel("civ_body", 23 + index, 15, {
+        humanId,
+        factionId: 7,
+        settlementId: 17,
+        factionColor: "#336699",
+        role: "worker",
+        task: "facility",
+        targetId: foundry.buildingId,
+        targetX: foundry.x,
+        targetY: foundry.y,
+        targetKind: foundry.element,
+        hp: 100,
+        maxHp: 100,
+        birthTick: 0,
+        naturalDeathTick: 100000,
+        weapon: "fists"
+    }));
+    for (let x = 23; x <= 70; x++) harness.createPixel("dirt", x, 16);
+
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    banner.research.unlocked.bronze_foundry = true;
+    banner.research.unlocked.iron_smelting = true;
+    banner.research.unlocked.steelmaking = true;
+    api.setSettlementResources(7, 17, {
+        food: 100,
+        wood: 7,
+        copper: 1,
+        bronze: 2,
+        raw_iron: 1,
+        iron: 2
+    });
+    stepCivilization(harness, 30);
+    assert.equal(api.getBuildingById(foundry.buildingId), foundry);
+    assert.equal(api.getBuildingById(forge.buildingId), forge);
+    workers.forEach((worker) => {
+        assert.equal(worker.role, "worker");
+        assert.notEqual(worker.task, "facility");
+        assert.notEqual(worker.targetId, foundry.buildingId);
+        assert.notEqual(worker.targetId, forge.buildingId);
+    });
+});
+
+test("three automatic workshops run once per 30 ticks with two-phase recipe settlement", () => {
+    const harness = createHarness({techData: true});
+    for (const x of [10, 20, 30, 40, 50]) harness.createPixel("dirt", x, 16);
+    const banner = harness.createPixel("civ_banner", 10, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 40,
+        factionColor: "#336699",
+        eraId: "castle",
+        housing: 100
+    });
+    const foundry = harness.createPixel("civ_foundry_core", 20, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 50,
+        factionColor: "#336699",
+        lastProcessTick: 0
+    });
+    const kiln = harness.createPixel("civ_kiln_core", 30, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 51,
+        factionColor: "#336699",
+        lastProcessTick: 0
+    });
+    const forge = harness.createPixel("civ_forge_core", 40, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 52,
+        factionColor: "#336699",
+        lastProcessTick: 0
+    });
+    harness.createPixel("civ_lumberyard_core", 50, 15, {
+        factionId: 7,
+        settlementId: 17,
+        buildingId: 53,
+        factionColor: "#336699"
+    });
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    ["bronze_foundry", "iron_smelting", "steelmaking"].forEach((techId) => {
+        banner.research.unlocked[techId] = true;
+    });
+    api.setSettlementResources(7, 17, {
+        food: 0,
+        wood: 196,
+        stone: 0,
+        copper: 4,
+        bronze: 0,
+        raw_iron: 2,
+        iron: 0,
+        steel: 0,
+        sapling: 0
+    });
+    const stock = () => JSON.parse(JSON.stringify(api.getFactionSnapshot(7, 17).stock));
+
+    stepCivilization(harness, 29);
+    assert.deepEqual(stock(), {food: 0, wood: 196, stone: 0, copper: 4, bronze: 0, raw_iron: 2, iron: 0, steel: 0, sapling: 0});
+
+    stepCivilization(harness, 30);
+    assert.deepEqual(stock(), {food: 0, wood: 195, stone: 0, copper: 3, bronze: 1, raw_iron: 2, iron: 0, steel: 0, sapling: 0});
+
+    stepCivilization(harness, 60);
+    assert.deepEqual(stock(), {food: 0, wood: 192, stone: 0, copper: 2, bronze: 1, raw_iron: 1, iron: 1, steel: 0, sapling: 0}, "bronze made at tick 60 cannot feed the kiln until the next batch");
+
+    stepCivilization(harness, 90);
+    assert.deepEqual(stock(), {food: 0, wood: 189, stone: 0, copper: 1, bronze: 1, raw_iron: 0, iron: 2, steel: 0, sapling: 0}, "new iron cannot feed the forge in the same batch");
+
+    stepCivilization(harness, 120);
+    assert.deepEqual(stock(), {food: 0, wood: 184, stone: 0, copper: 0, bronze: 1, raw_iron: 0, iron: 0, steel: 1, sapling: 0});
+    stepCivilization(harness, 120);
+    assert.deepEqual(stock(), {food: 0, wood: 184, stone: 0, copper: 0, bronze: 1, raw_iron: 0, iron: 0, steel: 1, sapling: 0}, "a workshop cannot run twice at the same 30-tick boundary");
+    assert.equal(foundry.lastProcessTick, 120);
+    assert.equal(kiln.lastProcessTick, 90);
+    assert.equal(forge.lastProcessTick, 120);
+    assert.equal(harness.currentPixels.some((pixel) => !pixel.del && pixel.element === "civ_body"), false, "production needs no worker");
+});
+
+test("castle equipment demand recursively requests raw ore and fuel for every intermediate", () => {
+    const scenario = createEquipmentScenario({
+        eraId: "castle",
+        adultCount: 1,
+        soldierCount: 1,
+        unlocked: TechData.TECHNOLOGIES.map((technology) => technology.id),
+        stock: {
+            food: 0,
+            wood: 0,
+            stone: 0,
+            copper: 0,
+            bronze: 0,
+            raw_iron: 0,
+            iron: 0,
+            steel: 0,
+            sapling: 0
+        }
+    });
+    const facilities = [
+        "civ_lumberyard_core", "civ_hearth_core", "civ_workshop_core", "civ_quarry_core",
+        "civ_foundry_core", "civ_kiln_core", "civ_forge_core"
+    ];
+    facilities.forEach((elementName, index) => {
+        scenario.harness.createPixel(elementName, 56 + index * 2, 15, {
+            factionId: 7,
+            settlementId: 17,
+            buildingId: 200 + index,
+            factionColor: "#336699"
+        });
+    });
+    scenario.api.forceReindex();
+    stepCivilization(scenario.harness, 30);
+    stepCivilization(scenario.harness, 60);
+
+    assert.deepEqual(JSON.parse(JSON.stringify(scenario.banner.resourceDemand)), {
+        food: 0,
+        wood: 167,
+        stone: 2,
+        copper: 20,
+        raw_iron: 13
+    });
+    assert.equal(scenario.adults[0].weapon, "fists", "missing inputs leave the soldier waiting for equipment");
+    assert.equal(scenario.adults[0].armor, "none");
+    assert.equal(scenario.api.getFactionSnapshot(7, 17).woodSmeltingReserve, 96);
+});
+
+test("era equipment quotas are deterministic, immediate, and restricted to soldiers", () => {
+    const cases = [
+        {eraId: "tribal", unlocked: [], expected: {club: 5}},
+        {eraId: "stone", unlocked: ["polished_axes"], expected: {stone_spear: 5}},
+        {eraId: "agriculture", unlocked: ["polished_axes", "bowmaking"], expected: {stone_spear: 3, bow: 2}},
+        {eraId: "bronze", unlocked: ["bronze_weapons", "bowmaking"], expected: {bronze_sword: 2, bronze_spear: 2, bow: 1}},
+        {eraId: "iron", unlocked: ["iron_weapons", "bowmaking"], expected: {iron_sword: 2, iron_spear: 2, bow: 1}},
+        {eraId: "castle", unlocked: ["carburizing_tempering", "crossbow"], expected: {steel_blade: 2, steel_spear: 2, crossbow: 1}}
+    ];
+
+    for (const entry of cases) {
+        const first = createEquipmentScenario({
+            eraId: entry.eraId,
+            adultCount: 5,
+            soldierCount: 5,
+            unlocked: entry.unlocked
+        });
+        stepCivilization(first.harness, 30);
+        const soldiers = first.adults.filter((actor) => actor.role === "guard" || actor.role === "warrior" || actor.warRole === "attacker" || actor.warRole === "defender");
+        const civilians = first.adults.filter((actor) => !soldiers.includes(actor));
+        const assignment = first.adults.slice().sort((a, b) => a.humanId - b.humanId).map((actor) => actor.weapon);
+
+        assert.equal(first.harness.currentPixels.some((pixel) => !pixel.del && [
+            "civ_workshop_core", "civ_foundry_core", "civ_forge_core"
+        ].includes(pixel.element)), false, `${entry.eraId} equipment must not need a facility`);
+        assert.equal(soldiers.length, 5, JSON.stringify({
+            allocation: first.harness.sandbox.HumanSocietyCore.eraJobAllocation(0, first.adults.length),
+            roles: first.adults.map((actor) => ({id: actor.humanId, role: actor.role, warRole: actor.warRole, weapon: actor.weapon}))
+        }));
+        assert.deepEqual(countWeapons(soldiers), entry.expected);
+        assert.ok(civilians.every((actor) => actor.weapon === "fists"));
+        assert.equal(first.child.weapon, "fists");
+
+        const stockAfterEquip = JSON.stringify(first.api.getFactionSnapshot(7, 17).stock);
+        stepCivilization(first.harness, 60);
+        assert.deepEqual(first.adults.slice().sort((a, b) => a.humanId - b.humanId).map((actor) => actor.weapon), assignment);
+        assert.equal(JSON.stringify(first.api.getFactionSnapshot(7, 17).stock), stockAfterEquip, `${entry.eraId} stable equipment must not spend twice`);
+
+        const second = createEquipmentScenario({
+            eraId: entry.eraId,
+            adultCount: 5,
+            soldierCount: 5,
+            unlocked: entry.unlocked
+        });
+        stepCivilization(second.harness, 30);
+        assert.deepEqual(second.adults.slice().sort((a, b) => a.humanId - b.humanId).map((actor) => actor.weapon), assignment);
+    }
+
+    const restricted = createEquipmentScenario({
+        eraId: "agriculture",
+        adultCount: 7,
+        soldierCount: 1,
+        unlocked: ["polished_axes", "bowmaking"]
+    });
+    stepCivilization(restricted.harness, 30);
+    const armedAdults = restricted.adults.filter((actor) => actor.weapon !== "fists");
+    assert.equal(armedAdults.length, 1);
+    assert.ok(armedAdults.every((actor) => actor.role === "guard" || actor.role === "warrior" || actor.warRole === "attacker" || actor.warRole === "defender"));
+    assert.ok(restricted.adults.filter((actor) => !armedAdults.includes(actor)).every((actor) => actor.weapon === "fists"));
+    assert.equal(restricted.child.weapon, "fists");
+});
+
+test("tribal clubs need only wood while later weapons retain their technology gates", () => {
+    const tribal = createEquipmentScenario({eraId: "tribal", adultCount: 1, soldierCount: 1, unlocked: []});
+    stepCivilization(tribal.harness, 30);
+    assert.deepEqual(countWeapons(tribal.adults), {club: 1});
+
+    const stone = createEquipmentScenario({eraId: "stone", adultCount: 1, soldierCount: 1, unlocked: []});
+    stepCivilization(stone.harness, 30);
+    assert.deepEqual(countWeapons(stone.adults), {club: 1}, "without polished tools the soldier keeps the tribal club");
+    stone.banner.research.unlocked.polished_axes = true;
+    stepCivilization(stone.harness, 60);
+    assert.deepEqual(countWeapons(stone.adults), {stone_spear: 1});
+
+    const agriculture = createEquipmentScenario({eraId: "agriculture", adultCount: 2, soldierCount: 2, unlocked: ["polished_axes"]});
+    stepCivilization(agriculture.harness, 30);
+    assert.deepEqual(countWeapons(agriculture.adults), {stone_spear: 2}, "locked bow slots retain the best researched earlier-era weapon");
+    agriculture.banner.research.unlocked.bowmaking = true;
+    stepCivilization(agriculture.harness, 60);
+    assert.deepEqual(countWeapons(agriculture.adults), {stone_spear: 1, bow: 1});
+
+    const bronze = createEquipmentScenario({eraId: "bronze", adultCount: 3, soldierCount: 3, unlocked: ["bowmaking"]});
+    stepCivilization(bronze.harness, 30);
+    assert.deepEqual(countWeapons(bronze.adults), {club: 2, bow: 1});
+    bronze.banner.research.unlocked.bronze_weapons = true;
+    stepCivilization(bronze.harness, 60);
+    assert.deepEqual(countWeapons(bronze.adults), {bronze_sword: 1, bronze_spear: 1, bow: 1});
+
+    const iron = createEquipmentScenario({eraId: "iron", adultCount: 3, soldierCount: 3, unlocked: ["bowmaking"]});
+    stepCivilization(iron.harness, 30);
+    assert.deepEqual(countWeapons(iron.adults), {club: 2, bow: 1});
+    iron.banner.research.unlocked.iron_weapons = true;
+    stepCivilization(iron.harness, 60);
+    assert.deepEqual(countWeapons(iron.adults), {iron_sword: 1, iron_spear: 1, bow: 1});
+
+    const castle = createEquipmentScenario({eraId: "castle", adultCount: 3, soldierCount: 3, unlocked: ["carburizing_tempering"]});
+    stepCivilization(castle.harness, 30);
+    assert.deepEqual(countWeapons(castle.adults), {steel_blade: 1, steel_spear: 1, club: 1});
+    castle.banner.research.unlocked.crossbow = true;
+    stepCivilization(castle.harness, 60);
+    assert.deepEqual(countWeapons(castle.adults), {steel_blade: 1, steel_spear: 1, crossbow: 1});
+});
+
+test("weapon swaps and demotions fully refund paid costs while deaths refund nothing", () => {
+    const swap = createEquipmentScenario({
+        eraId: "tribal",
+        adultCount: 1,
+        soldierCount: 1,
+        unlocked: ["war_clubs", "polished_axes"],
+        stock: {wood: 3, stone: 1, bronze: 0, iron: 0, steel: 0}
+    });
+    stepCivilization(swap.harness, 30);
+    assert.equal(swap.adults[0].weapon, "club");
+    assert.deepEqual(JSON.parse(JSON.stringify(swap.adults[0].weaponPaidCost)), {wood: 1});
+    assert.equal(swap.api.getFactionSnapshot(7, 17).stock.wood, 2);
+
+    swap.banner.eraId = "stone";
+    stepCivilization(swap.harness, 60);
+    assert.equal(swap.adults[0].weapon, "stone_spear");
+    assert.deepEqual(JSON.parse(JSON.stringify(swap.adults[0].weaponPaidCost)), {wood: 2, stone: 1});
+    assert.equal(swap.api.getFactionSnapshot(7, 17).stock.wood, 1, "the club cost is refunded before the spear cost is paid");
+    assert.equal(swap.api.getFactionSnapshot(7, 17).stock.stone, 0);
+
+    swap.quota.soldiers = 0;
+    stepCivilization(swap.harness, 90);
+    assert.equal(swap.adults[0].weapon, "fists");
+    assert.equal(swap.adults[0].weaponPaidCost, undefined);
+    assert.equal(swap.api.getFactionSnapshot(7, 17).stock.wood, 3);
+    assert.equal(swap.api.getFactionSnapshot(7, 17).stock.stone, 1);
+
+    const death = createEquipmentScenario({
+        eraId: "tribal",
+        adultCount: 1,
+        soldierCount: 1,
+        unlocked: ["war_clubs"],
+        stock: {wood: 1, stone: 0, bronze: 0, iron: 0, steel: 0}
+    });
+    stepCivilization(death.harness, 30);
+    assert.equal(death.adults[0].weapon, "club");
+    assert.equal(death.api.getFactionSnapshot(7, 17).stock.wood, 0);
+    assert.equal(death.api.damageActor(death.adults[0], 1000, {factionId: 8}), true);
+    stepCivilization(death.harness, 60);
+    assert.equal(death.api.getFactionSnapshot(7, 17).stock.wood, 0, "a dead soldier's weapon is permanently lost");
+});
+
+test("armor era targets equip immediately but remain restricted to soldiers and technology gates", () => {
+    const cases = [
+        {eraId: "stone", tech: "rattan_armor", armor: "none", bonus: 0, resource: "wood", expectedRemaining: 8},
+        {eraId: "agriculture", tech: "rattan_armor", armor: "rattan", bonus: 100, resource: "wood", expectedRemaining: 0},
+        {eraId: "bronze", tech: "rattan_armor", armor: "rattan", bonus: 100, resource: "wood", expectedRemaining: 0},
+        {eraId: "iron", tech: "iron_armor", armor: "iron", bonus: 220, resource: "iron", expectedRemaining: 0},
+        {eraId: "castle", tech: "steel_armor", armor: "steel", bonus: 420, resource: "steel", expectedRemaining: 0}
+    ];
+
+    for (const entry of cases) {
+        const scenario = createEquipmentScenario({
+            eraId: entry.eraId,
+            adultCount: 3,
+            soldierCount: 2,
+            unlocked: [entry.tech],
+            stock: {wood: 10, iron: 8, steel: 8}
+        });
+        stepCivilization(scenario.harness, 30);
+        const soldiers = scenario.adults.filter((actor) => actor.role === "guard" || actor.role === "warrior");
+        const civilians = scenario.adults.filter((actor) => !soldiers.includes(actor));
+
+        assert.equal(soldiers.length, 2);
+        assert.ok(soldiers.every((actor) => actor.armor === entry.armor));
+        assert.ok(soldiers.every((actor) => actor.maxHp === 100 + entry.bonus && actor.hp === 100 + entry.bonus));
+        assert.ok(civilians.every((actor) => actor.armor === "none" && actor.maxHp === 100));
+        assert.equal(scenario.child.armor, "none");
+        assert.equal(scenario.api.getFactionSnapshot(7, 17).stock[entry.resource], entry.expectedRemaining);
+    }
+
+    const gated = createEquipmentScenario({
+        eraId: "agriculture",
+        adultCount: 1,
+        soldierCount: 1,
+        unlocked: [],
+        stock: {wood: 4}
+    });
+    stepCivilization(gated.harness, 30);
+    assert.equal(gated.adults[0].armor, "none");
+    assert.equal(gated.api.getFactionSnapshot(7, 17).stock.wood, 3, "the ungated club still consumes one wood");
+});
+
+test("scarce shared materials arm every soldier before issuing armor", () => {
+    const scenario = createEquipmentScenario({
+        eraId: "agriculture",
+        adultCount: 2,
+        soldierCount: 2,
+        unlocked: ["rattan_armor"],
+        stock: {wood: 5, stone: 0, iron: 0, steel: 0}
+    });
+
+    stepCivilization(scenario.harness, 30);
+
+    assert.deepEqual(countWeapons(scenario.adults), {club: 2});
+    assert.ok(scenario.adults.every((actor) => actor.armor === "none"));
+    assert.equal(scenario.api.getFactionSnapshot(7, 17).stock.wood, 3);
+});
+
+test("armor swaps and demotions refund costs while preserving absolute damage", () => {
+    const swap = createEquipmentScenario({
+        eraId: "agriculture",
+        adultCount: 1,
+        soldierCount: 1,
+        unlocked: ["rattan_armor"],
+        stock: {wood: 5, iron: 4, steel: 4}
+    });
+    const actor = swap.adults[0];
+    stepCivilization(swap.harness, 30);
+    assert.equal(actor.armor, "rattan");
+    assert.deepEqual(JSON.parse(JSON.stringify(actor.armorPaidCost)), {wood: 4});
+    assert.equal(actor.maxHp, 200);
+    assert.equal(actor.hp, 200);
+    assert.equal(swap.api.getFactionSnapshot(7, 17).stock.wood, 0);
+
+    assert.equal(swap.api.damageActor(actor, 150, {factionId: 8}), true);
+    assert.equal(actor.healthDamage, 150);
+    assert.equal(actor.hp, 50);
+
+    swap.quota.soldiers = 0;
+    stepCivilization(swap.harness, 60);
+    assert.equal(actor.armor, "none");
+    assert.equal(actor.maxHp, 100);
+    assert.equal(actor.hp, 1, "removing armor cannot kill a living soldier");
+    assert.equal(actor.healthDamage, 150);
+    assert.equal(swap.api.getFactionSnapshot(7, 17).stock.wood, 5);
+
+    swap.quota.soldiers = 1;
+    stepCivilization(swap.harness, 90);
+    assert.equal(actor.armor, "rattan");
+    assert.equal(actor.maxHp, 200);
+    assert.equal(actor.hp, 50, "putting the same armor back on cannot heal the stored damage");
+    assert.equal(actor.healthDamage, 150);
+
+    swap.banner.eraId = "iron";
+    swap.banner.research.unlocked.iron_armor = true;
+    stepCivilization(swap.harness, 120);
+    assert.equal(actor.armor, "iron");
+    assert.equal(actor.maxHp, 320);
+    assert.equal(actor.hp, 170);
+    assert.deepEqual(JSON.parse(JSON.stringify(actor.armorPaidCost)), {iron: 4});
+    assert.equal(swap.api.getFactionSnapshot(7, 17).stock.wood, 4);
+    assert.equal(swap.api.getFactionSnapshot(7, 17).stock.iron, 0);
+
+    swap.banner.eraId = "castle";
+    swap.banner.research.unlocked.steel_armor = true;
+    stepCivilization(swap.harness, 150);
+    assert.equal(actor.armor, "steel");
+    assert.equal(actor.maxHp, 520);
+    assert.equal(actor.hp, 370);
+    assert.deepEqual(JSON.parse(JSON.stringify(actor.armorPaidCost)), {steel: 4});
+    assert.equal(swap.api.getFactionSnapshot(7, 17).stock.iron, 4);
+    assert.equal(swap.api.getFactionSnapshot(7, 17).stock.steel, 0);
+
+    const death = createEquipmentScenario({
+        eraId: "agriculture",
+        adultCount: 1,
+        soldierCount: 1,
+        unlocked: ["rattan_armor"],
+        stock: {wood: 5}
+    });
+    stepCivilization(death.harness, 30);
+    assert.equal(death.adults[0].armor, "rattan");
+    assert.equal(death.api.getFactionSnapshot(7, 17).stock.wood, 0);
+    assert.equal(death.api.damageActor(death.adults[0], 1000, {factionId: 8}), true);
+    stepCivilization(death.harness, 60);
+    assert.equal(death.api.getFactionSnapshot(7, 17).stock.wood, 0, "dead soldiers do not refund armor");
+});
+
+test("person snapshots and Simplified Chinese histories expose weapon and armor changes", () => {
+    const scenario = createEquipmentScenario({
+        eraId: "agriculture",
+        adultCount: 1,
+        soldierCount: 1,
+        unlocked: ["polished_axes", "rattan_armor"],
+        stock: {wood: 6, stone: 1}
+    });
+    scenario.harness.sandbox.langCode = "zh_cn";
+    const actor = scenario.adults[0];
+
+    stepCivilization(scenario.harness, 30);
+    const living = scenario.api.getPersonSnapshot(actor.humanId);
+    assert.equal(living.weapon, "stone_spear");
+    assert.equal(living.armor, "rattan");
+    assert.equal(living.armorBonusHp, 100);
+
+    let history = scenario.api.getPersonHistory(actor.humanId, {limit: 100});
+    const equippedWeapon = history.entries.find((entry) => entry.type === "weapon_equipped");
+    const equippedArmor = history.entries.find((entry) => entry.type === "armor_equipped");
+    assert.match(equippedWeapon.description, /装备武器/);
+    assert.match(equippedArmor.description, /装备护甲/);
+    assert.doesNotMatch(equippedWeapon.description + equippedArmor.description, /未知活动|未知武器|未知护甲/);
+
+    scenario.quota.soldiers = 0;
+    stepCivilization(scenario.harness, 60);
+    history = scenario.api.getPersonHistory(actor.humanId, {limit: 100});
+    const removedWeapon = history.entries.find((entry) => entry.type === "weapon_removed");
+    const removedArmor = history.entries.find((entry) => entry.type === "armor_removed");
+    assert.match(removedWeapon.description, /卸下武器/);
+    assert.match(removedArmor.description, /卸下护甲/);
+    assert.doesNotMatch(removedWeapon.description + removedArmor.description, /未知活动|未知武器|未知护甲/);
+
+    scenario.quota.soldiers = 1;
+    stepCivilization(scenario.harness, 90);
+    assert.equal(scenario.api.damageActor(actor, 1000, {factionId: 8}), true);
+    const deceased = scenario.api.getPersonSnapshot(actor.humanId);
+    assert.equal(deceased.status, "deceased");
+    assert.equal(deceased.weapon, "stone_spear");
+    assert.equal(deceased.armor, "rattan");
+    assert.equal(deceased.armorBonusHp, 100);
+});
+
+test("civilized-human renderer draws armor by material and restores the faction-color belt", () => {
+    const harness = createHarness();
+    const renderer = harness.elements.civ_body.renderer;
+    const expectedColors = {rattan: "#6f7440", iron: "#d9dddf", steel: "#202426"};
+
+    Object.entries(expectedColors).forEach(([armor, expectedColor]) => {
+        const fills = [];
+        const context = {
+            fillStyle: "",
+            save() {},
+            restore() {},
+            fillRect() { fills.push(this.fillStyle); }
+        };
+        renderer({x: 4, y: 5, color: "#224466", factionColor: "#cc3355", factionId: 7, armor, weapon: "fists"}, context);
+        assert.ok(fills.includes(expectedColor), `${armor} uses its material color`);
+        assert.equal(fills.at(-1), "#cc3355", `${armor} leaves a visible faction-color belt above the armor`);
+    });
+});
+
+function createCombatScenario(weapon, distance, targetHp) {
+    const harness = createHarness({techData: true, relationMovement: true});
+    harness.sandbox.Math.random = () => 0;
+    harness.createPixel("civ_banner", 2, 20, {factionId: 1, settlementId: 11, factionColor: "#aa3333"});
+    harness.createPixel("civ_banner", 92, 20, {factionId: 2, settlementId: 22, factionColor: "#3333aa"});
+    const attacker = harness.createPixel("civ_body", 3, 8, {
+        humanId: 101,
+        factionId: 1,
+        settlementId: 11,
+        factionColor: "#aa3333",
+        role: "guard",
+        task: "combat",
+        hp: 500,
+        maxHp: 500,
+        birthTick: 0,
+        naturalDeathTick: 100000,
+        weapon
+    });
+    const target = harness.createPixel("civ_body", 3 + distance, 8, {
+        humanId: 202,
+        factionId: 2,
+        settlementId: 22,
+        factionColor: "#3333aa",
+        role: "guard",
+        task: "planning",
+        hp: targetHp,
+        maxHp: targetHp,
+        birthTick: 0,
+        naturalDeathTick: 100000,
+        weapon: "fists"
+    });
+    const api = harness.sandbox.HumanSociety;
+    api.forceReindex();
+    assert.equal(api.declareWar(1, 2, "manual"), true);
+    attacker.combatTargetId = target.humanId;
+    attacker.targetId = target.humanId;
+    attacker.task = "combat";
+    return {harness, api, attacker, target};
+}
+
+test("combat runtime honors full weapon range, direct damage, and one-cell knockback", () => {
+    const bow = createCombatScenario("bow", 25, 100);
+    bow.harness.sandbox.pixelTicks = 1;
+    bow.harness.elements.civ_body.tick(bow.attacker);
+    assert.equal(bow.api.getDebugSnapshot().pendingAttacks, 1, "a bow can attack at exactly 25 cells");
+    bow.harness.sandbox.pixelTicks = 2;
+    bow.harness.everyTickCallbacks[0]();
+    assert.equal(bow.target.hp, 85);
+    assert.equal(bow.target.x, 29, "a hit knocks the target one cell away");
+
+    const outside = createCombatScenario("bow", 26, 100);
+    outside.harness.sandbox.pixelTicks = 1;
+    outside.harness.elements.civ_body.tick(outside.attacker);
+    assert.equal(outside.api.getDebugSnapshot().pendingAttacks, 0, "a bow cannot attack beyond 25 cells");
+    assert.equal(outside.target.hp, 100);
+
+    const blade = createCombatScenario("steel_blade", 2, 250);
+    blade.harness.createPixel("rock", 6, 8);
+    blade.harness.sandbox.pixelTicks = 1;
+    blade.harness.elements.civ_body.tick(blade.attacker);
+    blade.harness.sandbox.pixelTicks = 2;
+    blade.harness.everyTickCallbacks[0]();
+    assert.equal(blade.target.hp, 150, "steel blade damage is applied directly without a 0.1 multiplier");
+    assert.equal(blade.target.x, 5, "blocked knockback does not move through a solid cell");
+
+    blade.harness.sandbox.pixelTicks = 3;
+    blade.harness.elements.civ_body.tick(blade.attacker);
+    blade.harness.sandbox.pixelTicks = 4;
+    blade.harness.everyTickCallbacks[0]();
+    assert.equal(blade.target.hp, 50, "there is no legacy attack cooldown between consecutive frames");
 });
