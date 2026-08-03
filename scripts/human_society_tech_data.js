@@ -28,8 +28,8 @@
         castle: 24
     };
     const ERA_JOB_WEIGHTS = {
-        tribal: {food: 2, wood: 2, builder: 1, flex: 1},
-        stone: {food: 2, wood: 2, miner: 2, builder: 1, artisan: 1},
+        tribal: {food: 1, wood: 1, miner: 1, builder: 1, forester: 1, military: 1},
+        stone: {food: 2, wood: 1, miner: 2, builder: 1, forester: 1, military: 1},
         agriculture: {
             food: 4,
             wood: 2,
@@ -81,12 +81,12 @@
     };
 
     const ERA_SPECS = [
-        {id: "tribal", name: "Tribal", costs: [20, 28]},
-        {id: "stone", name: "Stone", costs: [35, 48]},
-        {id: "agriculture", name: "Agriculture", costs: [55, 75]},
-        {id: "bronze", name: "Bronze", costs: [80, 110]},
-        {id: "iron", name: "Iron", costs: [115, 155]},
-        {id: "castle", name: "Castle", costs: [160, 220]}
+        {id: "tribal", name: "Tribal", costs: [20, 28], advancementCost: {food: 10, wood: 15}},
+        {id: "stone", name: "Stone", costs: [35, 48], advancementCost: {food: 18, wood: 25, stone: 15}},
+        {id: "agriculture", name: "Agriculture", costs: [55, 75], advancementCost: {food: 25, wood: 35, stone: 25}},
+        {id: "bronze", name: "Bronze", costs: [80, 110], advancementCost: {food: 35, wood: 45, stone: 35, bronze: 6}},
+        {id: "iron", name: "Iron", costs: [115, 155], advancementCost: {food: 50, wood: 60, stone: 50, bronze: 5, iron: 10}},
+        {id: "castle", name: "Castle", costs: [160, 220], advancementCost: {}}
     ];
 
     function stock(resource, minimum, hard) {
@@ -143,6 +143,19 @@
                 effects: [
                     modifier("carryCapacity", "add", 2),
                     modifier("harvestDurationMultiplier", "multiply", 0.9)
+                ]
+            },
+            {
+                id: "careful_gathering",
+                name: "Careful Gathering",
+                domain: "production",
+                tier: 2,
+                cost: 28,
+                prerequisites: ["organized_gathering"],
+                conditions: [stock("food", 3, false), stock("wood", 3, false)],
+                effects: [
+                    modifier("foodYieldBonus", "add", 0.25),
+                    modifier("woodYieldBonus", "add", 0.25)
                 ]
             },
             {
@@ -222,7 +235,17 @@
                 cost: 35,
                 prerequisites: ["organized_gathering"],
                 conditions: [encountered("stone", 1, false)],
-                effects: [unlock("resource", "stone")]
+                effects: [modifier("stoneHarvestDurationMultiplier", "multiply", 0.8)]
+            },
+            {
+                id: "stone_sorting",
+                name: "Stone Sorting",
+                domain: "production",
+                tier: 2,
+                cost: 48,
+                prerequisites: ["stone_knapping"],
+                conditions: [stock("stone", 4, false)],
+                effects: [modifier("stoneYieldBonus", "add", 0.5)]
             },
             {
                 id: "polished_axes",
@@ -305,8 +328,21 @@
                 prerequisites: ["food_preservation", "polished_axes"],
                 conditions: [encountered("tree_seed", 1, false)],
                 effects: [
-                    unlock("role", "forester"),
-                    enable("treePlanting")
+                    modifier("woodHarvestDurationMultiplier", "multiply", 0.85),
+                    modifier("forestryRecheckMultiplier", "multiply", 0.5)
+                ]
+            },
+            {
+                id: "intensive_harvesting",
+                name: "Intensive Harvesting",
+                domain: "production",
+                tier: 3,
+                cost: 75,
+                prerequisites: ["food_preservation", "managed_forestry"],
+                conditions: [stock("food", 16, false), stock("wood", 12, false)],
+                effects: [
+                    modifier("foodYieldBonus", "add", 0.75),
+                    modifier("woodYieldBonus", "add", 0.75)
                 ]
             },
             {
@@ -376,6 +412,19 @@
                 effects: [
                     unlock("building", "foundry"),
                     unlock("recipe", "bronze")
+                ]
+            },
+            {
+                id: "bronze_tools",
+                name: "Bronze Tools",
+                domain: "production",
+                tier: 3,
+                cost: 110,
+                prerequisites: ["bronze_foundry", "polished_axes"],
+                conditions: [stock("bronze", 2, true), stock("stone", 8, false)],
+                effects: [
+                    modifier("stoneYieldBonus", "add", 0.5),
+                    modifier("copperYieldBonus", "add", 0.5)
                 ]
             },
             {
@@ -453,6 +502,19 @@
                 ]
             },
             {
+                id: "iron_extraction_tools",
+                name: "Iron Extraction Tools",
+                domain: "production",
+                tier: 3,
+                cost: 155,
+                prerequisites: ["iron_smelting", "bronze_tools"],
+                conditions: [stock("iron", 2, true), stock("raw_iron", 2, true)],
+                effects: [
+                    modifier("copperYieldBonus", "add", 0.5),
+                    modifier("rawIronYieldBonus", "add", 0.5)
+                ]
+            },
+            {
                 id: "stone_fortifications",
                 name: "Stone Fortifications",
                 domain: "construction",
@@ -507,6 +569,19 @@
                 effects: [
                     unlock("building", "forge"),
                     unlock("recipe", "steel")
+                ]
+            },
+            {
+                id: "advanced_extraction",
+                name: "Advanced Extraction",
+                domain: "production",
+                tier: 2,
+                cost: 220,
+                prerequisites: ["steelmaking", "iron_extraction_tools"],
+                conditions: [stock("steel", 2, true), stock("wood", 16, false)],
+                effects: [
+                    modifier("rawIronYieldBonus", "add", 0.5),
+                    modifier("woodYieldBonus", "add", 1)
                 ]
             },
             {
@@ -639,6 +714,7 @@
             index: eraIndex,
             vision: DEFAULT_VISION[eraIndex],
             costs: eraSpec.costs.slice(),
+            advancementCost: Object.assign({}, eraSpec.advancementCost),
             technologyCount,
             requiredTechsToAdvance,
             advancement: {

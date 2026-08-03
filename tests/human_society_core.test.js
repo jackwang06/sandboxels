@@ -394,6 +394,26 @@ test("technology effect compilation deduplicates and combines effects determinis
     ]), /Conflicting set values/);
 });
 
+test("resource yield modifiers add across technologies without changing harvest speed", () => {
+    const capabilities = Core.compileTechnologyEffects([
+        {type: "modifier", stat: "foodYieldBonus", operation: "add", value: 0.25},
+        {type: "modifier", stat: "foodYieldBonus", operation: "add", value: 0.75},
+        {type: "modifier", stat: "woodYieldBonus", operation: "add", value: 2},
+        {type: "modifier", stat: "stoneYieldBonus", operation: "add", value: 1},
+        {type: "modifier", stat: "copperYieldBonus", operation: "add", value: 1},
+        {type: "modifier", stat: "rawIronYieldBonus", operation: "add", value: 1}
+    ]);
+
+    assert.deepEqual(capabilities.modifiers, {
+        foodYieldBonus: {operation: "add", value: 1},
+        woodYieldBonus: {operation: "add", value: 2},
+        stoneYieldBonus: {operation: "add", value: 1},
+        copperYieldBonus: {operation: "add", value: 1},
+        rawIronYieldBonus: {operation: "add", value: 1}
+    });
+    assert.equal(capabilities.modifiers.harvestDurationMultiplier, undefined);
+});
+
 test("legacy technology modifier aliases compile to canonical runtime fields", () => {
     const capabilities = Core.compileTechnologyEffects([
         {type: "modifier", stat: "harvestSpeed", operation: "multiply", value: 1.25},
@@ -550,7 +570,7 @@ test("era constants expose six eras, population targets, and semantic job weight
         castle: 24
     });
     assert.deepEqual(Core.ERA_JOB_WEIGHTS.tribal, {
-        food: 2, wood: 2, builder: 1, flex: 1
+        food: 1, wood: 1, miner: 1, builder: 1, forester: 1, military: 1
     });
     assert.deepEqual(Core.ERA_JOB_WEIGHTS.castle, {
         food: 6,
@@ -581,13 +601,15 @@ test("era lookup and largest-remainder job allocation are deterministic", () => 
 
     const copiedWeights = Core.eraJobWeights("tribal");
     copiedWeights.food = 99;
-    assert.equal(Core.ERA_JOB_WEIGHTS.tribal.food, 2);
+    assert.equal(Core.ERA_JOB_WEIGHTS.tribal.food, 1);
 
     assert.deepEqual(Core.eraJobAllocation("tribal", 3), {
         food: 1,
         wood: 1,
-        builder: 1,
-        flex: 0
+        miner: 1,
+        builder: 0,
+        forester: 0,
+        military: 0
     });
     assert.deepEqual(Core.allocateJobWeights({first: 1, second: 1, third: 1}, 2), {
         first: 1,

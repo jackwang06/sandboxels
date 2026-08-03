@@ -19,11 +19,13 @@
         NAVIGATION_STALL_TICKS: 300,
         PATH_SEARCH_MARGIN_MIN: 12,
         PATH_SEARCH_MARGIN_MAX: 32,
-        PATH_SEARCH_NODES_PER_TICK: 96,
+        PATH_SEARCH_NODES_PER_TICK: 32,
         PATH_SEARCH_PLAYER_NODES_PER_TICK: 256,
         PATH_SEARCH_MAX_NODES: 4096,
         CIVILIZATION_INTERVAL: 30,
         FULL_REBUILD_INTERVAL: 300,
+        INDEX_AUDIT_PIXELS_PER_TICK: 64,
+        INDEX_AUDIT_BUDGET_MS: 0.35,
         MAX_RESOURCE_CHECKS: 256,
         RESOURCE_RADIUS: 12,
         EXTENDED_RESOURCE_RADIUS: 20,
@@ -40,6 +42,7 @@
         CONSTRUCTION_STEP_TICKS: 8,
         CONSTRUCTION_BLOCK_TIMEOUT: 180,
         BUILD_SEARCH_RADIUS: 24,
+        BUILDING_CORE_CLEARANCE: 5,
         BUILD_RETRY_TICKS: 180,
         MOVE_STUCK_LIMIT: 30,
         TERRITORY_BASE_RADIUS: 14,
@@ -66,21 +69,24 @@
         KNOWLEDGE_PER_ADULT_STEP: 0.65,
         WORKSHOP_PROCESS_INTERVAL: 30,
         TREE_ROOT_HORIZONTAL_CLEARANCE: 2,
+        TREE_HARVEST_AGE_TICKS: 600,
+        TREE_GROWTH_RECHECK_TICKS: 30,
         TREE_SEED_GUARANTEE: 5,
         WOOD_FOOD_BONUS_CHANCE: 0.5,
         RANGED_PROJECTILE_STEP_TICKS: 2,
         PERSON_ACTIVITY_SCHEMA_VERSION: 1,
         MAX_PERSON_ACTIVITY: 500,
-        MAX_DECEASED_PER_SETTLEMENT: 500,
         PEOPLE_UI_REFRESH_MS: 250,
         PEOPLE_HISTORY_PAGE_SIZE: 50
     }, Core.CONFIG || {});
     const FACTION_COLORS = [
         "#d95763", "#4f83d1", "#4da86b", "#d3a43d",
-        "#8c63c7", "#d4743c", "#3da7aa", "#c6539b"
+        "#8c63c7", "#d4743c", "#3da7aa", "#c6539b",
+        "#7f9f35", "#6f7f91"
     ];
     const SKIN_COLORS = ["#f3e7db", "#f7ead0", "#eadaba", "#d7bd96", "#a07e56", "#825c43", "#604134", "#3a312a"];
     const ACTOR_ELEMENTS = new Set(["civ_body", "civ_child"]);
+    const normalizedPersonActivityData = new WeakSet();
     const LEGACY_REMOVED_STRUCTURE_CORES = new Set(["civ_farm_marker", "civ_granary_core"]);
     const STRUCTURE_CORES = new Set([
         "civ_banner", "civ_hut_core", "civ_farm_marker", "civ_workshop_core", "civ_hearth_core",
@@ -104,6 +110,15 @@
         iron: 64,
         castle: 96
     }, TechData.WOOD_SMELTING_RESERVE_BY_ERA || {});
+    const MINEABLE_RESOURCE_KINDS = Object.freeze(["stone", "copper", "raw_iron"]);
+    const MINING_RESERVES_BY_ERA = Object.freeze({
+        tribal: Object.freeze({stone: 8, copper: 0, raw_iron: 0}),
+        stone: Object.freeze({stone: 12, copper: 0, raw_iron: 0}),
+        agriculture: Object.freeze({stone: 16, copper: 0, raw_iron: 0}),
+        bronze: Object.freeze({stone: 20, copper: 6, raw_iron: 0}),
+        iron: Object.freeze({stone: 24, copper: 9, raw_iron: 6}),
+        castle: Object.freeze({stone: 28, copper: 12, raw_iron: 12})
+    });
     const TECH_BY_ID = new Map((TechData.TECHNOLOGIES || []).map((tech) => [tech.id, tech]));
     const TECHS_BY_ERA = new Map();
     (TechData.TECHNOLOGIES || []).forEach((tech) => {
@@ -187,6 +202,8 @@
     if (typeof settings !== "undefined") {
         if (settings.humanSocietySpeech === undefined) settings.humanSocietySpeech = true;
         if (settings.humanSocietyBuildingScale === undefined) settings.humanSocietyBuildingScale = 100;
+        if (settings.humanSocietyTutorialComplete === undefined) settings.humanSocietyTutorialComplete = false;
+        if (!Number.isFinite(Number(settings.humanSocietyTutorialStep))) settings.humanSocietyTutorialStep = 0;
     }
 
     const manager = {
@@ -198,7 +215,6 @@
         structures: new Set(),
         structuresById: new Map(),
         actorById: new Map(),
-        deceasedByHumanId: new Map(),
         factionById: new Map(),
         settlementById: new Map(),
         relationRecords: new Map(),
@@ -207,6 +223,7 @@
         actorBucketByPixel: new Map(),
         resourceIndex: new Map(),
         resourceNodeByPixel: new Map(),
+        minerAssignments: new Map(),
         fireTargets: [],
         lastFireScanTick: -Infinity,
         resourceReservations: World.ResourceReservations ? new World.ResourceReservations() : null,
@@ -279,11 +296,20 @@
         return manager.territory;
     }
 
+    let cachedTimestampSecond = -1;
+    let cachedTimestampText = "";
     function eventTimestamp() {
-        if (World.realTimestamp) return World.realTimestamp();
-        const d = new Date();
-        const pad = (value) => String(value).padStart(2, "0");
-        return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+        const milliseconds = Date.now();
+        const second = Math.floor(milliseconds / 1000);
+        if (second === cachedTimestampSecond) return cachedTimestampText;
+        cachedTimestampSecond = second;
+        if (World.realTimestamp) cachedTimestampText = World.realTimestamp(milliseconds);
+        else {
+            const d = new Date(milliseconds);
+            const pad = (value) => String(value).padStart(2, "0");
+            cachedTimestampText = d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+        }
+        return cachedTimestampText;
     }
 
     function ensureChronicle(settlement) {
@@ -291,6 +317,23 @@
         if (!Array.isArray(settlement.chronicle)) settlement.chronicle = [];
         if (!settlement.firstNaturalResources || typeof settlement.firstNaturalResources !== "object") settlement.firstNaturalResources = {};
         return settlement.chronicle;
+    }
+
+    function migrateLegacyDeathArchive(settlement) {
+        if (!settlement) return false;
+        const legacy = Array.isArray(settlement.deceasedPeople) ? settlement.deceasedPeople : [];
+        let highestHumanId = Math.max(0, safeNumber(settlement.humanIdHighWatermark, 0));
+        let validDeaths = 0;
+        for (let i = 0; i < legacy.length; i++) {
+            const entry = legacy[i];
+            if (!entry || !Number.isFinite(entry.h)) continue;
+            validDeaths++;
+            highestHumanId = Math.max(highestHumanId, entry.h);
+        }
+        settlement.deathCount = Math.max(0, safeNumber(settlement.deathCount, 0), validDeaths);
+        settlement.humanIdHighWatermark = highestHumanId;
+        if (Object.prototype.hasOwnProperty.call(settlement, "deceasedPeople")) delete settlement.deceasedPeople;
+        return validDeaths > 0;
     }
 
     function logSettlementEvent(settlement, type, message, data) {
@@ -356,6 +399,7 @@
 
     function cloneActivityValue(value) {
         if (value === undefined) return undefined;
+        if (value === null || typeof value !== "object") return value;
         try { return JSON.parse(JSON.stringify(value)); }
         catch (error) { return null; }
     }
@@ -420,13 +464,16 @@
         if (!actor) return null;
         let data = actor.personActivity;
         if (!data || typeof data !== "object" || Array.isArray(data)) data = newPersonActivity();
-        data.v = C.PERSON_ACTIVITY_SCHEMA_VERSION;
-        if (!Array.isArray(data.h)) data.h = [];
-        data.h = data.h.filter((record) => record && typeof record === "object" && Number.isFinite(record.n));
-        trimPersonActivity(data);
-        const highestSequence = data.h.reduce((maximum, record) => Math.max(maximum, activityRecordSequence(record)), activityRecordSequence(data.c));
-        data.n = Math.max(highestSequence + 1, Number.isFinite(data.n) ? data.n : 1);
-        if (!data.c || typeof data.c !== "object" || !Number.isFinite(data.c.n)) data.c = null;
+        if (!normalizedPersonActivityData.has(data)) {
+            data.v = C.PERSON_ACTIVITY_SCHEMA_VERSION;
+            if (!Array.isArray(data.h)) data.h = [];
+            data.h = data.h.filter((record) => record && typeof record === "object" && Number.isFinite(record.n));
+            trimPersonActivity(data);
+            const highestSequence = data.h.reduce((maximum, record) => Math.max(maximum, activityRecordSequence(record)), activityRecordSequence(data.c));
+            data.n = Math.max(highestSequence + 1, Number.isFinite(data.n) ? data.n : 1);
+            if (!data.c || typeof data.c !== "object" || !Number.isFinite(data.c.n)) data.c = null;
+            normalizedPersonActivityData.add(data);
+        }
         actor.personActivity = data;
         if (openCurrent !== false && !actor.dead && !data.c) data.c = makeActivitySession(actor, actor.task || "idle", null, "task");
         return data;
@@ -514,77 +561,6 @@
         if (data.c) finishPersonActivity(actor, "interrupted", "reassigned");
         data.c = makeActivitySession(actor, nextTask, target, "task");
         return data.c;
-    }
-
-    function ensureDeceasedArchive(banner) {
-        if (!banner) return [];
-        if (!Array.isArray(banner.deceasedPeople)) banner.deceasedPeople = [];
-        const newestById = new Map();
-        banner.deceasedPeople.forEach((entry) => {
-            if (!entry || !Number.isFinite(entry.h)) return;
-            const existing = newestById.get(entry.h);
-            if (!existing || safeNumber(entry.dt, 0) >= safeNumber(existing.dt, 0)) newestById.set(entry.h, entry);
-        });
-        banner.deceasedPeople = Array.from(newestById.values()).sort((a, b) => safeNumber(a.dt, 0) - safeNumber(b.dt, 0) || a.h - b.h).slice(-C.MAX_DECEASED_PER_SETTLEMENT);
-        return banner.deceasedPeople;
-    }
-
-    function indexDeceasedArchive(banner) {
-        ensureDeceasedArchive(banner).forEach((entry) => manager.deceasedByHumanId.set(entry.h, {entry: entry, banner: banner}));
-    }
-
-    function archivePerson(actor, details) {
-        if (!actor || !Number.isFinite(actor.humanId)) return null;
-        const indexed = manager.deceasedByHumanId.get(actor.humanId);
-        if (indexed) return indexed.entry;
-        const banner = manager.settlementById.get(actor.settlementId) || settlementForActor(actor);
-        if (!banner) return null;
-        const activity = ensurePersonActivity(actor, false);
-        const entry = {
-            h: actor.humanId,
-            f: Number.isFinite(actor.factionId) ? actor.factionId : null,
-            l: Number.isFinite(actor.settlementId) ? actor.settlementId : banner.settlementId,
-            c: actor.factionColor || factionColor(actor.factionId),
-            e: actor.element,
-            x: actor.x,
-            y: actor.y,
-            bt: actor.birthTick,
-            ly: actor.lifespanYears,
-            nt: actor.naturalDeathTick,
-            dt: Number(actor.dead) || pixelTicks,
-            da: eventTimestamp(),
-            dm: Date.now(),
-            dc: actor.deathCause || "injury",
-            r: actor.role || (actor.element === "civ_child" ? "child" : "worker"),
-            w: actor.weapon || "fists",
-            ar: actor.armor || "none",
-            ab: Math.max(0, safeNumber(actor.armorBonusHp, 0)),
-            wr: actor.warRole || null,
-            hp: Math.max(0, safeNumber(actor.hp, 0)),
-            mh: Math.max(1, safeNumber(actor.maxHp, actor.element === "civ_child" ? C.CHILD_HP : C.ADULT_HP)),
-            pa: cloneActivityValue(activity),
-            d: cloneActivityValue(details) || {}
-        };
-        const archive = ensureDeceasedArchive(banner);
-        archive.push(entry);
-        ensureDeceasedArchive(banner);
-        manager.deceasedByHumanId.clear();
-        manager.settlements.forEach(indexDeceasedArchive);
-        actor.personArchived = true;
-        actor.personArchiveSettlementId = banner.settlementId;
-        delete actor.personActivity;
-        return entry;
-    }
-
-    function transferDeceasedArchive(source) {
-        if (!source || !Array.isArray(source.deceasedPeople) || !source.deceasedPeople.length) return false;
-        const target = Array.from(manager.settlements).filter((banner) => banner && banner !== source && !banner.del && banner.factionId === source.factionId)
-            .sort((a, b) => safeNumber(a.foundedTick, a.start || 0) - safeNumber(b.foundedTick, b.start || 0) || a.settlementId - b.settlementId)[0];
-        if (!target) return false;
-        target.deceasedPeople = ensureDeceasedArchive(target).concat(source.deceasedPeople);
-        ensureDeceasedArchive(target);
-        source.deceasedPeople = [];
-        return true;
     }
 
     function treeSaplingTotal(stock) {
@@ -854,8 +830,14 @@
                 carryCapacity: Math.max(C.BASE_CARRY_CAPACITY, compiledModifierValue(compiled, "carryCapacity", C.BASE_CARRY_CAPACITY)),
                 harvestDurationMultiplier: Math.max(0.1, compiledModifierValue(compiled, "harvestDurationMultiplier", 1)),
                 woodHarvestDurationMultiplier: Math.max(0.1, compiledModifierValue(compiled, "woodHarvestDurationMultiplier", 1)),
+                forestryRecheckMultiplier: Math.max(0.1, compiledModifierValue(compiled, "forestryRecheckMultiplier", 1)),
                 stoneHarvestDurationMultiplier: Math.max(0.1, compiledModifierValue(compiled, "stoneHarvestDurationMultiplier", 1)),
                 foodHarvestDurationMultiplier: Math.max(0.1, compiledModifierValue(compiled, "foodHarvestDurationMultiplier", 1)),
+                foodYieldBonus: Math.max(0, compiledModifierValue(compiled, "foodYieldBonus", 0)),
+                woodYieldBonus: Math.max(0, compiledModifierValue(compiled, "woodYieldBonus", 0)),
+                stoneYieldBonus: Math.max(0, compiledModifierValue(compiled, "stoneYieldBonus", 0)),
+                copperYieldBonus: Math.max(0, compiledModifierValue(compiled, "copperYieldBonus", 0)),
+                rawIronYieldBonus: Math.max(0, compiledModifierValue(compiled, "rawIronYieldBonus", 0)),
                 buildDurationMultiplier: Math.max(0.1, compiledModifierValue(compiled, "buildDurationMultiplier", 1)),
                 roleWorkRateMultiplier: Math.max(0.1, compiledModifierValue(compiled, "roleWorkRateMultiplier", 1)),
                 knowledgeRateMultiplier: Math.max(0.1, compiledModifierValue(compiled, "knowledgeRateMultiplier", 1)),
@@ -879,8 +861,16 @@
             carryCapacity: mods.carryCapacity,
             harvestSpeed: mods.harvestDurationMultiplier,
             woodHarvestSpeed: mods.woodHarvestDurationMultiplier,
+            forestryRecheckMultiplier: mods.forestryRecheckMultiplier,
             stoneHarvestSpeed: mods.stoneHarvestDurationMultiplier,
             foodHarvestSpeed: mods.foodHarvestDurationMultiplier,
+            resourceYieldBonuses: {
+                food: mods.foodYieldBonus,
+                wood: mods.woodYieldBonus,
+                stone: mods.stoneYieldBonus,
+                copper: mods.copperYieldBonus,
+                raw_iron: mods.rawIronYieldBonus
+            },
             buildSpeed: mods.buildDurationMultiplier,
             knowledgeRate: mods.knowledgeRateMultiplier,
             milestoneKnowledge: mods.milestoneKnowledgeMultiplier,
@@ -903,6 +893,7 @@
 
     function factionHasFeature(faction, feature) {
         if (!faction) return false;
+        if (feature === "treePlanting") return true;
         if (!hasTechnologyData()) return true;
         if (!faction.techCapabilities) faction.techModifiers = computeTechModifiers(faction);
         return !!(faction.techCapabilities && faction.techCapabilities.features.has(feature));
@@ -1156,18 +1147,84 @@
         return true;
     }
 
+    function requiredEraArmorTarget(eraId) {
+        if (eraId === "agriculture" || eraId === "bronze") return "rattan";
+        if (eraId === "iron") return "iron";
+        if (eraId === "castle") return "steel";
+        return "none";
+    }
+
+    function eraAdvancementState(faction, banner) {
+        const currentIndex = eraIndexFor(banner);
+        const era = eraDefinition(banner && banner.eraId);
+        const finalEra = currentIndex >= ERA_ORDER.length - 1;
+        const eraTechIds = era && era.techIds || (TECHS_BY_ERA.get(banner && banner.eraId) || []).map((tech) => tech.id);
+        const required = Math.max(1, safeNumber(era && era.requiredTechsToAdvance, Math.floor(eraTechIds.length * 0.7) + 1));
+        const completed = eraTechIds.filter((techId) => banner && banner.research && banner.research.unlocked[techId]).length;
+        const soldiers = (faction && faction.adults || []).filter(actorIsSoldier).sort((a, b) => a.humanId - b.humanId);
+        const weaponTargets = eraWeaponTargets(banner && banner.eraId || DEFAULT_ERA_ID, soldiers.length);
+        const armorTarget = requiredEraArmorTarget(banner && banner.eraId || DEFAULT_ERA_ID);
+        let weaponsReady = 0;
+        let armorReady = 0;
+        soldiers.forEach((actor, index) => {
+            migrateActorEquipment(actor);
+            if (actor.weapon === (weaponTargets[index] || "fists")) weaponsReady++;
+            if (actor.armor === armorTarget) armorReady++;
+        });
+        const minimumSoldiers = 1;
+        const soldierReady = soldiers.length >= minimumSoldiers;
+        const equipmentReady = soldierReady && weaponsReady === soldiers.length && armorReady === soldiers.length;
+        const cost = copyResourceCost(era && era.advancementCost || {});
+        const current = {};
+        const missing = {};
+        Object.keys(cost).forEach((resource) => {
+            current[resource] = materialAmount(banner.stock, resource);
+            missing[resource] = Math.max(0, safeNumber(cost[resource], 0) - current[resource]);
+        });
+        const stockReady = Object.keys(missing).every((resource) => missing[resource] <= 0);
+        return {
+            eraId: banner && banner.eraId || DEFAULT_ERA_ID,
+            nextEraId: finalEra ? null : ERA_ORDER[currentIndex + 1],
+            finalEra,
+            completed,
+            total: eraTechIds.length,
+            required,
+            technologyReady: completed >= required,
+            soldiers: soldiers.length,
+            minimumSoldiers,
+            soldierReady,
+            weaponsReady,
+            armorReady,
+            weaponTargets: weaponTargets.slice(),
+            armorTarget,
+            equipmentReady,
+            cost,
+            current,
+            missing,
+            stockReady,
+            canAdvance: !finalEra && completed >= required && equipmentReady && stockReady
+        };
+    }
+
+    function advancementReservation(faction, banner) {
+        if (!faction || !banner) return {};
+        const state = eraAdvancementState(faction, banner);
+        return !state.finalEra && state.technologyReady ? state.cost : {};
+    }
+
+    function canSpendAfterAdvancementReserve(faction, banner, cost) {
+        const reserve = advancementReservation(faction, banner);
+        return Object.keys(cost || {}).every((resource) =>
+            materialAmount(banner.stock, resource) - safeNumber(reserve[resource], 0) >= safeNumber(cost[resource], 0)
+        );
+    }
+
     function maybeAdvanceEra(faction, banner) {
         const currentIndex = eraIndexFor(banner);
-        if (currentIndex >= ERA_ORDER.length - 1) return false;
-        const era = eraDefinition(banner.eraId);
-        const eraTechIds = era && era.techIds || (TECHS_BY_ERA.get(banner.eraId) || []).map((tech) => tech.id);
-        const requiredToAdvance = Math.max(1, safeNumber(era && era.requiredTechsToAdvance, Math.floor(eraTechIds.length * 0.7) + 1));
-        const progress = Core.eraResearchProgress ? Core.eraResearchProgress(banner.research.unlocked, eraTechIds, requiredToAdvance) : {
-            completed: eraTechIds.filter((techId) => banner.research.unlocked[techId]).length,
-            canAdvance: eraTechIds.filter((techId) => banner.research.unlocked[techId]).length >= requiredToAdvance
-        };
+        const progress = eraAdvancementState(faction, banner);
         banner.research.eraCompleted = progress.completed;
-        if (!progress.canAdvance) return false;
+        banner.research.advancement = progress;
+        if (!progress.canAdvance || !spendStock(banner, progress.cost)) return false;
         banner.eraId = ERA_ORDER[currentIndex + 1];
         banner.research.eraEnteredTick = pixelTicks;
         banner.research.lastEraAdvanceTick = pixelTicks;
@@ -1175,7 +1232,7 @@
         faction.eraId = banner.eraId;
         faction.settlements.forEach((settlement) => { settlement.eraId = banner.eraId; settlement.research = banner.research; });
         reconcileFactionEquipment(faction);
-        logSettlementEvent(banner, "era", "进入时代：" + (eraDefinition(banner.eraId) && eraDefinition(banner.eraId).name || banner.eraId), {eraId: banner.eraId});
+        logSettlementEvent(banner, "era", "进入时代：" + (eraDefinition(banner.eraId) && eraDefinition(banner.eraId).name || banner.eraId), {eraId: banner.eraId, cost: progress.cost});
         return true;
     }
 
@@ -1212,6 +1269,36 @@
     function chooseColor(factionId) {
         const base = FACTION_COLORS[(Math.max(1, factionId) - 1) % FACTION_COLORS.length];
         return base;
+    }
+
+    function normalizeFactionColor(color) {
+        const value = String(color || "").trim().toLowerCase();
+        let match = /^#([0-9a-f]{6})$/i.exec(value);
+        if (match) return "#" + match[1].toLowerCase();
+        match = /^#([0-9a-f]{3})$/i.exec(value);
+        if (match) return "#" + match[1].split("").map((part) => part + part).join("").toLowerCase();
+        match = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(value);
+        if (!match) return null;
+        return "#" + match.slice(1, 4).map((part) => Math.max(0, Math.min(255, Number(part))).toString(16).padStart(2, "0")).join("");
+    }
+
+    function factionWithColor(color) {
+        const normalized = normalizeFactionColor(color);
+        if (!normalized) return null;
+        for (const faction of manager.factionById.values()) {
+            if (normalizeFactionColor(faction.color) === normalized) return faction;
+        }
+        return null;
+    }
+
+    function unusedFactionColor(preferred, factionId) {
+        const requested = normalizeFactionColor(preferred) || chooseColor(factionId);
+        if (!factionWithColor(requested)) return requested;
+        for (let i = 0; i < FACTION_COLORS.length; i++) {
+            const candidate = normalizeFactionColor(FACTION_COLORS[(Math.max(1, factionId) - 1 + i) % FACTION_COLORS.length]);
+            if (!factionWithColor(candidate)) return candidate;
+        }
+        return null;
     }
 
     function factionColor(factionId) {
@@ -1601,9 +1688,13 @@
 
     function migrateActorEquipment(actor) {
         if (!actor || actor.del) return actor;
+        if (actor.element !== "civ_child" && (actor.militaryVeteran === true || actor.role === "guard" || actor.role === "warrior" || actor.warRole === "attacker" || actor.warRole === "defender" || canonicalWeaponId(actor.weapon) !== "fists" || canonicalArmorId(actor.armor) !== "none")) actor.militaryVeteran = true;
         const previousSchema = safeNumber(actor.equipmentSchemaVersion, 0);
+        const currentWeaponId = canonicalWeaponId(actor.weapon);
+        const currentArmorId = actor.element === "civ_child" ? "none" : canonicalArmorId(actor.armor);
+        if (previousSchema >= EQUIPMENT_SCHEMA_VERSION && actor.weapon === currentWeaponId && actor.armor === currentArmorId && Number.isFinite(actor.baseMaxHp) && Number.isFinite(actor.healthDamage)) return actor;
         const oldWeaponId = String(actor.weapon || "fists");
-        const weaponId = canonicalWeaponId(oldWeaponId);
+        const weaponId = currentWeaponId;
         actor.weapon = weaponId;
         if (weaponId === "fists" || actor.element === "civ_child") {
             actor.weapon = "fists";
@@ -1672,6 +1763,7 @@
         if (pixel && Number.isFinite(pixel.buildingId) && manager.structuresById.get(pixel.buildingId) === pixel) manager.structuresById.delete(pixel.buildingId);
         if (pixel && pixel.humanId !== undefined && manager.actorById.get(pixel.humanId) === pixel) {
             manager.actorById.delete(pixel.humanId);
+            manager.minerAssignments.delete(pixel.humanId);
         }
         if (changed) manager.derivedIndexesDirty = true;
     }
@@ -1687,7 +1779,7 @@
             "lastWarTick", "territoryRadius", "stage", "eraId", "research", "cultureMemory", "blueprintType", "originX", "originY", "nextPart",
             "blockedTicks", "lastBuildTick", "lastProcessTick", "costs", "placedParts", "completed", "plots", "lastCraftTick", "carrySeed", "buildRetry", "orphanedSince", "dead", "panic", "dir", "treeHarvestCounter", "ammo", "rangedTargetTick"
             , "carry", "carryCapacity", "territoryClaimId", "territoryClaimTick", "territoryClaimOrder", "claimMinX", "claimMaxX", "buildingType", "buildingState", "destroyedTick", "destroyedCause", "isBuildingCore", "alwaysOverlay", "nonBlocking", "eraseProtected", "workDone", "workRequired", "lifeSchemaVersion", "combatTargetId", "strikeDueTick", "strikeTargetId", "structureStrikeDueTick", "structureStrikeKey", "warRole", "warFrontId", "pathStage", "pathCache", "workTrip", "climbHoldUntil", "patrolX", "patrolY", "searchX", "searchY", "resumeAfterDelivery"
-            , "personActivity", "personArchived", "personArchiveSettlementId", "personTransitioning", "deceasedPeople"
+            , "personActivity", "personArchived", "personArchiveSettlementId", "personTransitioning", "deceasedPeople", "deathCount", "humanIdHighWatermark", "treeGrowthReadyTick", "militaryVeteran", "yieldFractions"
         ];
         for (let i = 0; i < fields.length; i++) delete pixel[fields[i]];
     }
@@ -1708,7 +1800,6 @@
     }
 
     function onCivilizedChange(pixel, nextElement) {
-        if (pixel && pixel.element === "civ_banner") transferDeceasedArchive(pixel);
         archiveActorRemoval(pixel, nextElement);
         if (isBuildingCorePixel(pixel)) releaseBuildingClaim(pixel);
         unregisterPixel(pixel);
@@ -1717,7 +1808,6 @@
     }
 
     function onCivilizedDelete(pixel) {
-        if (pixel && pixel.element === "civ_banner") transferDeceasedArchive(pixel);
         archiveActorRemoval(pixel, null);
         if (isBuildingCorePixel(pixel)) releaseBuildingClaim(pixel);
         unregisterPixel(pixel);
@@ -1738,7 +1828,7 @@
         if (!faction) {
             faction = {
                 id: factionId,
-                color: color || chooseColor(factionId),
+                color: normalizeFactionColor(color) || chooseColor(factionId),
                 actors: [],
                 adults: [],
                 children: [],
@@ -1786,22 +1876,40 @@
 
     function allocateFaction(x, y, forcedFactionId, forcedColor) {
         let factionId = forcedFactionId;
+        const normalizedColor = normalizeFactionColor(forcedColor);
+        const selectableColor = FACTION_COLORS.map(normalizeFactionColor).indexOf(normalizedColor) !== -1 ? normalizedColor : null;
+        const forced = factionId !== undefined && factionId !== null;
         if (factionId === undefined || factionId === null) {
-            factionId = nearestFactionCandidate(x, y, C.FACTION_JOIN_RADIUS);
+            const coloredFaction = normalizedColor && factionWithColor(normalizedColor);
+            factionId = coloredFaction ? coloredFaction.id : (normalizedColor ? null : nearestFactionCandidate(x, y, C.FACTION_JOIN_RADIUS));
         }
         if (factionId === undefined || factionId === null) {
+            if (!forced && manager.factionById.size >= FACTION_COLORS.length) return null;
             factionId = manager.nextFactionId++;
         }
         manager.nextFactionId = Math.max(manager.nextFactionId, factionId + 1);
-        const faction = ensureFactionRecord(factionId, forcedColor || chooseColor(factionId));
+        const faction = ensureFactionRecord(factionId, forced ? (normalizedColor || chooseColor(factionId)) : (unusedFactionColor(selectableColor, factionId) || chooseColor(factionId)));
         return faction;
+    }
+
+    function selectedPlacementFactionColor(pixel) {
+        if (typeof currentElement === "string" && currentElement === "civilized_human" && typeof currentColorMap !== "undefined" && currentColorMap && currentColorMap.civilized_human) {
+            return normalizeFactionColor(currentColorMap.civilized_human);
+        }
+        return null;
     }
 
     function initializeAdult(body, head, options) {
         const opts = options || {};
+        const faction = allocateFaction(body.x, body.y, opts.factionId, opts.factionColor);
+        if (!faction) {
+            deleteExactPixel(head);
+            deleteExactPixel(body);
+            if (typeof logMessage === "function") logMessage("最多只能创建十个阵营；请选择已有阵营颜色。", true);
+            return null;
+        }
         const humanId = opts.humanId || manager.nextHumanId++;
         manager.nextHumanId = Math.max(manager.nextHumanId, humanId + 1);
-        const faction = allocateFaction(body.x, body.y, opts.factionId, opts.factionColor);
         const common = {
             humanId: humanId,
             factionId: faction.id,
@@ -1817,6 +1925,7 @@
             baseMaxHp: safeNumber(opts.baseMaxHp, safeNumber(opts.maxHp, C.ADULT_HP)),
             healthDamage: opts.healthDamage,
             role: opts.role || "worker",
+            militaryVeteran: opts.militaryVeteran === true || opts.role === "guard" || opts.role === "warrior",
             task: "planning",
             weapon: canonicalWeaponId(opts.weapon || "fists"),
             weaponPaidCost: opts.weaponPaidCost ? copyResourceCost(opts.weaponPaidCost) : undefined,
@@ -1926,7 +2035,7 @@
     const TASK_SPEECH = {
         planning: ["Let me think.", "让我想想。"], move: ["On my way.", "我这就过去。"], harvest: ["I'll gather that.", "我去采集。"],
         deliver: ["Bringing supplies back.", "把资源送回去。"], build: ["Time to build.", "开始建造。"], farm: ["The fields need me.", "该照料农田了。"],
-        plant_tree: ["A new tree will grow here.", "这里会长出新树。"], facility: ["Back to work.", "继续干活。"], combat: ["To battle!", "准备战斗！"],
+        plant_tree: ["A new tree will grow here.", "这里会长出新树。"], wait_tree_growth: ["The young trees need time.", "幼树还需要时间成长。"], facility: ["Back to work.", "继续干活。"], combat: ["To battle!", "准备战斗！"],
         siege: ["Bring that structure down!", "摧毁那座建筑！"], patrol: ["I'll keep watch.", "我去巡逻。"], return: ["Heading home.", "回家了。"],
         search_resource: ["There must be resources nearby.", "附近一定还有资源。"], explore: ["I'll look farther out.", "我去远处看看。"],
         flee: ["Fall back!", "快撤退！"], tunnel: ["This wall is too high. Dig through!", "墙太高了，挖过去！"],
@@ -2017,7 +2126,6 @@
         manager.structures.clear();
         manager.structuresById.clear();
         manager.actorById.clear();
-        manager.deceasedByHumanId.clear();
         manager.factionById.clear();
         manager.settlementById.clear();
         manager.relationRecords.clear();
@@ -2026,6 +2134,7 @@
         manager.actorBucketByPixel.clear();
         manager.resourceIndex.clear();
         manager.resourceNodeByPixel.clear();
+        manager.minerAssignments.clear();
         manager.fireTargets.length = 0;
         manager.lastFireScanTick = -Infinity;
         manager.treeById.clear();
@@ -2147,7 +2256,6 @@
         manager.navigationRevision = safeNumber(manager.navigationRevision, 0) + 1;
         migrateLegacySocietyPixels();
         manager.actorById.clear();
-        manager.deceasedByHumanId.clear();
         manager.factionById.clear();
         manager.settlementById.clear();
         manager.buckets.clear();
@@ -2239,12 +2347,13 @@
             if (!Number.isFinite(banner.birthReadyTick)) banner.birthReadyTick = pixelTicks + C.BIRTH_COOLDOWN;
             if (!Number.isFinite(banner.territoryRadius)) banner.territoryRadius = C.TERRITORY_BASE_RADIUS;
             ensureChronicle(banner);
-            ensureDeceasedArchive(banner);
-            indexDeceasedArchive(banner);
-            banner.deceasedPeople.forEach((entry) => { maxHumanId = Math.max(maxHumanId, entry.h); });
+            migrateLegacyDeathArchive(banner);
+            maxHumanId = Math.max(maxHumanId, safeNumber(banner.humanIdHighWatermark, 0));
             if (banner.townCenterActive === undefined) banner.townCenterActive = true;
             manager.settlementById.set(banner.settlementId, banner);
             const faction = ensureFactionRecord(banner.factionId, banner.factionColor);
+            banner.factionColor = faction.color;
+            setPixelColor(banner, faction.color);
             faction.settlements.push(banner);
             faction.eraId = banner.eraId;
             faction.research = banner.research;
@@ -2258,6 +2367,8 @@
             if (Number.isFinite(pixel.buildingId)) maxBuildingId = Math.max(maxBuildingId, pixel.buildingId);
             if (STRUCTURE_CORES.has(pixel.element)) ensureBuildingMetadata(pixel);
             const faction = ensureFactionRecord(pixel.factionId, pixel.factionColor || chooseColor(pixel.factionId));
+            pixel.factionColor = faction.color;
+            setPixelColor(pixel, faction.color);
             if (pixel.element === "civ_hut_core") faction.huts.push(pixel);
             else if (pixel.element === "civ_farm_marker") faction.farms.push(pixel);
             else if (pixel.element === "civ_workshop_core") faction.workshops.push(pixel);
@@ -2316,6 +2427,9 @@
             if (record && Number.isFinite(Number(record.factionB))) maxFactionId = Math.max(maxFactionId, Number(record.factionB));
         });
 
+        manager.settlements.forEach((banner) => {
+            if (banner && !banner.del) banner.humanIdHighWatermark = Math.max(safeNumber(banner.humanIdHighWatermark, 0), maxHumanId);
+        });
         manager.nextHumanId = Math.max(manager.nextHumanId, maxHumanId + 1);
         manager.nextFactionId = Math.max(manager.nextFactionId, maxFactionId + 1);
         manager.nextSettlementId = Math.max(manager.nextSettlementId, maxSettlementId + 1);
@@ -2506,6 +2620,26 @@
         return null;
     }
 
+    function treeBirthTick(pixels) {
+        const ticks = (pixels || []).map((pixel) => Number(pixel && pixel.treeBornTick)).filter(Number.isFinite);
+        return ticks.length ? Math.min.apply(null, ticks) : null;
+    }
+
+    function synchronizeTreeBuildingLayer(pixels, basePixel, treeId) {
+        const component = (pixels || []).filter((pixel) => pixel && !pixel.del);
+        let layer = basePixel && (basePixel.treeBuildingLayer === "above" || basePixel.treeBuildingLayer === "below") ? basePixel.treeBuildingLayer : null;
+        if (!layer) layer = component.map((pixel) => pixel.treeBuildingLayer).find((value) => value === "above" || value === "below") || null;
+        if (!layer && basePixel && typeof ensureTreeBuildingLayer === "function") layer = ensureTreeBuildingLayer(basePixel);
+        if (!layer) layer = Math.abs(safeNumber(treeId, 0)) % 2 === 0 ? "above" : "below";
+        component.forEach((pixel) => { pixel.treeBuildingLayer = layer; });
+        return layer;
+    }
+
+    function treeIsHarvestable(tree) {
+        if (!tree || safeNumber(tree.woodYield, 0) < 1) return false;
+        return !Number.isFinite(tree.bornTick) || pixelTicks - tree.bornTick >= C.TREE_HARVEST_AGE_TICKS;
+    }
+
     function rebuildDirtyTreeLineage(lineage) {
         const tracked = manager.treePixelsByLineage.get(lineage);
         const pixels = tracked ? Array.from(tracked).filter((pixel) => pixel && !pixel.del && TREE_COMPONENT_ELEMENTS.has(pixel.element) && pixel.treeLineage === lineage) : [];
@@ -2554,12 +2688,13 @@
             pixel.treeRootY = basePixel.y;
             if (!pixel.treeLineage) pixel.treeLineage = lineage;
         });
+        synchronizeTreeBuildingLayer(component, basePixel, treeId);
         basePixel._civTreeRoot = true;
-        tree = {id: treeId, lineage, base: basePixel, root: basePixel, pixels: component, woodPixels, topY, height: Math.max(1, basePixel.y - topY + 1), woodYield: woodPixels.length, seed: species === "bamboo" ? "bamboo_plant" : (species === "evergreen" ? "pinecone" : (TREE_SAPLING_ELEMENTS.has(species) ? species : "sapling")), species};
+        tree = {id: treeId, lineage, base: basePixel, root: basePixel, pixels: component, woodPixels, topY, height: Math.max(1, basePixel.y - topY + 1), woodYield: woodPixels.length, bornTick: treeBirthTick(component), seed: species === "bamboo" ? "bamboo_plant" : (species === "evergreen" ? "pinecone" : (TREE_SAPLING_ELEMENTS.has(species) ? species : "sapling")), species};
         manager.treeById.set(treeId, tree);
         removeIndexedResourcePixel(basePixel);
         const descriptor = resourceDescriptor(basePixel);
-        if (tree.woodYield > 0 && descriptor && descriptor.kind === "wood") {
+        if (treeIsHarvestable(tree) && descriptor && descriptor.kind === "wood") {
             const treeDescriptor = Object.assign({}, descriptor, {yield: tree.woodYield, treeSapling: tree.seed, treeId: tree.id, wholeTree: true});
             const node = {pixel: basePixel, x: basePixel.x, y: basePixel.y, element: basePixel.element, descriptor: treeDescriptor, kind: "wood", key: basePixel.element + "@" + basePixel.x + "," + basePixel.y, tree};
             if (!manager.resourceIndex.has("wood")) manager.resourceIndex.set("wood", []);
@@ -2645,7 +2780,8 @@
         }
         const started = nowMs();
         let processed = 0;
-        while (manager.auditCursor < manager.auditLimit && processed < 200 && nowMs() - started < timeBudgetMs) {
+        const pixelBudget = Math.max(16, Math.floor(safeNumber(C.INDEX_AUDIT_PIXELS_PER_TICK, 64)));
+        while (manager.auditCursor < manager.auditLimit && processed < pixelBudget && nowMs() - started < timeBudgetMs) {
             auditPixelIndex(currentPixels[manager.auditCursor++]);
             processed++;
         }
@@ -2772,8 +2908,9 @@
             const woodPixels = component.filter((pixel) => WOOD_BEARING_TREE_ELEMENTS.has(pixel.element));
             const woodYield = woodPixels.length;
             const seed = species === "bamboo" ? "bamboo_plant" : (species === "evergreen" ? "pinecone" : (TREE_SAPLING_ELEMENTS.has(species) ? species : "sapling"));
-            const tree = {id: treeId, lineage: componentLineage, base: basePixel, root: basePixel, pixels: component, woodPixels, topY, height, woodYield, seed, species};
+            const tree = {id: treeId, lineage: componentLineage, base: basePixel, root: basePixel, pixels: component, woodPixels, topY, height, woodYield, bornTick: treeBirthTick(component), seed, species};
             component.forEach((pixel) => { pixel.treeId = treeId; pixel.treeRootX = basePixel.x; pixel.treeRootY = basePixel.y; if (componentLineage && !pixel.treeLineage) pixel.treeLineage = componentLineage; });
+            synchronizeTreeBuildingLayer(component, basePixel, treeId);
             if (componentLineage) {
                 if (!manager.treePixelsByLineage.has(componentLineage)) manager.treePixelsByLineage.set(componentLineage, new Set());
                 component.forEach((pixel) => manager.treePixelsByLineage.get(componentLineage).add(pixel));
@@ -2817,7 +2954,7 @@
             if (descriptor.kind === "wood" && Number.isFinite(pixel.treeId)) {
                 tree = manager.treeById.get(pixel.treeId);
                 if (!tree || tree.base !== pixel) continue;
-                if (tree.woodYield <= 0) continue;
+                if (!treeIsHarvestable(tree)) continue;
                 descriptor = Object.assign({}, descriptor, {yield: tree.woodYield, treeSapling: tree.seed, treeId: tree.id, wholeTree: true});
             }
             const node = {pixel, x: pixel.x, y: pixel.y, element: pixel.element, descriptor, kind: descriptor.kind, key: pixel.element + "@" + pixel.x + "," + pixel.y, tree};
@@ -2948,7 +3085,7 @@
         let valid = true;
         const inspect = (pixel) => {
             if (!valid || !isBuildingCorePixel(pixel) || pixel.buildingId === ignoredBuildingId) return;
-            if (World.buildingSpacingValid ? !World.buildingSpacingValid(candidate, pixel) : pixel.x === originX && pixel.y === originY) valid = false;
+            if (World.buildingSpacingValid ? !World.buildingSpacingValid(candidate, pixel, C.BUILDING_CORE_CLEARANCE) : Math.abs(pixel.x - originX) <= C.BUILDING_CORE_CLEARANCE && Math.abs(pixel.y - originY) <= C.BUILDING_CORE_CLEARANCE) valid = false;
         };
         manager.settlements.forEach(inspect);
         manager.constructionSites.forEach(inspect);
@@ -2986,7 +3123,8 @@
 
     function createConstruction(banner, type) {
         const blueprint = BLUEPRINTS[type];
-        if (!blueprint || !hasStock(banner, blueprint.cost)) return null;
+        const faction = banner && manager.factionById.get(banner.factionId);
+        if (!blueprint || !hasStock(banner, blueprint.cost) || !canSpendAfterAdvancementReserve(faction, banner, blueprint.cost)) return null;
         const siteCoords = findBuildSite(banner, type);
         if (!siteCoords || getBuildingCoreAt(siteCoords.x, siteCoords.y)) return null;
         if (!spendStock(banner, blueprint.cost)) return null;
@@ -3265,23 +3403,62 @@
         });
     }
 
-    function pendingEquipmentRequirements(faction, banner, requirements) {
-        if (!faction || !banner) return;
+    function settlementSoldierEquipmentTargets(faction, banner) {
+        if (!faction || !banner) return {soldiers: [], weaponTargets: [], armorTarget: "none"};
         const soldiers = (faction.adults || []).filter(actorIsSoldier).sort((a, b) => a.humanId - b.humanId);
-        const weaponTargets = resolvedEraWeaponTargets(faction, banner.eraId || faction.eraId || DEFAULT_ERA_ID, soldiers.length);
-        const armorTarget = resolvedEraArmorTarget(faction, banner.eraId || faction.eraId || DEFAULT_ERA_ID);
-        soldiers.forEach((actor, index) => {
+        return {
+            soldiers,
+            weaponTargets: resolvedEraWeaponTargets(faction, banner.eraId || faction.eraId || DEFAULT_ERA_ID, soldiers.length),
+            armorTarget: resolvedEraArmorTarget(faction, banner.eraId || faction.eraId || DEFAULT_ERA_ID)
+        };
+    }
+
+    function pendingWeaponRequirements(faction, banner, requirements) {
+        const targets = settlementSoldierEquipmentTargets(faction, banner);
+        targets.soldiers.forEach((actor, index) => {
             if (actor.settlementId !== banner.settlementId) return;
             migrateActorEquipment(actor);
-            const desiredWeapon = weaponTargets[index] || "fists";
-            if (actor.weapon !== desiredWeapon && desiredWeapon !== "fists") {
-                const descriptor = weaponDescriptor(desiredWeapon);
-                addCostRequirement(requirements, descriptor && descriptor.cost, actor.weaponPaidCost);
-            }
-            if (actor.armor !== armorTarget && armorTarget !== "none") {
-                const descriptor = armorDescriptor(armorTarget);
-                addCostRequirement(requirements, descriptor && descriptor.cost, actor.armorPaidCost);
-            }
+            const desired = targets.weaponTargets[index] || "fists";
+            if (actor.weapon === desired || desired === "fists") return;
+            const descriptor = weaponDescriptor(desired);
+            addCostRequirement(requirements, descriptor && descriptor.cost, actor.weaponPaidCost);
+        });
+    }
+
+    function pendingArmorRequirements(faction, banner, requirements) {
+        const targets = settlementSoldierEquipmentTargets(faction, banner);
+        targets.soldiers.forEach((actor) => {
+            if (actor.settlementId !== banner.settlementId) return;
+            migrateActorEquipment(actor);
+            if (actor.armor === targets.armorTarget || targets.armorTarget === "none") return;
+            const descriptor = armorDescriptor(targets.armorTarget);
+            addCostRequirement(requirements, descriptor && descriptor.cost, actor.armorPaidCost);
+        });
+    }
+
+    function pendingEquipmentRequirements(faction, banner, requirements) {
+        if (!faction || !banner) return;
+        pendingWeaponRequirements(faction, banner, requirements);
+        pendingArmorRequirements(faction, banner, requirements);
+    }
+
+    function localBuildingExists(faction, banner, listName, blueprintType) {
+        if ((faction && faction[listName] || []).some((building) => building && !building.del && building.settlementId === banner.settlementId)) return true;
+        return (faction && faction.constructionSites || []).some((site) => site && !site.del && site.settlementId === banner.settlementId && site.blueprintType === blueprintType);
+    }
+
+    function addMilitaryIndustryRequirements(faction, banner, equipmentRequirements, requirements, includedFacilities) {
+        if (!faction || !banner) return;
+        const requiredFacilities = [];
+        if (safeNumber(equipmentRequirements.steel, 0) > materialAmount(banner.stock, "steel")) requiredFacilities.push(["forge", "forges"], ["kiln", "kilns"], ["foundry", "foundries"]);
+        else if (safeNumber(equipmentRequirements.iron, 0) > materialAmount(banner.stock, "iron")) requiredFacilities.push(["kiln", "kilns"], ["foundry", "foundries"]);
+        else if (safeNumber(equipmentRequirements.bronze, 0) > materialAmount(banner.stock, "bronze")) requiredFacilities.push(["foundry", "foundries"]);
+        const included = includedFacilities || new Set();
+        requiredFacilities.forEach((entry) => {
+            const type = entry[0];
+            if (included.has(type) || !unlockedBuilding(faction, type) || localBuildingExists(faction, banner, entry[1], type) || !BLUEPRINTS[type]) return;
+            included.add(type);
+            addCostRequirement(requirements, BLUEPRINTS[type].cost);
         });
     }
 
@@ -3334,8 +3511,10 @@
         requireMinimum(requirements, "wood", smeltingWoodReserveFor(banner));
         if (resourceUnlockedForFaction(faction, "stone")) requireMinimum(requirements, "stone", 2);
         pendingTechnologyRequirements(faction, banner, requirements);
-        pendingConstructionRequirements(faction, banner, requirements);
         pendingEquipmentRequirements(faction, banner, requirements);
+        const advancement = eraAdvancementState(faction, banner);
+        if (!advancement.finalEra) addCostRequirement(requirements, advancement.cost);
+        pendingConstructionRequirements(faction, banner, requirements);
         const raw = expandGatheringRequirements(banner.stock, requirements);
         banner.resourceDemand = Object.assign({}, raw);
         return raw;
@@ -3351,10 +3530,184 @@
         return ["wood", "stone", "food", "copper", "raw_iron"].find((kind) => allowed.has(kind) && resourceUnlockedForFaction(faction, kind) && (manager.resourceIndex.get(kind) || []).length) || "food";
     }
 
+    function mergeRequirements(target, source) {
+        Object.keys(source || {}).forEach((resource) => addRequirement(target, resource, source[resource]));
+        return target;
+    }
+
+    function settlementMiningPriorityTiers(faction, banner) {
+        const cumulative = {};
+        const previousRaw = {stone: 0, copper: 0, raw_iron: 0};
+        const tiers = [];
+        const plannedMilitaryFacilities = new Set();
+        const addTier = (reason, requirements) => {
+            mergeRequirements(cumulative, requirements);
+            const raw = expandGatheringRequirements(banner.stock, cumulative);
+            const amounts = {};
+            MINEABLE_RESOURCE_KINDS.forEach((kind) => {
+                amounts[kind] = Math.max(0, safeNumber(raw[kind], 0) - safeNumber(previousRaw[kind], 0));
+                previousRaw[kind] = Math.max(safeNumber(previousRaw[kind], 0), safeNumber(raw[kind], 0));
+            });
+            if (MINEABLE_RESOURCE_KINDS.some((kind) => amounts[kind] > 0)) tiers.push({reason, amounts, original: Object.assign({}, amounts)});
+        };
+
+        const weaponRequirements = {};
+        pendingWeaponRequirements(faction, banner, weaponRequirements);
+        addMilitaryIndustryRequirements(faction, banner, weaponRequirements, weaponRequirements, plannedMilitaryFacilities);
+        addTier("military_weapons", weaponRequirements);
+
+        const armorRequirements = {};
+        pendingArmorRequirements(faction, banner, armorRequirements);
+        addMilitaryIndustryRequirements(faction, banner, armorRequirements, armorRequirements, plannedMilitaryFacilities);
+        addTier("military_armor", armorRequirements);
+
+        const advancement = eraAdvancementState(faction, banner);
+        const advancementRequirements = {};
+        if (!advancement.finalEra) addCostRequirement(advancementRequirements, advancement.cost);
+        addTier("era_advancement", advancementRequirements);
+
+        const technologyRequirements = {};
+        pendingTechnologyRequirements(faction, banner, technologyRequirements);
+        addTier("technology", technologyRequirements);
+
+        const constructionRequirements = {};
+        pendingConstructionRequirements(faction, banner, constructionRequirements);
+        addTier("construction", constructionRequirements);
+
+        const reserveRequirements = {};
+        const reserves = MINING_RESERVES_BY_ERA[banner.eraId] || MINING_RESERVES_BY_ERA[DEFAULT_ERA_ID];
+        MINEABLE_RESOURCE_KINDS.forEach((kind) => {
+            if (resourceUnlockedForFaction(faction, kind)) requireMinimum(reserveRequirements, kind, safeNumber(reserves && reserves[kind], 0));
+        });
+        addTier("safety_reserve", reserveRequirements);
+        return {tiers, reserves: Object.assign({}, reserves || {}), rawDemand: Object.assign({}, previousRaw)};
+    }
+
+    function subtractMiningCommitment(tiers, kind, amount) {
+        let remaining = Math.max(0, safeNumber(amount, 0));
+        for (let index = 0; index < tiers.length && remaining > 0; index++) {
+            const tier = tiers[index];
+            const used = Math.min(remaining, Math.max(0, safeNumber(tier.amounts[kind], 0)));
+            tier.amounts[kind] -= used;
+            remaining -= used;
+        }
+    }
+
+    function firstMiningReason(tiers, kind) {
+        const tier = tiers.find((candidate) => safeNumber(candidate.amounts[kind], 0) > 0);
+        return tier ? tier.reason : "safety_reserve";
+    }
+
+    function carriedMiningAmounts(actor) {
+        const result = {stone: 0, copper: 0, raw_iron: 0};
+        const carry = ensureActorCarry(actor);
+        MINEABLE_RESOURCE_KINDS.forEach((kind) => { result[kind] = Math.max(0, safeNumber(carry[kind], 0)); });
+        return result;
+    }
+
+    function activeMinerResourceKind(actor, faction) {
+        if (!actor || actor.role !== "miner") return null;
+        const carried = carriedMiningAmounts(actor);
+        const carryingKind = MINEABLE_RESOURCE_KINDS.find((kind) => carried[kind] > 0);
+        if (carryingKind) return carryingKind;
+        const tripKind = actor.workTrip && actor.workTrip.resourceKind;
+        if (MINEABLE_RESOURCE_KINDS.includes(tripKind) && resourceUnlockedForFaction(faction, tripKind) && ["harvest", "search_resource", "deliver", "planning"].includes(actor.task)) return tripKind;
+        if (actor.task === "search_resource" && MINEABLE_RESOURCE_KINDS.includes(actor.targetKind) && resourceUnlockedForFaction(faction, actor.targetKind)) return actor.targetKind;
+        return null;
+    }
+
+    function miningNodeAvailability(actor, kind) {
+        let count = 0;
+        let nearestDistance = Infinity;
+        const nodes = manager.resourceIndex.get(kind) || [];
+        for (let index = 0; index < nodes.length; index++) {
+            const node = nodes[index];
+            if (!node || !node.pixel || node.pixel.del || pixelsAt(node.x, node.y).indexOf(node.pixel) === -1) continue;
+            const owner = manager.territory && manager.territory.ownerAt(node.x);
+            if (owner !== null && owner !== undefined && owner !== actor.factionId) continue;
+            const reservedBy = manager.resourceReservations && manager.resourceReservations.reservedBy(node);
+            if (reservedBy !== undefined && reservedBy !== actor.humanId) continue;
+            count++;
+            nearestDistance = Math.min(nearestDistance, Core.distance(actor.x, actor.y, node.x, node.y));
+        }
+        return {count, nearestDistance};
+    }
+
+    function planSettlementMiners(faction, banner) {
+        if (!faction || !banner) return;
+        const miners = (faction.adults || []).filter((actor) => actor && !actor.del && !actor.dead && actor.role === "miner" && actor.settlementId === banner.settlementId).sort((a, b) => a.humanId - b.humanId);
+        const priority = settlementMiningPriorityTiers(faction, banner);
+        const tiers = priority.tiers;
+        const incoming = {stone: 0, copper: 0, raw_iron: 0};
+        (faction.adults || []).filter((actor) => actor && !actor.del && !actor.dead && actor.settlementId === banner.settlementId).forEach((actor) => {
+            const carried = carriedMiningAmounts(actor);
+            MINEABLE_RESOURCE_KINDS.forEach((kind) => { incoming[kind] += carried[kind]; });
+        });
+
+        const active = new Set();
+        miners.forEach((actor) => {
+            const kind = activeMinerResourceKind(actor, faction);
+            if (!kind) return;
+            active.add(actor);
+            const reason = firstMiningReason(tiers, kind);
+            const carried = carriedMiningAmounts(actor)[kind];
+            const expected = carried > 0 || actor.task === "deliver" || actor.workTrip && actor.workTrip.returning ? 0 : Math.max(1, carryCapacityFor(actor) - carriedAmount(actor));
+            incoming[kind] += expected;
+            manager.minerAssignments.set(actor.humanId, {kind, reason, source: "active_trip", settlementId: banner.settlementId, plannedTick: pixelTicks});
+        });
+        MINEABLE_RESOURCE_KINDS.forEach((kind) => subtractMiningCommitment(tiers, kind, incoming[kind]));
+
+        const nodeAllocations = {stone: 0, copper: 0, raw_iron: 0};
+        const assignmentCounts = {stone: 0, copper: 0, raw_iron: 0};
+        active.forEach((actor) => {
+            const assignment = manager.minerAssignments.get(actor.humanId);
+            if (assignment) assignmentCounts[assignment.kind]++;
+        });
+        miners.filter((actor) => !active.has(actor)).forEach((actor) => {
+            let selected = null;
+            for (let tierIndex = 0; tierIndex < tiers.length && !selected; tierIndex++) {
+                const tier = tiers[tierIndex];
+                const candidates = MINEABLE_RESOURCE_KINDS.map((kind, kindIndex) => {
+                    const availability = resourceUnlockedForFaction(faction, kind) ? miningNodeAvailability(actor, kind) : {count: 0, nearestDistance: Infinity};
+                    return {kind, kindIndex, availability, remaining: Math.max(0, safeNumber(tier.amounts[kind], 0)), original: Math.max(1, safeNumber(tier.original[kind], 0))};
+                }).filter((candidate) => candidate.remaining > 0 && candidate.availability.count > nodeAllocations[candidate.kind]);
+                candidates.sort((a, b) => b.remaining / b.original - a.remaining / a.original || a.availability.nearestDistance - b.availability.nearestDistance || a.kindIndex - b.kindIndex);
+                if (candidates.length) selected = {kind: candidates[0].kind, reason: tier.reason, priority: tierIndex};
+            }
+            if (!selected) {
+                const reserves = priority.reserves;
+                const candidates = MINEABLE_RESOURCE_KINDS.map((kind, kindIndex) => {
+                    const availability = resourceUnlockedForFaction(faction, kind) ? miningNodeAvailability(actor, kind) : {count: 0, nearestDistance: Infinity};
+                    const target = Math.max(1, safeNumber(reserves[kind], 0));
+                    return {kind, kindIndex, availability, fullness: (materialAmount(banner.stock, kind) + incoming[kind]) / target};
+                }).filter((candidate) => candidate.availability.count > nodeAllocations[candidate.kind]);
+                candidates.sort((a, b) => a.fullness - b.fullness || a.availability.nearestDistance - b.availability.nearestDistance || a.kindIndex - b.kindIndex);
+                if (candidates.length) selected = {kind: candidates[0].kind, reason: "surplus_stock", priority: tiers.length};
+            }
+            if (!selected) return;
+            manager.minerAssignments.set(actor.humanId, {kind: selected.kind, reason: selected.reason, source: "planned", priority: selected.priority, settlementId: banner.settlementId, plannedTick: pixelTicks});
+            nodeAllocations[selected.kind]++;
+            assignmentCounts[selected.kind]++;
+            const capacity = carryCapacityFor(actor);
+            incoming[selected.kind] += capacity;
+            subtractMiningCommitment(tiers, selected.kind, capacity);
+        });
+        banner.miningPlan = {tick: pixelTicks, demand: priority.rawDemand, incoming, reserves: priority.reserves, assignments: assignmentCounts};
+    }
+
+    function planFactionMiners(faction) {
+        if (!faction) return;
+        manager.minerAssignments.forEach((assignment, humanId) => {
+            const actor = manager.actorById.get(humanId);
+            if (!actor || actor.dead || actor.del || actor.factionId === faction.id) manager.minerAssignments.delete(humanId);
+        });
+        (faction.settlements || []).forEach((banner) => planSettlementMiners(faction, banner));
+    }
+
     function resourceUnlockedForFaction(faction, kind) {
-        if (kind === "food" || kind === "wood" || kind === "sapling" || String(kind || "").indexOf(TREE_SAPLING_PREFIX) === 0) return true;
+        if (kind === "food" || kind === "wood" || kind === "stone" || kind === "sapling" || String(kind || "").indexOf(TREE_SAPLING_PREFIX) === 0) return true;
         if (!hasTechnologyData()) return true;
-        if (kind === "stone" || kind === "copper" || kind === "raw_iron") return factionHasUnlock(faction, "resource", kind);
+        if (kind === "copper" || kind === "raw_iron") return factionHasUnlock(faction, "resource", kind);
         return true;
     }
 
@@ -3784,7 +4137,8 @@
         removeTreeResourceNodes(tree.id, allPixels);
         allPixels.forEach((pixel) => deleteExactPixel(pixel));
         manager.treeRootColumnsTick = -Infinity;
-        const woodDropCount = Math.ceil(woodPixels.length / 2);
+        const baseWoodDropCount = Math.ceil(woodPixels.length / 2);
+        const woodDropCount = naturalResourceYieldAmount(actor, {kind: "wood"}, baseWoodDropCount);
         const saplingDropCount = Math.random() < 0.8 ? 1 : 2;
         const woodDropSources = woodPixels.slice().sort((a, b) => a.y - b.y || a.x - b.x);
         for (let index = 0; index < woodDropCount; index++) {
@@ -3814,6 +4168,19 @@
         const whole = Math.floor(total + 1e-9);
         actor.yieldFractions[kind] = total - whole;
         return whole;
+    }
+
+    const TECHNOLOGY_YIELD_RESOURCE_KINDS = new Set(["food", "wood", "stone", "copper", "raw_iron"]);
+
+    function naturalResourceYieldAmount(actor, descriptor, baseAmount) {
+        const base = Math.max(0, safeNumber(baseAmount, 0));
+        if (!actor || !descriptor || descriptor.resourceDrop || descriptor.seedOnly || descriptor.treeSaplingResource || !TECHNOLOGY_YIELD_RESOURCE_KINDS.has(descriptor.kind)) {
+            return Math.floor(base);
+        }
+        const faction = manager.factionById.get(actor.factionId);
+        const mods = faction && faction.techModifiers || computeTechModifiers(faction);
+        const bonus = Math.max(0, safeNumber(mods && mods.resourceYieldBonuses && mods.resourceYieldBonuses[descriptor.kind], 0));
+        return addYieldWithFraction(actor, descriptor.kind, base * (1 + bonus));
     }
 
     function finishHarvestNode(actor, resourceKind, outcome, reason, resultPatch) {
@@ -3977,7 +4344,7 @@
         }
         else {
             actor.carryElement = harvestedElement;
-            const amount = Math.max(1, Math.floor(safeNumber(descriptor.yield, 1)));
+            const amount = Math.max(1, naturalResourceYieldAmount(actor, descriptor, descriptor.yield));
             const result = World.addCarry ? World.addCarry(actor, descriptor.kind, amount, capacity) : {accepted: 0, overflow: amount};
             resourcesCollected[descriptor.kind] = safeNumber(resourcesCollected[descriptor.kind], 0) + result.accepted;
             resourcesDropped[descriptor.kind] = safeNumber(resourcesDropped[descriptor.kind], 0) + result.overflow;
@@ -4079,6 +4446,7 @@
             const planted = getPixel(actor.targetX, actor.targetY);
             if (planted && planted.element === seed) {
                 planted.civPlantedTreeId = manager.nextTreeId++;
+                if (typeof assignNewTreeBuildingLayer === "function") assignNewTreeBuildingLayer(planted);
                 planted.civTreeOriginX = actor.targetX;
                 planted.civTreeOriginY = actor.targetY;
                 // createPixel indexes an ordinary sapling before its planted-tree
@@ -4095,9 +4463,26 @@
         clearTask(actor, plantedTree ? "completed" : "failed", plantedTree ? "tree_planted" : "site_blocked", {seed: seed, siteX: actor.targetX, siteY: actor.targetY, treesPlanted: plantedTree ? 1 : 0});
     }
 
+    function immatureTreeAvailable(actor) {
+        for (const tree of manager.treeById.values()) {
+            if (!tree || !tree.base || tree.base.del || treeIsHarvestable(tree)) continue;
+            const owner = manager.territory && manager.territory.ownerAt(tree.base.x);
+            if (owner === null || owner === undefined || !actor || owner === actor.factionId) return true;
+        }
+        return false;
+    }
+
+    function waitForTreeGrowth(actor, banner) {
+        setTask(actor, "wait_tree_growth", banner || null);
+        const faction = actor && manager.factionById.get(actor.factionId);
+        const multiplier = Math.max(0.1, safeNumber(faction && faction.techModifiers && faction.techModifiers.forestryRecheckMultiplier, 1));
+        actor.treeGrowthReadyTick = pixelTicks + Math.max(1, Math.round(C.TREE_GROWTH_RECHECK_TICKS * multiplier));
+        setPersonActivityPhase(actor, "waiting");
+    }
+
     function prioritizeForesterPlanting(actor) {
         if (!actor || actor.dead || actor.del || actor.role !== "forester" || actor.playerOrder || actorIsSoldier(actor) || actor.underAttackUntil > pixelTicks) return false;
-        if (actor.task === "plant_tree" || actor.task === "combat" || actor.task === "siege" || actor.task === "extinguish" || actor.task === "deliver") return false;
+        if (actor.task === "plant_tree" || actor.task === "wait_tree_growth" || actor.task === "combat" || actor.task === "siege" || actor.task === "extinguish" || actor.task === "deliver") return false;
         const interruptible = new Set(["planning", "idle", "wander", "harvest", "patrol", "search_resource", "explore", "facility", "return"]);
         if (actor.task && !interruptible.has(actor.task)) return false;
         const banner = settlementForActor(actor);
@@ -4459,14 +4844,29 @@
             wanted = safeNumber(demand.wood, 0) > 0 ? "wood" : preferredResourceKind(faction, banner, ["stone", "food", "wood"]);
         }
         else if (actor.role === "miner") {
-            wanted = preferredResourceKind(faction, banner, ["copper", "raw_iron", "stone"]);
+            const assignment = manager.minerAssignments.get(actor.humanId);
+            wanted = assignment && assignment.settlementId === actor.settlementId && resourceUnlockedForFaction(faction, assignment.kind)
+                ? assignment.kind
+                : preferredResourceKind(faction, banner, MINEABLE_RESOURCE_KINDS);
         }
-        const resource = findResource(actor, wanted);
+        let resource = findResource(actor, wanted);
+        if (!resource && actor.role === "miner") {
+            const fallbackKinds = MINEABLE_RESOURCE_KINDS.filter((kind) => kind !== wanted && resourceUnlockedForFaction(faction, kind))
+                .sort((a, b) => safeNumber(demand[b], 0) - safeNumber(demand[a], 0) || MINEABLE_RESOURCE_KINDS.indexOf(a) - MINEABLE_RESOURCE_KINDS.indexOf(b));
+            for (let index = 0; index < fallbackKinds.length && !resource; index++) {
+                const fallback = findResource(actor, fallbackKinds[index]);
+                if (!fallback) continue;
+                wanted = fallbackKinds[index];
+                resource = fallback;
+                manager.minerAssignments.set(actor.humanId, {kind: wanted, reason: "target_unavailable", source: "fallback", settlementId: actor.settlementId, plannedTick: pixelTicks});
+            }
+        }
         if (resource) setHarvestTask(actor, resource);
         else if (carriedAmount(actor) > 0 && banner) {
             const firstKind = Object.keys(ensureActorCarry(actor)).find((kind) => actor.carry[kind] > 0);
             setTask(actor, "deliver", deliveryDestination(actor, firstKind));
         }
+        else if (banner && (actor.role === "wood" || actor.role === "forester") && wanted === "wood" && immatureTreeAvailable(actor)) waitForTreeGrowth(actor, banner);
         else if (banner && actor.role === "builder") setTask(actor, "patrol", banner);
         else if (banner) {
             setTask(actor, "search_resource", banner);
@@ -4500,7 +4900,7 @@
         if (!actor || actor.role !== "miner") return;
         const descriptor = resourceDescriptor(pixel);
         if (!descriptor || descriptor.kind === "wood" || descriptor.kind === "food") return;
-        const amount = Math.max(1, Math.floor(safeNumber(descriptor.yield, 1)));
+        const amount = Math.max(1, naturalResourceYieldAmount(actor, descriptor, descriptor.yield));
         ensureActorCarry(actor);
         const result = World.addCarry ? World.addCarry(actor, descriptor.kind, amount, carryCapacityFor(actor)) : {accepted: 0, overflow: amount};
         addPersonActivityMetrics(actor, {resourcesCollected: {[descriptor.kind]: result.accepted}, resourcesDropped: {[descriptor.kind]: result.overflow}});
@@ -4890,15 +5290,19 @@
 
     function excavationCellCount(actor, x, y) {
         let count = 0;
-        [pixelsAt(x, y), pixelsAt(x, y - 1)].forEach((pixels) => {
-            pixels.forEach((pixel) => { if (canTunnelPixel(pixel, actor, true)) count++; });
-        });
+        const bodyPixels = pixelsAt(x, y);
+        for (let i = 0; i < bodyPixels.length; i++) {
+            if (canTunnelPixel(bodyPixels[i], actor, true)) count++;
+        }
+        const headPixels = pixelsAt(x, y - 1);
+        for (let i = 0; i < headPixels.length; i++) {
+            if (canTunnelPixel(headPixels[i], actor, true)) count++;
+        }
         return count;
     }
 
     function navigationNeighbors(actor, bounds, allowExcavation, node) {
         const edges = [];
-        const seen = new Set();
         function addEdge(nextNode, action, cost) {
             if (!nextNode || !navigationInBounds(bounds, nextNode.x, nextNode.y)) return;
             const firstAction = action && Array.isArray(action.segment) ? action.segment[0] : action;
@@ -4907,12 +5311,12 @@
             const rejectedKey = node.x + "," + node.y + ">" + firstX + "," + firstY + ":" + (firstAction && firstAction.action || "move");
             const rejectedEdges = manager.routeRejectedEdges.get(actor.humanId);
             if (rejectedEdges && rejectedEdges.has(rejectedKey)) return;
-            const key = nextNode.x + "," + nextNode.y;
-            if (seen.has(key)) return;
-            seen.add(key);
+            for (let i = 0; i < edges.length; i++) {
+                if (edges[i].node.x === nextNode.x && edges[i].node.y === nextNode.y) return;
+            }
             edges.push({node: nextNode, action: action, cost: cost});
         }
-        [-1, 1].forEach((side) => {
+        for (let side = -1; side <= 1; side += 2) {
             const flatX = node.x + side;
             if (actorCanOccupyAt(actor, flatX, node.y) && navigationPositionSupported(actor, flatX, node.y)) {
                 const supportSide = navigationSupportSide(actor, flatX, node.y);
@@ -4934,10 +5338,10 @@
                 const last = descentSegment[descentSegment.length - 1];
                 addEdge({x: last.x, y: last.y}, {segment: descentSegment}, descentSegment.length);
             }
-        });
-        [-1, 1].forEach((vertical) => {
+        }
+        for (let vertical = -1; vertical <= 1; vertical += 2) {
             const y = node.y + vertical;
-            if (!actorCanOccupyAt(actor, node.x, y)) return;
+            if (!actorCanOccupyAt(actor, node.x, y)) continue;
             const internal = hasInternalClimbSupport(actor, node.x, node.y) || hasInternalClimbSupport(actor, node.x, y);
             const side = navigationSupportSide(actor, node.x, y);
             const inTunnel = navigationTunnelAt(actor, node.x, y);
@@ -4945,16 +5349,18 @@
                 addEdge({x: node.x, y: y}, {dx: 0, dy: vertical, action: navigationTunnelAt(actor, node.x, y) ? "tunnel_move" : "climb", climbSide: side}, 1);
             }
             else if (vertical > 0) addEdge({x: node.x, y: y}, {dx: 0, dy: 1, action: "fall", climbSide: 0}, 1.25);
-        });
+        }
         if (allowExcavation) {
-            [[-1, 0], [1, 0], [0, -1], [0, 1]].forEach((delta) => {
-                const x = node.x + delta[0];
-                const y = node.y + delta[1];
-                if (!navigationInBounds(bounds, x, y)) return;
+            for (let direction = 0; direction < 4; direction++) {
+                const dx = direction === 0 ? -1 : (direction === 1 ? 1 : 0);
+                const dy = direction === 2 ? -1 : (direction === 3 ? 1 : 0);
+                const x = node.x + dx;
+                const y = node.y + dy;
+                if (!navigationInBounds(bounds, x, y)) continue;
                 const cells = excavationCellCount(actor, x, y);
-                if (!cells || !excavationPositionPossible(actor, x, y)) return;
-                addEdge({x: x, y: y}, {dx: delta[0], dy: delta[1], action: "tunnel", climbSide: 0}, 1 + cells * 12);
-            });
+                if (!cells || !excavationPositionPossible(actor, x, y)) continue;
+                addEdge({x: x, y: y}, {dx: dx, dy: dy, action: "tunnel", climbSide: 0}, 1 + cells * 12);
+            }
         }
         return edges;
     }
@@ -5457,6 +5863,14 @@
             handlePlantTreeTask(actor, banner);
             return;
         }
+        if (actor.task === "wait_tree_growth") {
+            if (pixelTicks >= safeNumber(actor.treeGrowthReadyTick, 0)) {
+                delete actor.treeGrowthReadyTick;
+                clearTask(actor, "completed", "tree_growth_recheck");
+            }
+            else setPersonActivityPhase(actor, "waiting");
+            return;
+        }
         if (actor.task === "facility") {
             const facility = getBuildingById(actor.targetId);
             if (!facility || facility.del) return clearTask(actor, "interrupted", "facility_destroyed");
@@ -5633,7 +6047,6 @@
     function setPeaceMode(value) {
         const next = normalizePeaceMode(value);
         const previous = getPeaceMode();
-        if (previous !== next) captureTimelineBoundary("before-peace-mode");
         if (typeof settings !== "undefined" && settings) settings.humanSocietyPeaceMode = next;
         if (previous !== "full-peace" && next === "full-peace") {
             manager.relationRecords.forEach((record) => {
@@ -5652,7 +6065,6 @@
         }
         if (next !== "normal") clearScarcityTimers();
         if (typeof saveSettings === "function") saveSettings();
-        if (previous !== next) captureTimelineBoundary("after-peace-mode");
         return next;
     }
 
@@ -5678,7 +6090,6 @@
         if (!info || !manager.factionById.has(Number(attackerFactionId)) || !manager.factionById.has(Number(defenderFactionId))) return false;
         const record = loadPairRecord(info, true);
         if (record.atWar && !record.surrendered) return true;
-        if (reason === "manual") captureTimelineBoundary("before-manual-war");
         record.atWar = true;
         record.surrendered = false;
         record.permanent = true;
@@ -5699,7 +6110,6 @@
                 logSettlementEvent(banner, "war", (record.reason === "manual" ? "被手动卷入战争" : "因不可再生资源枯竭进入战争") + "：对阵阵营 " + (factionId === Number(attackerFactionId) ? defenderFactionId : attackerFactionId), {enemyFactionId: factionId === Number(attackerFactionId) ? Number(defenderFactionId) : Number(attackerFactionId), reason: record.reason});
             }
         });
-        if (reason === "manual") captureTimelineBoundary("after-manual-war");
         return true;
     }
 
@@ -6050,6 +6460,7 @@
         }
         if (actor.task === "build") return role === "builder";
         if (actor.task === "plant_tree") return role === "forester";
+        if (actor.task === "wait_tree_growth") return role === "forester" || role === "wood";
         if (actor.task === "facility") return role === "artisan" || role === "scholar" || role === "merchant" || role === "artisan_trade";
         if (actor.task === "patrol") {
             return role === "guard" || role === "warrior" || role === "builder" || role === "artisan" || role === "scholar" || role === "merchant" || role === "artisan_trade";
@@ -6059,7 +6470,9 @@
 
     function assignPermanentActorRole(actor, role) {
         if (!actor) return false;
-        const nextRole = role || "worker";
+        let nextRole = role || "worker";
+        if (actor.militaryVeteran && nextRole !== "guard" && nextRole !== "warrior") nextRole = "guard";
+        if (nextRole === "guard" || nextRole === "warrior") actor.militaryVeteran = true;
         if (permanentActorRole(actor) === nextRole) return false;
         actor.role = nextRole;
         if (actor.playerOrder || combatTaskStillValid(actor)) return true;
@@ -6104,10 +6517,15 @@
         const roleMap = {food: "food", wood: "wood", miner: "miner", builder: "builder", artisan: "artisan", forester: "forester", scholar: "scholar", military: "guard", artisan_trade: "merchant", flex: "worker"};
         let standingQuota = 0;
         faction.settlements.forEach((settlement) => {
-            const adults = faction.adults.filter((actor) => actor.settlementId === settlement.settlementId).sort((a, b) => a.humanId - b.humanId);
+            const adults = faction.adults.filter((actor) => actor.settlementId === settlement.settlementId).sort((a, b) => {
+                const militaryOrder = Number(!!a.militaryVeteran) - Number(!!b.militaryVeteran);
+                return militaryOrder || a.humanId - b.humanId;
+            });
             const target = Core.eraPopulationTarget ? Core.eraPopulationTarget(eraIndexFor(faction)) : (World.populationTarget ? World.populationTarget(eraIndexFor(faction)) : 6);
             const gatheringDemand = settlementGatheringDemand(faction, settlement);
-            const lowFood = safeNumber(gatheringDemand.food, 0) > 0;
+            const localPopulation = adults.length + faction.children.filter((actor) => actor.settlementId === settlement.settlementId).length;
+            const birthsNeeded = Math.max(0, target - localPopulation);
+            const lowFood = materialAmount(settlement.stock, "food") < birthsNeeded * C.BIRTH_FOOD_COST;
             const housingUrgent = settlement.housing < Math.min(target, safeNumber(settlement.population, adults.length) + 2);
             let quotas;
             if (Core.eraJobAllocation) quotas = Core.eraJobAllocation(eraIndexFor(faction), adults.length, {lowFood, housingUrgent});
@@ -6122,7 +6540,7 @@
                     quotas.food = safeNumber(quotas.food, 0) + 1;
                 }
             }
-            else if (safeNumber(quotas.food, 0) > 0) {
+            else if (safeNumber(quotas.food, 0) > 0 && safeNumber(gatheringDemand.food, 0) <= 0) {
                 const surplus = quotas.food;
                 quotas.food = 0;
                 const mineralDemand = safeNumber(gatheringDemand.stone, 0) + safeNumber(gatheringDemand.copper, 0) + safeNumber(gatheringDemand.raw_iron, 0);
@@ -6156,11 +6574,7 @@
         const allAdults = faction.adults.slice().sort((a, b) => a.humanId - b.humanId);
         if (!enemies.length) {
             allAdults.forEach((actor) => { delete actor.warRole; delete actor.warFrontId; });
-            const peaceWarriors = Math.min(allAdults.length, Math.max(0, standingQuota));
-            allAdults.forEach((actor) => {
-                if (permanentActorRole(actor) === "guard" || permanentActorRole(actor) === "warrior") assignPermanentActorRole(actor, "worker");
-            });
-            for (let i = 0; i < peaceWarriors; i++) assignPermanentActorRole(allAdults[allAdults.length - 1 - i], "guard");
+            allAdults.filter((actor) => actor.militaryVeteran).forEach((actor) => assignPermanentActorRole(actor, "guard"));
             const banner = faction.settlements[0];
             if (banner && banner.warState) banner.warState.initialized = false;
             recordPermanentRoleChanges(allAdults, previousRoles);
@@ -6240,7 +6654,7 @@
                 attempted.add(type);
                 if (!unlockedBuilding(faction, type)) continue;
                 const blueprint = BLUEPRINTS[type];
-                if (!blueprint || !hasStock(banner, blueprint.cost)) continue;
+                if (!blueprint || !hasStock(banner, blueprint.cost) || !canSpendAfterAdvancementReserve(faction, banner, blueprint.cost)) continue;
                 const site = createConstruction(banner, type);
                 if (site) { faction.constructionSites.push(site); return; }
                 banner.buildRetry[type] = pixelTicks + C.BUILD_RETRY_TICKS;
@@ -6250,7 +6664,7 @@
 
     function actorIsSoldier(actor) {
         if (!actor || actor.dead || actor.del || actor.element === "civ_child") return false;
-        return actor.role === "guard" || actor.role === "warrior" || actor.warRole === "attacker" || actor.warRole === "defender";
+        return actor.militaryVeteran === true || actor.role === "guard" || actor.role === "warrior" || actor.warRole === "attacker" || actor.warRole === "defender";
     }
 
     function eraWeaponTargets(eraId, soldierCount) {
@@ -6314,6 +6728,28 @@
         return settlementForActor(actor) || faction && faction.settlements.find((settlement) => settlement.townCenterActive !== false) || faction && faction.settlements[0] || null;
     }
 
+    function canApplyEquipmentExchange(banner, refund, cost) {
+        if (!banner) return false;
+        ensureStock(banner);
+        const resources = new Set(Object.keys(refund || {}).concat(Object.keys(cost || {})));
+        for (const resource of resources) {
+            const finalAmount = materialAmount(banner.stock, resource) + safeNumber(refund && refund[resource], 0) - safeNumber(cost && cost[resource], 0);
+            if (finalAmount < 0) return false;
+        }
+        return true;
+    }
+
+    function applyEquipmentExchange(banner, refund, cost) {
+        if (!canApplyEquipmentExchange(banner, refund, cost)) return false;
+        const resources = new Set(Object.keys(refund || {}).concat(Object.keys(cost || {})));
+        resources.forEach((resource) => {
+            const delta = safeNumber(refund && refund[resource], 0) - safeNumber(cost && cost[resource], 0);
+            if (delta > 0) addMaterial(banner.stock, resource, delta);
+            else if (delta < 0) spendMaterial(banner.stock, resource, -delta);
+        });
+        return true;
+    }
+
     function refundActorWeapon(actor, faction) {
         if (!actor || actor.dead || actor.del) return false;
         migrateActorEquipment(actor);
@@ -6349,17 +6785,13 @@
     }
 
     function canAffordWeaponSwap(banner, actor, cost) {
-        if (!banner) return false;
-        ensureStock(banner);
         const refund = actor && actor.weapon !== "fists" && actor.weaponPaidCost || {};
-        return Object.keys(cost || {}).every((resource) => materialAmount(banner.stock, resource) + safeNumber(refund[resource], 0) >= safeNumber(cost[resource], 0));
+        return canApplyEquipmentExchange(banner, refund, cost);
     }
 
     function canAffordArmorSwap(banner, actor, cost) {
-        if (!banner) return false;
-        ensureStock(banner);
         const refund = actor && actor.armor !== "none" && actor.armorPaidCost || {};
-        return Object.keys(cost || {}).every((resource) => materialAmount(banner.stock, resource) + safeNumber(refund[resource], 0) >= safeNumber(cost[resource], 0));
+        return canApplyEquipmentExchange(banner, refund, cost);
     }
 
     function equipActorWeapon(actor, faction, weaponId) {
@@ -6373,12 +6805,12 @@
         const cost = copyResourceCost(descriptor && descriptor.cost || {});
         if (!descriptor || !banner || !canAffordWeaponSwap(banner, actor, cost)) return false;
         const previousWeapon = actor.weapon;
-        if (previousWeapon !== "fists") refundActorWeapon(actor, faction);
-        if (!spendStock(banner, cost)) return false;
+        const refundedCost = previousWeapon !== "fists" ? copyResourceCost(actor.weaponPaidCost) : {};
+        if (!applyEquipmentExchange(banner, refundedCost, cost)) return false;
         actor.weapon = desired;
         actor.weaponPaidCost = cost;
         actor.equipmentSchemaVersion = EQUIPMENT_SCHEMA_VERSION;
-        recordPersonLifeEvent(actor, "weapon_equipped", {weapon: desired, previousWeapon: previousWeapon, cost: copyResourceCost(cost)});
+        recordPersonLifeEvent(actor, "weapon_equipped", {weapon: desired, previousWeapon: previousWeapon, refundedCost: refundedCost, cost: copyResourceCost(cost)});
         addPersonActivityMetrics(actor, {equipmentIssued: {[desired]: 1}});
         return true;
     }
@@ -6393,13 +6825,13 @@
         const cost = copyResourceCost(descriptor && descriptor.cost || {});
         if (!descriptor || !banner || !canAffordArmorSwap(banner, actor, cost)) return false;
         const previousArmor = actor.armor;
-        if (previousArmor !== "none") refundActorArmor(actor, faction);
-        if (!spendStock(banner, cost)) return false;
+        const refundedCost = previousArmor !== "none" ? copyResourceCost(actor.armorPaidCost) : {};
+        if (!applyEquipmentExchange(banner, refundedCost, cost)) return false;
         actor.armor = desired;
         actor.armorPaidCost = cost;
         actor.equipmentSchemaVersion = EQUIPMENT_SCHEMA_VERSION;
         syncActorHealth(actor, true);
-        recordPersonLifeEvent(actor, "armor_equipped", {armor: desired, previousArmor: previousArmor, cost: copyResourceCost(cost)});
+        recordPersonLifeEvent(actor, "armor_equipped", {armor: desired, previousArmor: previousArmor, refundedCost: refundedCost, cost: copyResourceCost(cost)});
         addPersonActivityMetrics(actor, {equipmentIssued: {[desired + "_armor"]: 1}});
         return true;
     }
@@ -6494,6 +6926,10 @@
         if (!faction || !banner || banner.townCenterActive === false) return 0;
         ensureStock(banner);
         const ledger = workshopLedger(banner.stock);
+        const advancementReserve = advancementReservation(faction, banner);
+        Object.keys(advancementReserve).forEach((resource) => {
+            ledger[resource] = Math.max(0, safeNumber(ledger[resource], 0) - safeNumber(advancementReserve[resource], 0));
+        });
         const woodReserve = smeltingWoodReserveFor(banner);
         const proposals = [];
         (buildings || []).filter((building) => building && !building.del && building.buildingState !== "destroyed" && building.settlementId === banner.settlementId)
@@ -6597,18 +7033,18 @@
     function findBirthSpot(banner, faction) {
         const localHuts = faction.huts.filter((hut) => hut.settlementId === banner.settlementId);
         const homes = localHuts.length ? localHuts : [banner];
+        const bodyProbe = {element: "civ_body"};
+        const headProbe = {element: "civ_head"};
         for (let i = 0; i < homes.length; i++) {
             const home = homes[i];
             for (let radius = 1; radius <= 12; radius++) {
-                const xs = [home.x - radius, home.x + radius];
-                for (let j = 0; j < xs.length; j++) {
-                    const y = findSurfaceY(xs[j], home.y);
-                    if (y === null || outOfBounds(xs[j], y - 1)) continue;
-                    const bodyProbe = {element: "civ_body"};
-                    const headProbe = {element: "civ_head"};
-                    const bodyOpen = typeof canCreatureOccupy === "function" ? canCreatureOccupy(bodyProbe, xs[j], y) : isEmpty(xs[j], y);
-                    const headOpen = typeof canCreatureOccupy === "function" ? canCreatureOccupy(headProbe, xs[j], y - 1) : isEmpty(xs[j], y - 1);
-                    if (bodyOpen && headOpen && solidGroundAt(xs[j], y)) return {x: xs[j], y: y};
+                for (let side = -1; side <= 1; side += 2) {
+                    const x = home.x + radius * side;
+                    const y = findSurfaceY(x, home.y);
+                    if (y === null || outOfBounds(x, y - 1)) continue;
+                    const bodyOpen = typeof canCreatureOccupy === "function" ? canCreatureOccupy(bodyProbe, x, y) : isEmpty(x, y);
+                    const headOpen = typeof canCreatureOccupy === "function" ? canCreatureOccupy(headProbe, x, y - 1) : isEmpty(x, y - 1);
+                    if (bodyOpen && headOpen && solidGroundAt(x, y)) return {x: x, y: y};
                 }
             }
         }
@@ -6631,19 +7067,21 @@
         faction.population++;
         faction.adultPopulation++;
         banner.population = safeNumber(banner.population, 0) + 1;
+        banner.humanIdHighWatermark = Math.max(safeNumber(banner.humanIdHighWatermark, 0), actor.humanId);
         return actor;
     }
 
     function reproduceFaction(faction) {
         if (!faction) return;
         const targetPopulation = Core.eraPopulationTarget ? Core.eraPopulationTarget(eraIndexFor(faction)) : (World.populationTarget ? World.populationTarget(eraIndexFor(faction)) : 6);
-        const created = [];
+        let created = 0;
         faction.settlements.forEach((banner) => {
             if (!banner || banner.townCenterActive === false) return;
             let localPopulation = faction.actors.filter((actor) => actor.settlementId === banner.settlementId && !actor.dead).length;
             const birthFoodCost = C.BIRTH_FOOD_COST;
             ensureStock(banner);
-            while (localPopulation < targetPopulation && materialAmount(banner.stock, "food") >= birthFoodCost) {
+            const reservedFood = safeNumber(advancementReservation(faction, banner).food, 0);
+            while (localPopulation < targetPopulation && materialAmount(banner.stock, "food") - reservedFood >= birthFoodCost) {
                 const spot = findBirthSpot(banner, faction);
                 if (!spot) break;
                 spendMaterial(banner.stock, "food", birthFoodCost);
@@ -6652,7 +7090,7 @@
                     addMaterial(banner.stock, "food", birthFoodCost);
                     break;
                 }
-                created.push(actor);
+                created++;
                 localPopulation++;
                 banner.lastBirthTick = pixelTicks;
                 banner.birthReadyTick = pixelTicks;
@@ -6663,11 +7101,8 @@
                 logSettlementEvent(banner, "birth", "成员诞生并立即参加工作", {humanId: actor.humanId, settlementId: banner.settlementId});
             }
         });
-        if (created.length) {
-            assignFactionRoles(faction);
-            created.forEach((actor) => assignActorTask(actor));
-        }
-        return created.length;
+        if (created) assignFactionRoles(faction);
+        return created;
     }
 
     function civilizationStep() {
@@ -6683,12 +7118,13 @@
         for (let i = 0; i < refreshed.length; i++) {
             const faction = refreshed[i];
             stepResourceExhaustionWars(faction);
-            stepFactionResearch(faction);
             assignFactionRoles(faction);
+            planFactionMiners(faction);
+            craftForFaction(faction);
+            stepFactionResearch(faction);
             planFactionConstruction(faction);
             processFactionIndustry(faction);
             processFactionCommunity(faction);
-            craftForFaction(faction);
             reproduceFaction(faction);
         }
         stepTownCenterRebuilds();
@@ -6712,17 +7148,19 @@
         if (!actor) return;
         if (actor.dead) return;
         const deathTick = Math.max(1, Number.isFinite(tick) ? tick : pixelTicks);
-        finishPersonActivity(actor, "death", actor.deathCause || "injury", details);
         actor.healthDamage = Math.max(safeNumber(actor.healthDamage, 0), safeNumber(actor.maxHp, C.ADULT_HP));
         actor.hp = 0;
         actor.dead = deathTick;
         actor.task = "dead";
         delete actor.playerOrder;
         if (commandPersonId === actor.humanId) cancelPersonCommand();
-        recordPersonLifeEvent(actor, "death", Object.assign({cause: actor.deathCause || "injury", ageYears: ageYears(actor)}, details || {}));
         const banner = settlementForActor(actor);
-        if (banner) logSettlementEvent(banner, "death", "成员死亡", {humanId: actor.humanId, cause: actor.deathCause || "injury", age: ageYears(actor)});
-        archivePerson(actor, details);
+        if (banner) {
+            banner.deathCount = Math.max(0, safeNumber(banner.deathCount, 0)) + 1;
+            banner.humanIdHighWatermark = Math.max(safeNumber(banner.humanIdHighWatermark, 0), safeNumber(actor.humanId, 0));
+            logSettlementEvent(banner, "death", "成员死亡", {humanId: actor.humanId, cause: actor.deathCause || "injury", age: ageYears(actor), deathCount: banner.deathCount});
+        }
+        delete actor.personActivity;
         if (actor.element === "civ_body") {
             const head = getBodyHead(actor);
             if (head) head.dead = deathTick;
@@ -6983,7 +7421,7 @@
 
     function taskNeedsMovement(actor) {
         if (!actor || actor.dead || actor.del) return false;
-        return actor.task === "move" || actor.task === "harvest" || actor.task === "extinguish" || actor.task === "deliver" || actor.task === "build" || actor.task === "farm" || actor.task === "plant_tree" || actor.task === "facility" || actor.task === "combat" || actor.task === "siege" || actor.task === "flee" || actor.task === "return" || actor.task === "patrol" || actor.task === "search_resource" || actor.task === "explore";
+        return actor.task === "move" || actor.task === "harvest" || actor.task === "extinguish" || actor.task === "deliver" || actor.task === "build" || actor.task === "farm" || actor.task === "plant_tree" || actor.task === "wait_tree_growth" || actor.task === "facility" || actor.task === "combat" || actor.task === "siege" || actor.task === "flee" || actor.task === "return" || actor.task === "patrol" || actor.task === "search_resource" || actor.task === "explore";
     }
 
     function fireTaskCanInterrupt(actor) {
@@ -7047,7 +7485,7 @@
                 if (emergencyFire) setTask(pixel, "extinguish", emergencyFire);
                 if (!emergencyFire) prioritizeForesterPlanting(pixel);
                 const activeTask = pixel.task === "move" || pixel.task === "harvest" || pixel.task === "deliver" || pixel.task === "build" ||
-                    pixel.task === "farm" || pixel.task === "plant_tree" || pixel.task === "combat" || pixel.task === "siege" || pixel.task === "extinguish";
+                    pixel.task === "farm" || pixel.task === "plant_tree" || pixel.task === "wait_tree_growth" || pixel.task === "combat" || pixel.task === "siege" || pixel.task === "extinguish";
                 const taskIsFacility = pixel.task === "facility";
                 const urgentReplan = pixel.underAttackUntil > pixelTicks;
                 const periodicReplan = !activeTask && !taskIsFacility && (!Number.isFinite(pixel.lastPlanTick) || pixelTicks - pixel.lastPlanTick >= 60);
@@ -7190,7 +7628,7 @@
         structureOnPlace(pixel, 120);
         ensureStock(pixel);
         ensureResearchState(pixel);
-        ensureDeceasedArchive(pixel);
+        migrateLegacyDeathArchive(pixel);
         if (!pixel.diplomacy || typeof pixel.diplomacy !== "object") pixel.diplomacy = {};
     }
 
@@ -7542,10 +7980,11 @@
         color: SKIN_COLORS,
         category: "civilization",
         properties: {dead: false, dir: 1, panic: 0},
-        onPlace: function (pixel) { materializeAdult(pixel); },
+        onPlace: function (pixel) { materializeAdult(pixel, {factionColor: selectedPlacementFactionColor(pixel)}); },
         related: ["civ_body", "civ_head", "civ_child", "civ_banner", "civ_hut_core", "civ_farm_marker", "civ_workshop_core"],
         cooldown: typeof defaultCooldown !== "undefined" ? defaultCooldown : 1,
         maxSize: 1,
+        customColor: true,
         forceSaveColor: true,
         desc: "会结成阵营、采集、建造、繁衍并因长期敌意发动战争的人类。"
     };
@@ -7598,6 +8037,7 @@
         properties: {dead: false},
         reactions: organicReactions,
         tick: tickHead,
+        simulationTickInterval: 4,
         hoverStat: actorHoverStat,
         onPlace: registerPixel,
         onChange: onCivilizedChange,
@@ -7945,17 +8385,17 @@
         bronze: "青铜时代", iron: "铁器时代", castle: "城堡时代"
     };
     const TECH_NAMES_ZH = {
-        organized_gathering: "有组织采集", controlled_fire: "火种掌控", simple_shelters: "简易住所", woodworking: "木工",
+        organized_gathering: "有组织采集", careful_gathering: "精细采集", controlled_fire: "火种掌控", simple_shelters: "简易住所", woodworking: "木工",
         clan_council: "氏族议会", oral_tradition: "口述传统", war_clubs: "战棍", hunting_cooperation: "协作狩猎",
-        stone_knapping: "石器打制", polished_axes: "磨制石器", artisan_shed: "工匠棚", quarrying: "采石",
+        stone_knapping: "石器打制", stone_sorting: "石料筛选", polished_axes: "磨制石器", artisan_shed: "工匠棚", quarrying: "采石",
         craft_specialization: "手工业分工", tally_marks: "刻划记事", stone_spearheads: "石制矛头", palisade_defense: "木栅防御",
-        seed_selection: "选种", managed_forestry: "林业管理", granary: "粮仓", irrigation: "灌溉",
+        seed_selection: "选种", managed_forestry: "林业管理", intensive_harvesting: "丰产采收", granary: "粮仓", irrigation: "灌溉",
         village_planning: "村落规划", barter: "物物交换", militia: "民兵制度", bowmaking: "丝弦法", rattan_armor: "藤甲",
-        copper_prospecting: "生铜勘探", tin_prospecting: "青铜合金", charcoal_kiln: "木柴冶炼", bronze_foundry: "青铜铸造",
+        copper_prospecting: "生铜勘探", tin_prospecting: "青铜合金", charcoal_kiln: "木柴冶炼", bronze_foundry: "青铜铸造", bronze_tools: "青铜工具",
         writing: "文字", administration: "行政管理", bronze_weapons: "范铸法", shield_formation: "盾阵",
-        iron_prospecting: "生铁勘探", iron_smelting: "炒炼法", forge: "炼钢作坊", stone_fortifications: "石制防御工事",
+        iron_prospecting: "生铁勘探", iron_smelting: "炒炼法", iron_extraction_tools: "铁制采掘工具", forge: "炼钢作坊", stone_fortifications: "石制防御工事",
         coinage: "铸币", codified_law: "成文法", iron_weapons: "铁匠铺", iron_armor: "铁甲护身",
-        steelmaking: "炼钢", crop_rotation: "轮作", castle_building: "城堡建筑", siege_workshop: "攻城工坊",
+        steelmaking: "炼钢", advanced_extraction: "高效采掘", crop_rotation: "轮作", castle_building: "城堡建筑", siege_workshop: "攻城工坊",
         library: "图书馆", guild_market: "行会市场", crossbow: "机括制造", siege_engineering: "攻城工程", carburizing_tempering: "渗碳百炼", steel_armor: "钢甲裹身"
     };
     const DOMAIN_NAMES_ZH = {production: "生产", construction: "建造", society: "社会", military: "军事"};
@@ -7994,7 +8434,7 @@
     const SETTLEMENT_STAGE_LABELS = {nomadic: ["Nomadic", "游牧阶段"], camp: ["Camp", "营地阶段"], village: ["Village", "村落阶段"], town: ["Town", "城镇阶段"]};
     const PERSON_TASK_LABELS = {
         idle: ["Idle", "待命"], planning: ["Planning work", "规划工作"], move: ["Following command", "执行移动命令"], wander: ["Exploring", "探索"], explore: ["Exploring", "探索"], search_resource: ["Searching resources", "搜寻资源"], harvest: ["Gathering", "采集"], deliver: ["Delivering", "运输"],
-        extinguish: ["Extinguishing fire", "灭火"], build: ["Building", "建造"], farm: ["Farming", "耕作"], plant_tree: ["Planting trees", "种树"], facility: ["Working", "设施工作"],
+        extinguish: ["Extinguishing fire", "灭火"], build: ["Building", "建造"], farm: ["Farming", "耕作"], plant_tree: ["Planting trees", "种树"], wait_tree_growth: ["Waiting for trees to mature", "等待树木成长"], facility: ["Working", "设施工作"],
         combat: ["Fighting", "战斗"], siege: ["Sieging", "攻城"], flee: ["Fleeing", "逃跑"], patrol: ["Patrolling", "巡逻"],
         return: ["Returning", "返回聚落"], placed: ["Entered the world", "进入世界"], birth: ["Born", "出生"], maturity: ["Reached adulthood", "成年"],
         faction_changed: ["Changed faction", "阵营变更"], role_changed: ["Changed role", "职业变更"], death: ["Died", "死亡"], dead: ["Dead", "已死亡"],
@@ -8005,7 +8445,7 @@
     };
     const PERSON_PHASE_LABELS = {
         planning: ["Planning", "规划中"], flat: ["Travelling", "平地移动"], climb: ["Climbing", "攀爬"], tunnel: ["Digging a tunnel", "挖掘矿洞"],
-        working: ["Working", "工作中"], searching: ["Searching", "搜寻中"], exploring: ["Exploring", "探索中"], patrolling: ["Patrolling", "巡逻中"], attacking: ["Attacking", "攻击中"], fall: ["Falling", "下落"], idle: ["Idle", "待命"]
+        working: ["Working", "工作中"], waiting: ["Waiting", "等待中"], searching: ["Searching", "搜寻中"], exploring: ["Exploring", "探索中"], patrolling: ["Patrolling", "巡逻中"], attacking: ["Attacking", "攻击中"], fall: ["Falling", "下落"], idle: ["Idle", "待命"]
     };
     const PERSON_OUTCOME_LABELS = {active: ["Active", "进行中"], completed: ["Completed", "完成"], failed: ["Failed", "失败"], interrupted: ["Interrupted", "中断"], death: ["Died", "死亡"]};
     const PERSON_ROLE_LABELS = {
@@ -8028,7 +8468,6 @@
     let selectedCivilizationFactionId = null;
     let selectedCivilizationSettlementId = null;
     let selectedCivilizationTab = "overview";
-    let selectedPeopleStatus = "living";
     let selectedPersonId = null;
     let focusedPersonId = null;
     let peoplePanelOpen = false;
@@ -8133,6 +8572,24 @@
         if (translated && translated !== value) return translated;
         if (!isChineseUi() && RESOURCE_NAMES_EN[value]) return RESOURCE_NAMES_EN[value];
         return isChineseUi() ? (RESOURCE_NAMES_ZH[value] || "资源") : value.replace(/_/g, " ");
+    }
+
+    const YIELD_MODIFIER_RESOURCES = Object.freeze({
+        foodYieldBonus: "food",
+        woodYieldBonus: "wood",
+        stoneYieldBonus: "stone",
+        copperYieldBonus: "copper",
+        rawIronYieldBonus: "raw_iron"
+    });
+
+    function technologyYieldEffectDescriptions(technology) {
+        if (!technology || !Array.isArray(technology.effects)) return [];
+        return technology.effects.reduce((descriptions, effect) => {
+            const resourceKind = effect && effect.type === "modifier" ? YIELD_MODIFIER_RESOURCES[effect.stat] : null;
+            if (!resourceKind || !Number.isFinite(effect.value) || effect.value <= 0) return descriptions;
+            descriptions.push(localizedResourceName(resourceKind) + civilizationText("tech.yieldBonus", " yield +", "产量 +") + Math.round(effect.value * 100) + "%");
+            return descriptions;
+        }, []);
     }
 
     function localizedRecipeName(recipeId) {
@@ -8440,6 +8897,7 @@
     function livePersonSnapshot(actor) {
         const activity = ensurePersonActivity(actor, true);
         const carry = cloneActivityValue(ensureActorCarry(actor)) || {};
+        const miningAssignment = actor.role === "miner" ? manager.minerAssignments.get(actor.humanId) : null;
         const nav = actor.pathCache && actor.pathCache.version === NAVIGATION_SCHEMA_VERSION ? actor.pathCache : null;
         const trip = actor.workTrip;
         const activeStep = nav && nav.path && nav.path[nav.pathIndex];
@@ -8469,6 +8927,7 @@
             carry: carry,
             carryTotal: carriedAmount(actor),
             carryCapacity: carryCapacityFor(actor),
+            miningAssignment: miningAssignment ? cloneActivityValue(miningAssignment) : null,
             currentActivity: expandActivityRecord(activity.c, actor, true),
             historyRetained: activity.h.length,
             latestSequence: Math.max(activityRecordSequence(activity.c), activity.h.reduce((maximum, record) => Math.max(maximum, activityRecordSequence(record)), 0)),
@@ -8494,44 +8953,6 @@
         };
     }
 
-    function deceasedPersonSnapshot(indexed) {
-        if (!indexed || !indexed.entry) return null;
-        const entry = indexed.entry;
-        const activity = entry.pa && typeof entry.pa === "object" ? entry.pa : newPersonActivity();
-        return {
-            humanId: entry.h,
-            status: "deceased",
-            element: entry.e,
-            isChild: entry.e === "civ_child",
-            factionId: entry.f,
-            settlementId: entry.l,
-            archiveFactionId: indexed.banner && indexed.banner.factionId,
-            color: entry.c,
-            x: entry.x,
-            y: entry.y,
-            ageYears: Number.isFinite(entry.bt) ? Math.max(0, (safeNumber(entry.dt, entry.bt) - entry.bt) / C.TICKS_PER_YEAR) : 0,
-            lifespanYears: entry.ly,
-            birthTick: entry.bt,
-            deathTick: entry.dt,
-            diedAt: entry.da,
-            deathCause: entry.dc,
-            hp: entry.hp,
-            maxHp: entry.mh,
-            role: entry.r || "worker",
-            task: "dead",
-            weapon: entry.w || "fists",
-            armor: canonicalArmorId(entry.ar),
-            armorBonusHp: Math.max(0, safeNumber(entry.ab, 0)),
-            warRole: entry.wr || null,
-            carry: {},
-            carryTotal: 0,
-            carryCapacity: 0,
-            currentActivity: null,
-            historyRetained: Array.isArray(activity.h) ? activity.h.length : 0,
-            latestSequence: Array.isArray(activity.h) ? activity.h.reduce((maximum, record) => Math.max(maximum, activityRecordSequence(record)), 0) : 0
-        };
-    }
-
     function findLivingActor(humanId) {
         const id = Number(humanId);
         const indexed = manager.actorById.get(id);
@@ -8542,8 +8963,7 @@
     function getPersonSnapshot(humanId) {
         if (manager.lastIndexTick < 0 && typeof currentPixels !== "undefined") rebuildIndexes(true);
         const actor = findLivingActor(humanId);
-        if (actor) return livePersonSnapshot(actor);
-        return deceasedPersonSnapshot(manager.deceasedByHumanId.get(Number(humanId)));
+        return actor ? livePersonSnapshot(actor) : null;
     }
 
     function personMatchesFilters(person, filters) {
@@ -8561,16 +8981,21 @@
     function getPeopleSnapshot(options) {
         if (manager.lastIndexTick < 0 && typeof currentPixels !== "undefined") rebuildIndexes(true);
         const filters = options || {};
-        const status = filters.status === "deceased" || filters.status === "all" ? filters.status : "living";
         const living = Array.from(manager.actors).filter((actor) => actor && !actor.del && !actor.dead && Number.isFinite(actor.humanId)).map(livePersonSnapshot);
-        const deceased = Array.from(manager.deceasedByHumanId.values()).map(deceasedPersonSnapshot).filter(Boolean);
-        let people = status === "deceased" ? deceased : (status === "all" ? living.concat(deceased) : living);
+        let people = filters.status === "deceased" ? [] : living;
         people = people.filter((person) => personMatchesFilters(person, filters));
-        people.sort((a, b) => status === "deceased" ? safeNumber(b.deathTick, 0) - safeNumber(a.deathTick, 0) || a.humanId - b.humanId : a.humanId - b.humanId);
+        people.sort((a, b) => a.humanId - b.humanId);
+        let deaths = 0;
+        manager.settlements.forEach((banner) => {
+            if (!banner || banner.del) return;
+            if (filters.factionId !== undefined && filters.factionId !== null && Number(filters.factionId) !== Number(banner.factionId)) return;
+            if (filters.settlementId !== undefined && filters.settlementId !== null && Number(filters.settlementId) !== Number(banner.settlementId)) return;
+            deaths += Math.max(0, safeNumber(banner.deathCount, 0));
+        });
         return {
             updatedAt: eventTimestamp(),
             tick: pixelTicks,
-            counts: {living: living.length, deceased: deceased.length, filtered: people.length},
+            counts: {living: living.length, deceased: 0, deaths: deaths, filtered: people.length},
             people: people
         };
     }
@@ -8578,8 +9003,7 @@
     function getPersonHistory(humanId, options) {
         if (manager.lastIndexTick < 0 && typeof currentPixels !== "undefined") rebuildIndexes(true);
         const actor = findLivingActor(humanId);
-        const indexed = manager.deceasedByHumanId.get(Number(humanId));
-        const data = actor ? ensurePersonActivity(actor, true) : (indexed && indexed.entry.pa);
+        const data = actor ? ensurePersonActivity(actor, true) : null;
         if (!data || !Array.isArray(data.h)) return {entries: [], hasMore: false, nextCursor: null, totalRetained: 0};
         const opts = options || {};
         const limit = Math.max(1, Math.min(C.MAX_PERSON_ACTIVITY, Math.floor(safeNumber(Number(opts.limit), C.PEOPLE_HISTORY_PAGE_SIZE))));
@@ -8587,8 +9011,7 @@
         let records = data.h.slice().sort((a, b) => activityRecordSequence(b) - activityRecordSequence(a));
         if (Number.isFinite(before)) records = records.filter((record) => activityRecordSequence(record) < before);
         const page = records.slice(0, limit);
-        const profile = actor || indexed && {birthTick: indexed.entry.bt, role: indexed.entry.r, task: "dead"};
-        const entries = page.map((record) => expandActivityRecord(record, profile, false)).filter(Boolean);
+        const entries = page.map((record) => expandActivityRecord(record, actor, false)).filter(Boolean);
         const hasMore = records.length > page.length;
         return {entries: entries, hasMore: hasMore, nextCursor: hasMore && entries.length ? entries[entries.length - 1].sequence : null, totalRetained: data.h.length};
     }
@@ -8633,12 +9056,14 @@
             population: faction.population,
             adults: faction.adultPopulation,
             housing: faction.housing,
+            deathCount: faction.settlements.reduce((sum, settlement) => sum + Math.max(0, safeNumber(settlement.deathCount, 0)), 0),
             selectedSettlementId: selectedSettlement.settlementId,
-            settlements: faction.settlements.map((settlement) => ({id: settlement.settlementId, x: settlement.x, y: settlement.y, population: safeNumber(settlement.population, 0), housing: safeNumber(settlement.housing, 4), active: settlement.townCenterActive !== false, stage: settlement.stage || "camp"})),
+            settlements: faction.settlements.map((settlement) => ({id: settlement.settlementId, x: settlement.x, y: settlement.y, population: safeNumber(settlement.population, 0), housing: safeNumber(settlement.housing, 4), deathCount: Math.max(0, safeNumber(settlement.deathCount, 0)), active: settlement.townCenterActive !== false, stage: settlement.stage || "camp"})),
             eraId: banner.eraId,
             era: era,
             completedInEra: technologies.filter((tech) => tech.eraId === banner.eraId && tech.unlocked).length,
             requiredToAdvance: safeNumber(era && era.requiredTechsToAdvance, C.RESEARCH_ERA_UNLOCK_COUNT),
+            advancement: eraAdvancementState(faction, banner),
             knowledge: research.knowledge,
             knowledgeGain: research.lastKnowledgeGain,
             totalKnowledgeGenerated: research.totalKnowledgeGenerated,
@@ -8698,10 +9123,8 @@
         if (!banner) return false;
         const research = ensureResearchState(banner);
         if (techId === null || techId === undefined || techId === "") {
-            captureTimelineBoundary("before-research-focus");
             delete research.focusTechId;
             research.priorityQueue = [];
-            captureTimelineBoundary("after-research-focus");
             return true;
         }
         const tech = manager.technologies.get(String(techId));
@@ -8728,25 +9151,21 @@
         if (!banner || !tech) return false;
         const research = ensureResearchState(banner);
         if (research.unlocked[tech.id]) return state === "researched";
-        captureTimelineBoundary("before-technology-state");
         if (state === "researched") {
             research.forcedUnlocked[tech.id] = true;
             const unlocked = unlockTechnology(faction, banner, tech);
             if (unlocked) maybeAdvanceEra(faction, banner);
-            if (unlocked) captureTimelineBoundary("after-technology-state");
             return unlocked;
         }
         if (state === "focused") {
             enqueueTechnologyWithPrerequisites(research, tech, safeNumber(tech.eraIndex, eraIndexFor(banner)));
             research.focusTechId = research.priorityQueue[0] || tech.id;
             research.focusDomain = tech.domain;
-            captureTimelineBoundary("after-technology-state");
             return true;
         }
         if (state === "unresearched") {
             research.priorityQueue = research.priorityQueue.filter((id) => id !== tech.id);
             if (research.focusTechId === tech.id) research.focusTechId = research.priorityQueue[0];
-            captureTimelineBoundary("after-technology-state");
             return true;
         }
         return false;
@@ -8759,12 +9178,10 @@
         const research = ensureResearchState(banner);
         const oldIndex = research.priorityQueue.indexOf(String(techId));
         if (oldIndex < 0) return false;
-        captureTimelineBoundary("before-research-priority");
         const id = research.priorityQueue.splice(oldIndex, 1)[0];
         const index = Math.max(0, Math.min(research.priorityQueue.length, Math.floor(safeNumber(Number(newIndex), 0))));
         research.priorityQueue.splice(index, 0, id);
         research.focusTechId = research.priorityQueue[0];
-        captureTimelineBoundary("after-research-priority");
         return true;
     }
 
@@ -8772,7 +9189,6 @@
         const faction = manager.factionById.get(Number(factionId));
         const settlement = faction && faction.settlements.find((candidate) => candidate.settlementId === Number(settlementId));
         if (!settlement || !patch || typeof patch !== "object") return false;
-        captureTimelineBoundary("before-resource-edit");
         const stock = ensureStock(settlement);
         STOCK_KEYS.forEach((key) => {
             if (!Object.prototype.hasOwnProperty.call(patch, key)) return;
@@ -8796,7 +9212,6 @@
         ensureStock(settlement);
         reconcileFactionEquipment(faction);
         logSettlementEvent(settlement, "resource_edit", "玩家强制修改资源库存", {patch: JSON.parse(JSON.stringify(patch))});
-        captureTimelineBoundary("after-resource-edit");
         return true;
     }
 
@@ -8884,6 +9299,8 @@ function setMapOverlay(name, value) {
         if (!initial) return;
         if (!initial.settlements.some((settlement) => settlement.id === selectedCivilizationSettlementId)) selectedCivilizationSettlementId = initial.settlements[0].id;
         const snapshot = getFactionSnapshot(selectedCivilizationFactionId, selectedCivilizationSettlementId);
+        const factionSwatch = document.getElementById("civilizationFactionSwatch");
+        if (factionSwatch) factionSwatch.style.backgroundColor = snapshot.color;
         const settlementSelector = document.getElementById("civilizationSettlementSelect");
         if (settlementSelector) {
             settlementSelector.textContent = "";
@@ -8934,6 +9351,22 @@ function setMapOverlay(name, value) {
             civilizationText("ui.knowledge", "Knowledge", "知识储备") + " " + snapshot.knowledge.toFixed(1) + " (＋" + snapshot.knowledgeGain.toFixed(1) + ", Σ" + snapshot.totalKnowledgeGenerated.toFixed(1) + ") · " +
             civilizationText("ui.stock", "Stock F/W/S", "库存 食/木/石") + " " + Math.floor(snapshot.stock.food) + "/" + Math.floor(snapshot.stock.wood) + "/" + Math.floor(snapshot.stock.stone);
         content.appendChild(summary);
+        if (!snapshot.advancement.finalEra) {
+            const advancement = document.createElement("div");
+            advancement.className = "civ-advancement" + (snapshot.advancement.canAdvance ? " ready" : " blocked");
+            const costText = Object.keys(snapshot.advancement.cost).map((resource) =>
+                localizedResourceName(resource) + " " + Math.floor(snapshot.advancement.current[resource] || 0) + "/" + snapshot.advancement.cost[resource]
+            ).join(" · ");
+            const armorText = snapshot.advancement.armorTarget === "none"
+                ? civilizationText("advance.armorNone", "Armor not required", "防具无需")
+                : civilizationText("advance.armor", "Armor", "防具") + " " + snapshot.advancement.armorReady + "/" + snapshot.advancement.soldiers;
+            advancement.textContent = civilizationText("advance.conditions", "Era advancement", "时代升级") + " · " +
+                civilizationText("advance.technology", "Technology", "科技") + " " + snapshot.advancement.completed + "/" + snapshot.advancement.required + " · " +
+                civilizationText("advance.soldiers", "Soldiers", "士兵") + " " + snapshot.advancement.soldiers + "/" + snapshot.advancement.minimumSoldiers + " · " +
+                civilizationText("advance.weapons", "Weapons", "武器") + " " + snapshot.advancement.weaponsReady + "/" + snapshot.advancement.soldiers + " · " +
+                armorText + " · " + costText;
+            content.appendChild(advancement);
+        }
         if (snapshot.researchBlocker) {
             const blocker = document.createElement("div");
             blocker.className = "civ-summary";
@@ -9004,6 +9437,13 @@ function setMapOverlay(name, value) {
                         const conditions = document.createElement("small");
                         conditions.textContent = entry.conditionStates.map(conditionDescription).join(" · ");
                         card.appendChild(conditions);
+                    }
+                    const yieldEffects = technologyYieldEffectDescriptions(entry.source);
+                    if (yieldEffects.length) {
+                        const effects = document.createElement("small");
+                        effects.className = "civ-tech-effects";
+                        effects.textContent = civilizationText("tech.effects", "Effects: ", "效果：") + yieldEffects.join(isChineseUi() ? "、" : ", ");
+                        card.appendChild(effects);
                     }
                     if (!entry.unlocked) {
                         const controls = document.createElement("span");
@@ -9098,16 +9538,176 @@ function setMapOverlay(name, value) {
         }
     }
 
+    function makeFloatingPanelDraggable(panel, handle) {
+        if (root && typeof root.registerFloatingWindow === "function") {
+            root.registerFloatingWindow(panel, handle);
+            return;
+        }
+        if (!panel || !handle || panel.dataset.civDraggable === "true") return;
+        panel.dataset.civDraggable = "true";
+        handle.classList.add("civ-drag-handle");
+        let drag = null;
+        handle.addEventListener("pointerdown", function (event) {
+            if (root.innerWidth <= 700 || event.button !== 0 || event.target.closest("button,input,select,a")) return;
+            const rect = panel.getBoundingClientRect();
+            drag = {pointerId: event.pointerId, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top, width: rect.width, height: rect.height};
+            panel.style.position = "fixed";
+            panel.style.transform = "none";
+            panel.style.left = rect.left + "px";
+            panel.style.top = rect.top + "px";
+            panel.style.right = "auto";
+            panel.style.bottom = "auto";
+            panel.style.width = rect.width + "px";
+            panel.style.height = rect.height + "px";
+            handle.setPointerCapture(event.pointerId);
+            event.preventDefault();
+        });
+        handle.addEventListener("pointermove", function (event) {
+            if (!drag || drag.pointerId !== event.pointerId) return;
+            const left = Math.max(0, Math.min(root.innerWidth - drag.width, event.clientX - drag.offsetX));
+            const top = Math.max(0, Math.min(root.innerHeight - drag.height, event.clientY - drag.offsetY));
+            panel.style.left = left + "px";
+            panel.style.top = top + "px";
+        });
+        const finish = function (event) {
+            if (!drag || event.pointerId !== drag.pointerId) return;
+            drag = null;
+        };
+        handle.addEventListener("pointerup", finish);
+        handle.addEventListener("pointercancel", finish);
+    }
+
+    const CIVILIZATION_TUTORIAL_STEPS = [
+        {title: ["Choose a faction color", "选择阵营颜色"], body: ["Select Civilized Human, then choose a color. Every human placed with this color belongs to the same faction.", "选择文明人，再选择阵营颜色。以后用同一颜色放置的人会加入同一阵营。"], targets: ["elementButton-civilized_human", "factionColorPalette"]},
+        {title: ["Found a group", "建立人群"], body: ["Place two civilized humans of the same color within 12 cells of each other.", "在彼此 12 格以内放置两个同色文明人。"], targets: ["game"]},
+        {title: ["Wait for the town center", "等待城镇中心"], body: ["Keep the pair together for 60 ticks. You can use the speed button while they establish a settlement.", "让两人共同活动 60 tick，等待聚落形成；可以使用加速按钮。"], targets: ["speedButton"]},
+        {title: ["Inspect the civilization", "查看文明发展"], body: ["Open Civilization to inspect resources, technologies, logs and the faction color.", "打开文明发展面板，查看资源、科技、日志和阵营色块。"], targets: ["civilizationButton"]},
+        {title: ["Equip the soldiers", "配给士兵武器"], body: ["Collect the required materials and unlock military technologies. Weapons and armor are issued before any era upgrade.", "采集材料并解锁军事科技。文明会先完成武器和防具配给，再考虑升级时代。"], targets: ["civilizationButton"]},
+        {title: ["Advance the era", "升级时代"], body: ["Research more than 70% of the current tree, complete the army equipment target and accumulate every listed upgrade resource.", "研发当前时代超过 70% 的科技，完成军备目标并储备面板列出的全部升本资源。"], targets: ["civilizationButton"]},
+        {title: ["Grow a sustainable forest", "培育可持续森林"], body: ["Let a forester plant saplings. New trees become harvestable after 20 seconds at 1x speed and at least one woody cell has grown.", "让林务员种下树苗。新树在 1 倍速累计生长 20 秒且至少长出一格木质部分后即可砍伐。"], targets: ["game"]}
+    ];
+    let tutorialRefreshTimer = null;
+
+    function tutorialStepComplete(stepIndex) {
+        const factions = Array.from(manager.factionById.values());
+        if (stepIndex === 0) return typeof currentElement === "string" && currentElement === "civilized_human" && typeof currentColorMap !== "undefined" && !!currentColorMap.civilized_human;
+        if (stepIndex === 1) return factions.some((faction) => faction.adults.length >= 2);
+        if (stepIndex === 2) return manager.settlements.size > 0;
+        if (stepIndex === 3) return typeof showingMenu !== "undefined" && showingMenu === "civilization";
+        if (stepIndex === 4) return factions.some((faction) => faction.adults.some((actor) => actorIsSoldier(actor) && canonicalWeaponId(actor.weapon) !== "fists"));
+        if (stepIndex === 5) return factions.some((faction) => eraIndexFor(faction) > 0);
+        if (stepIndex === 6) {
+            const planted = factions.some((faction) => faction.settlements.some((banner) => safeNumber(ensureResearchState(banner).milestones.treesPlanted, 0) > 0));
+            const mature = Array.from(manager.treeById.values()).some(treeIsHarvestable);
+            return planted && mature;
+        }
+        return false;
+    }
+
+    function saveTutorialSettings() {
+        if (typeof localStorage !== "undefined" && typeof settings !== "undefined") localStorage.setItem("settings", JSON.stringify(settings));
+    }
+
+    function clearTutorialHighlights() {
+        if (typeof document === "undefined") return;
+        document.querySelectorAll(".civ-tutorial-highlight").forEach((element) => element.classList.remove("civ-tutorial-highlight"));
+    }
+
+    function refreshTutorialUi() {
+        if (typeof document === "undefined") return;
+        const panel = document.getElementById("civilizationTutorial");
+        if (!panel || panel.style.display === "none") return;
+        let stepIndex = Math.max(0, Math.min(CIVILIZATION_TUTORIAL_STEPS.length - 1, Math.floor(safeNumber(settings.humanSocietyTutorialStep, 0))));
+        while (stepIndex < CIVILIZATION_TUTORIAL_STEPS.length && tutorialStepComplete(stepIndex)) stepIndex++;
+        if (stepIndex >= CIVILIZATION_TUTORIAL_STEPS.length) {
+            settings.humanSocietyTutorialComplete = true;
+            settings.humanSocietyTutorialStep = CIVILIZATION_TUTORIAL_STEPS.length;
+            saveTutorialSettings();
+            if (typeof closeMenu === "function") closeMenu("tutorial");
+            else panel.style.display = "none";
+            clearTutorialHighlights();
+            return;
+        }
+        settings.humanSocietyTutorialStep = stepIndex;
+        const step = CIVILIZATION_TUTORIAL_STEPS[stepIndex];
+        document.getElementById("civilizationTutorialProgress").textContent = (stepIndex + 1) + "/" + CIVILIZATION_TUTORIAL_STEPS.length;
+        document.getElementById("civilizationTutorialTitle").textContent = civilizationText("tutorial.title." + stepIndex, step.title[0], step.title[1]);
+        document.getElementById("civilizationTutorialBody").textContent = civilizationText("tutorial.body." + stepIndex, step.body[0], step.body[1]);
+        clearTutorialHighlights();
+        step.targets.forEach((id) => { const target = document.getElementById(id); if (target) target.classList.add("civ-tutorial-highlight"); });
+        saveTutorialSettings();
+    }
+
+    function showCivilizationTutorial(force) {
+        if (typeof document === "undefined") return false;
+        installCivilizationTutorial();
+        if (!force && settings.humanSocietyTutorialComplete) return false;
+        if (!force && typeof settings !== "undefined" && settings.elementPaletteMode === "laboratory") return false;
+        const panel = document.getElementById("civilizationTutorial");
+        if (typeof openTopLevelWindow === "function") openTopLevelWindow("tutorial", panel, "flex");
+        else panel.style.display = "flex";
+        refreshTutorialUi();
+        if (tutorialRefreshTimer === null && typeof root.setInterval === "function") tutorialRefreshTimer = root.setInterval(refreshTutorialUi, 500);
+        return true;
+    }
+
+    function closeCivilizationTutorial() {
+        const panel = typeof document !== "undefined" && document.getElementById("civilizationTutorial");
+        if (panel) {
+            if (typeof closeMenu === "function") closeMenu("tutorial");
+            else panel.style.display = "none";
+        }
+        clearTutorialHighlights();
+    }
+
+    function skipCivilizationTutorial() {
+        settings.humanSocietyTutorialComplete = true;
+        settings.humanSocietyTutorialStep = CIVILIZATION_TUTORIAL_STEPS.length;
+        saveTutorialSettings();
+        closeCivilizationTutorial();
+    }
+
+    function restartCivilizationTutorial() {
+        settings.humanSocietyTutorialComplete = false;
+        settings.humanSocietyTutorialStep = 0;
+        saveTutorialSettings();
+        return showCivilizationTutorial(true);
+    }
+
+    function installCivilizationTutorial() {
+        if (typeof document === "undefined" || document.getElementById("civilizationTutorial")) return;
+        const style = document.createElement("style");
+        style.textContent = ".civ-drag-handle{cursor:move;touch-action:none}.civ-tutorial-highlight{outline:3px solid #ffd45c!important;outline-offset:2px!important}#civilizationTutorial{position:fixed;z-index:100002;left:16px;bottom:16px;width:min(360px,calc(100vw - 32px));display:none;flex-direction:column;border:2px solid #777;background:#161616;color:#eee;box-shadow:0 8px 28px #000c;font:13px/1.45 Arial,sans-serif}#civilizationTutorialHeader{display:flex;align-items:center;gap:8px;padding:8px;background:#292929}#civilizationTutorialHeader strong{min-width:0;flex:1;font-size:14px}#civilizationTutorialHeader button{width:28px;height:28px;border:1px solid #777;border-radius:3px}#civilizationTutorialBody{min-height:54px;padding:10px;overflow-wrap:anywhere}#civilizationTutorialActions{display:flex;justify-content:space-between;gap:8px;padding:8px;border-top:1px solid #444}#civilizationTutorialActions button{padding:5px 9px;border:1px solid #777;border-radius:3px;background:#252525}@media(max-width:700px){#civilizationTutorial{left:8px;right:8px;bottom:8px;width:auto}}";
+        document.head.appendChild(style);
+        const panel = document.createElement("aside");
+        panel.id = "civilizationTutorial";
+        const header = document.createElement("header");
+        header.id = "civilizationTutorialHeader";
+        const progress = document.createElement("span"); progress.id = "civilizationTutorialProgress";
+        const title = document.createElement("strong"); title.id = "civilizationTutorialTitle";
+        const close = document.createElement("button"); close.type = "button"; close.textContent = "x"; close.title = civilizationText("tutorial.close", "Close", "关闭"); close.addEventListener("click", closeCivilizationTutorial);
+        header.appendChild(progress); header.appendChild(title); header.appendChild(close); panel.appendChild(header);
+        const body = document.createElement("div"); body.id = "civilizationTutorialBody"; panel.appendChild(body);
+        const actions = document.createElement("div"); actions.id = "civilizationTutorialActions";
+        const back = document.createElement("button"); back.type = "button"; back.textContent = civilizationText("tutorial.back", "Back", "上一步"); back.addEventListener("click", function () { settings.humanSocietyTutorialStep = Math.max(0, safeNumber(settings.humanSocietyTutorialStep, 0) - 1); refreshTutorialUi(); });
+        const skip = document.createElement("button"); skip.type = "button"; skip.textContent = civilizationText("tutorial.skip", "Skip tutorial", "跳过教程"); skip.addEventListener("click", skipCivilizationTutorial);
+        actions.appendChild(back); actions.appendChild(skip); panel.appendChild(actions);
+        document.body.appendChild(panel);
+        makeFloatingPanelDraggable(panel, header);
+        const controls = document.getElementById("toolControls");
+        if (controls) {
+            const button = document.createElement("button"); button.id = "civilizationTutorialButton"; button.className = "controlButton"; button.textContent = civilizationText("tutorial.button", "Guide", "教程"); button.title = civilizationText("tutorial.buttonTitle", "Open the civilization guide", "打开文明发展教程"); button.addEventListener("click", function () { showCivilizationTutorial(true); });
+            controls.insertBefore(button, document.getElementById("civilizationButton") || document.getElementById("settingsButton") || null);
+        }
+    }
+
     function openCivilizationPanel(factionId) {
         if (typeof document === "undefined") return false;
         if (Number.isFinite(Number(factionId))) selectedCivilizationFactionId = Number(factionId);
-        if (typeof closeMenu === "function" && typeof showingMenu !== "undefined" && showingMenu && showingMenu !== "civilization") closeMenu("civilization");
         const parent = document.getElementById("civilizationParent");
         if (!parent) return false;
-        parent.style.display = "block";
-        if (typeof showingMenu !== "undefined") showingMenu = "civilization";
-        if (typeof paused !== "undefined") paused = true;
-        if (typeof checkPause === "function") checkPause();
+        if (typeof openTopLevelWindow === "function") openTopLevelWindow("civilization", parent);
+        else parent.style.display = "block";
         refreshCivilizationUi();
         return true;
     }
@@ -9118,7 +9718,7 @@ function setMapOverlay(name, value) {
         style.id = "civilizationUiStyle";
         style.textContent = [
             "#civilizationParent{box-sizing:border-box;width:min(94vw,860px);max-width:860px;height:min(82vh,720px);max-height:720px}",
-            ".civ-menu{box-sizing:border-box;width:100%!important;max-width:none!important}",
+            ".civ-menu{box-sizing:border-box;width:100%!important;max-width:none!important;overflow-y:auto}",
             "#civilizationContent,.civ-tech-card,.civ-resource-editor label{min-width:0}",
             ".civ-toolbar,.civ-tabs{display:flex;flex-wrap:wrap;gap:.55em;align-items:center;justify-content:center;margin:.7em 0}",
             ".civ-tabs button.active{outline:2px solid #63a9de}",
@@ -9128,6 +9728,9 @@ function setMapOverlay(name, value) {
             ".civ-era-chip.done{opacity:.8;border-color:#78a878}",
             ".civ-era-chip.current{opacity:1;border-color:#e5c15c;color:#ffe08a}",
             ".civ-summary{margin:.5em;text-align:center;overflow-wrap:anywhere}",
+            ".civ-advancement{margin:.55em;padding:.5em;border:1px solid #8c6b3d;background:#2b2419;text-align:center;overflow-wrap:anywhere}",
+            ".civ-advancement.ready{border-color:#65a66e;background:#1d3022}",
+            ".civ-faction-swatch{display:inline-block;width:16px;height:16px;flex:0 0 16px;border:1px solid #fff;border-radius:2px}",
             ".civ-materials{font-size:.82em;opacity:.85}",
             ".civ-tech-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.55em;padding:.5em}",
             ".civ-tech-card{display:flex;min-width:0;flex-direction:column;gap:.3em;text-align:left;padding:.65em;border:1px solid #777;border-radius:.45em;background:#252525;color:#eee;overflow-wrap:anywhere}",
@@ -9156,12 +9759,13 @@ function setMapOverlay(name, value) {
         const close = document.createElement("button");
         close.className = "XButton";
         close.textContent = "-";
-        close.addEventListener("click", function () { if (typeof closeMenu === "function") closeMenu(); });
+        close.addEventListener("click", function () { if (typeof closeMenu === "function") closeMenu("civilization"); else parent.style.display = "none"; });
         menu.appendChild(close);
         const title = document.createElement("span");
         title.className = "menuTitle";
         title.textContent = civilizationText("ui.title", "Civilization", "文明发展");
         menu.appendChild(title);
+        makeFloatingPanelDraggable(parent, title);
         const toolbar = document.createElement("div");
         toolbar.className = "civ-toolbar";
         const selectLabel = document.createElement("span");
@@ -9170,6 +9774,11 @@ function setMapOverlay(name, value) {
         const selector = document.createElement("select");
         selector.id = "civilizationFactionSelect";
         selector.addEventListener("change", function () { selectedCivilizationFactionId = Number(selector.value); selectedCivilizationSettlementId = null; refreshCivilizationUi(); });
+        const factionSwatch = document.createElement("span");
+        factionSwatch.id = "civilizationFactionSwatch";
+        factionSwatch.className = "civ-faction-swatch";
+        factionSwatch.setAttribute("aria-label", civilizationText("ui.factionColor", "Faction color", "阵营颜色"));
+        toolbar.appendChild(factionSwatch);
         toolbar.appendChild(selector);
         const settlementSelector = document.createElement("select");
         settlementSelector.id = "civilizationSettlementSelect";
@@ -9190,7 +9799,7 @@ function setMapOverlay(name, value) {
             button.textContent = civilizationText("ui.button", "Civilization", "文明");
             button.title = civilizationText("ui.buttonTitle", "Open civilization and technology overview", "打开文明与科技总览");
             button.addEventListener("click", function () {
-                if (typeof showingMenu !== "undefined" && showingMenu === "civilization" && typeof closeMenu === "function") closeMenu();
+                if (typeof isTopLevelWindowOpen === "function" && isTopLevelWindowOpen("civilization") && typeof closeMenu === "function") closeMenu("civilization");
                 else openCivilizationPanel(selectedCivilizationFactionId);
             });
             const settingsButton = document.getElementById("settingsButton");
@@ -9241,7 +9850,6 @@ function setMapOverlay(name, value) {
         const factionValue = peopleFilterValue("peopleFactionFilter");
         const settlementValue = peopleFilterValue("peopleSettlementFilter");
         return {
-            status: selectedPeopleStatus,
             query: peopleFilterValue("peopleSearchInput"),
             factionId: factionValue === "" ? null : Number(factionValue),
             settlementId: settlementValue === "" ? null : Number(settlementValue),
@@ -9413,7 +10021,7 @@ function setMapOverlay(name, value) {
         name.textContent = "H" + person.humanId;
         const status = document.createElement("span");
         status.className = "people-status";
-        status.textContent = person.status === "living" ? civilizationText("people.living", "Living", "现存") : civilizationText("people.deceased", "Deceased", "逝者");
+        status.textContent = civilizationText("people.living", "Living", "现存");
         title.appendChild(swatch);
         title.appendChild(name);
         title.appendChild(status);
@@ -9424,7 +10032,6 @@ function setMapOverlay(name, value) {
         locate.textContent = "⌖";
         locate.title = civilizationText("people.locate", "Locate on map", "在地图中定位");
         locate.setAttribute("aria-label", locate.title);
-        locate.disabled = person.status !== "living";
         locate.addEventListener("click", function () { focusPerson(person.humanId); });
         header.appendChild(locate);
         const command = document.createElement("button");
@@ -9433,7 +10040,7 @@ function setMapOverlay(name, value) {
         command.textContent = commandPersonId === person.humanId ? "■" : "➤";
         command.title = commandPersonId === person.humanId ? civilizationText("people.commandCancel", "Cancel command mode", "取消指挥") : civilizationText("people.command", "Command this person", "指挥此人");
         command.setAttribute("aria-label", command.title);
-        command.disabled = person.status !== "living" || person.isChild;
+        command.disabled = person.isChild;
         command.addEventListener("click", function () {
             if (commandPersonId === person.humanId) cancelPersonCommand();
             else setCommandPerson(person.humanId);
@@ -9456,30 +10063,22 @@ function setMapOverlay(name, value) {
         addPersonProfileStat(profile, civilizationText("people.carry", "Carrying", "携带"), personCarryLabel(person));
         detail.appendChild(profile);
 
-        if (person.status === "deceased") {
-            const death = document.createElement("div");
-            death.className = "people-death-summary";
-            death.textContent = (person.diedAt || "") + (person.deathCause ? " · " + localizedDeathCause(person.deathCause) : "");
-            detail.appendChild(death);
+        const current = document.createElement("section");
+        current.className = "people-current";
+        const heading = document.createElement("h3");
+        heading.textContent = civilizationText("people.current", "Current activity", "当前活动");
+        current.appendChild(heading);
+        const description = document.createElement("div");
+        description.className = "people-current-description";
+        description.textContent = person.currentActivity ? person.currentActivity.description : localizedPersonTask(person.task);
+        current.appendChild(description);
+        if (person.currentActivity && person.currentActivity.startedAt) {
+            const started = document.createElement("small");
+            started.textContent = person.currentActivity.startedAt + " · " + civilizationText("people.duration", "Duration ", "持续 ") + person.currentActivity.durationTicks + civilizationText("people.ticks", " ticks", " 刻");
+            current.appendChild(started);
+            renderActivityProgress(current, person.currentActivity.progress);
         }
-        else {
-            const current = document.createElement("section");
-            current.className = "people-current";
-            const heading = document.createElement("h3");
-            heading.textContent = civilizationText("people.current", "Current activity", "当前活动");
-            current.appendChild(heading);
-            const description = document.createElement("div");
-            description.className = "people-current-description";
-            description.textContent = person.currentActivity ? person.currentActivity.description : localizedPersonTask(person.task);
-            current.appendChild(description);
-            if (person.currentActivity && person.currentActivity.startedAt) {
-                const started = document.createElement("small");
-                started.textContent = person.currentActivity.startedAt + " · " + civilizationText("people.duration", "Duration ", "持续 ") + person.currentActivity.durationTicks + civilizationText("people.ticks", " ticks", " 刻");
-                current.appendChild(started);
-                renderActivityProgress(current, person.currentActivity.progress);
-            }
-            detail.appendChild(current);
-        }
+        detail.appendChild(current);
 
         const historyHeader = document.createElement("div");
         historyHeader.className = "people-history-header";
@@ -9548,22 +10147,13 @@ function setMapOverlay(name, value) {
         const panel = document.getElementById("peopleObserverPanel");
         if (!panel || !peoplePanelOpen) return;
         syncPeopleObserverScrollSpace();
-        const menuOpen = typeof showingMenu !== "undefined" && !!showingMenu;
-        panel.classList.toggle("is-obscured", menuOpen);
-        if (menuOpen) return;
+        panel.classList.remove("is-obscured");
 
-        const fullSnapshot = getPeopleSnapshot({status: selectedPeopleStatus});
+        const fullSnapshot = getPeopleSnapshot();
         refreshPeopleFilterOptions(fullSnapshot.people);
         const snapshot = getPeopleSnapshot(readPeopleFilters());
         const counts = document.getElementById("peopleCounts");
-        if (counts) counts.textContent = civilizationText("people.living", "Living", "现存") + " " + snapshot.counts.living + " · " + civilizationText("people.deceased", "Deceased", "逝者") + " " + snapshot.counts.deceased + " · " + civilizationText("people.visible", "Shown", "显示") + " " + snapshot.counts.filtered;
-        ["living", "deceased"].forEach((status) => {
-            const button = document.getElementById(status === "living" ? "peopleStatusLiving" : "peopleStatusDeceased");
-            if (!button) return;
-            const active = selectedPeopleStatus === status;
-            button.classList.toggle("active", active);
-            button.setAttribute("aria-pressed", String(active));
-        });
+        if (counts) counts.textContent = civilizationText("people.living", "Living", "现存") + " " + snapshot.counts.living + " · " + civilizationText("people.totalDeaths", "Deaths", "累计死亡") + " " + snapshot.counts.deaths + " · " + civilizationText("people.visible", "Shown", "显示") + " " + snapshot.counts.filtered;
 
         const selectedVisible = snapshot.people.some((person) => person.humanId === selectedPersonId);
         if (!selectedVisible) {
@@ -9632,10 +10222,6 @@ function setMapOverlay(name, value) {
 
     function commandResult(accepted, action, reason, target) {
         return {accepted: !!accepted, action: action || null, reason: reason || null, target: target || null};
-    }
-
-    function captureTimelineBoundary(reason) {
-        return typeof captureWorldTimelineSnapshot === "function" ? captureWorldTimelineSnapshot(reason) : false;
     }
 
     function syncInteractionModeUi() {
@@ -9782,12 +10368,10 @@ function setMapOverlay(name, value) {
     }
 
     function commitPlayerOrder(actor, order, taskTarget) {
-        captureTimelineBoundary("before-person-command");
         cancelActorTaskState(actor, "player_command_replaced");
         actor.playerOrder = order;
         if (taskTarget) setTask(actor, order.type === "attack" ? "combat" : order.type, taskTarget);
         else applyPlayerOrder(actor);
-        captureTimelineBoundary("after-person-command");
         return true;
     }
 
@@ -9978,7 +10562,6 @@ function setMapOverlay(name, value) {
     }
 
     function resetPeopleObserverState() {
-        selectedPeopleStatus = "living";
         selectedPersonId = null;
         focusedPersonId = null;
         peopleHistoryLimit = C.PEOPLE_HISTORY_PAGE_SIZE;
@@ -9994,7 +10577,8 @@ function setMapOverlay(name, value) {
         if (typeof document !== "undefined") {
             const panel = document.getElementById("peopleObserverPanel");
             if (panel) {
-                panel.style.display = "none";
+                if (typeof closeMenu === "function") closeMenu("people");
+                else panel.style.display = "none";
                 panel.setAttribute("aria-hidden", "true");
             }
             const button = document.getElementById("peopleObserverButton");
@@ -10011,14 +10595,14 @@ function setMapOverlay(name, value) {
             const person = getPersonSnapshot(humanId);
             if (person) {
                 selectedPersonId = person.humanId;
-                selectedPeopleStatus = person.status;
                 peopleHistoryLimit = C.PEOPLE_HISTORY_PAGE_SIZE;
             }
         }
         const panel = document.getElementById("peopleObserverPanel");
         if (!panel) return false;
         peoplePanelOpen = true;
-        panel.style.display = "flex";
+        if (typeof openTopLevelWindow === "function") openTopLevelWindow("people", panel, "flex");
+        else panel.style.display = "flex";
         panel.setAttribute("aria-hidden", "false");
         const button = document.getElementById("peopleObserverButton");
         if (button) button.setAttribute("on", "true");
@@ -10063,23 +10647,7 @@ function setMapOverlay(name, value) {
         header.appendChild(counts);
         header.appendChild(close);
         panel.appendChild(header);
-
-        const tabs = document.createElement("div");
-        tabs.className = "people-status-tabs";
-        [["living", "peopleStatusLiving", civilizationText("people.living", "Living", "现存")], ["deceased", "peopleStatusDeceased", civilizationText("people.deceased", "Deceased", "逝者")]].forEach((definition) => {
-            const button = document.createElement("button");
-            button.type = "button";
-            button.id = definition[1];
-            button.textContent = definition[2];
-            button.addEventListener("click", function () {
-                selectedPeopleStatus = definition[0];
-                selectedPersonId = null;
-                peopleHistoryLimit = C.PEOPLE_HISTORY_PAGE_SIZE;
-                refreshPeopleUi();
-            });
-            tabs.appendChild(button);
-        });
-        panel.appendChild(tabs);
+        makeFloatingPanelDraggable(panel, header);
 
         const filters = document.createElement("div");
         filters.className = "people-filters";
@@ -10167,19 +10735,25 @@ function setMapOverlay(name, value) {
 
     function societyTick() {
         const started = nowMs();
+        const civilizationTick = pixelTicks % C.CIVILIZATION_INTERVAL === 0;
         if (manager.pendingResourceDrops.length) {
             const drops = manager.pendingResourceDrops.splice(0, Math.min(8, manager.pendingResourceDrops.length));
             drops.forEach((drop) => queueResourceDrops(drop.kind, drop.element, drop.amount, drop.x, drop.y, drop.metadata));
         }
         if (manager.lastFullRebuild < 0) rebuildIndexes(true);
-        else {
-            processIncrementalAudit(0.75);
-            processDirtyTrees(0.75);
+        else if (civilizationTick) {
+            manager.treeById.forEach((tree) => {
+                if (treeIsHarvestable(tree) && tree.lineage && !manager.resourceNodeByPixel.has(tree.base)) manager.dirtyTreeLineages.add(tree.lineage);
+            });
+        }
+        else if (!civilizationTick) {
+            processIncrementalAudit(safeNumber(C.INDEX_AUDIT_BUDGET_MS, 0.35));
+            processDirtyTrees(safeNumber(C.INDEX_AUDIT_BUDGET_MS, 0.35));
             if (manager.derivedIndexesDirty && (manager.lastDerivedRefreshTick < 0 || pixelTicks - manager.lastDerivedRefreshTick >= C.CIVILIZATION_INTERVAL)) refreshDerivedIndexes();
         }
         applyBuildingGravity();
         resolvePendingAttacks();
-        if (pixelTicks % C.CIVILIZATION_INTERVAL === 0) civilizationStep();
+        if (civilizationTick) civilizationStep();
         const elapsed = nowMs() - started;
         manager.perfTotal += elapsed;
         manager.perfSamples++;
@@ -10232,9 +10806,9 @@ function setMapOverlay(name, value) {
         getPersonCommandState: getPersonCommandState,
         setInteractionMode: setInteractionMode,
         getInteractionMode: getInteractionMode,
-        undoWorld: typeof undoWorld === "function" ? undoWorld : null,
-        redoWorld: typeof redoWorld === "function" ? redoWorld : null,
-        getTimelineState: typeof getTimelineState === "function" ? getTimelineState : null,
+        showTutorial: showCivilizationTutorial,
+        restartTutorial: restartCivilizationTutorial,
+        onPaletteModeChanged: function (mode) { if (mode === "civilization" && !settings.humanSocietyTutorialComplete) showCivilizationTutorial(false); else if (mode === "laboratory") closeCivilizationTutorial(); },
         forceReindex: function () { rebuildIndexes(true); },
         getDebugSnapshot: debugSnapshot
     });
@@ -10257,11 +10831,14 @@ function setMapOverlay(name, value) {
             root.addEventListener("load", installCivilizationUi);
             root.addEventListener("load", installPeopleObserverUi);
             root.addEventListener("load", installPersonCommandInput);
+            root.addEventListener("load", function () { installCivilizationTutorial(); if (typeof root.setTimeout === "function") root.setTimeout(function () { showCivilizationTutorial(false); }, 500); });
         }
         else {
             installCivilizationUi();
             installPeopleObserverUi();
             installPersonCommandInput();
+            installCivilizationTutorial();
+            if (typeof root.setTimeout === "function") root.setTimeout(function () { showCivilizationTutorial(false); }, 500);
         }
     }
 }(typeof globalThis !== "undefined" ? globalThis : window));

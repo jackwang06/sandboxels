@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const TechData = require("../scripts/human_society_tech_data.js");
 
 const ROOT = path.join(__dirname, "..");
 const INDEX_PATH = path.join(ROOT, "index.html");
@@ -226,6 +227,30 @@ test("civilization industry and equipment terminology matches the gameplay rules
     const fallbackBlock = extractConstObject(societySource, "TECH_NAMES_ZH") + extractConstObject(societySource, "BUILDING_NAMES");
     Object.values(expected).forEach((value) => {
         assert.ok(fallbackBlock.includes(`"${value}"`), `fallback labels must include ${value}`);
+    });
+});
+
+test("every civilization technology has a Simplified Chinese name", () => {
+    const simplifiedChinese = readJson(ZH_CN_PATH);
+    const missing = TechData.TECHNOLOGIES.map((technology) => technology.id).filter((techId) => {
+        const value = simplifiedChinese["humanSociety.tech." + techId];
+        return !hasHanText(value);
+    });
+    assert.deepEqual(missing, []);
+    assert.deepEqual({
+        careful_gathering: simplifiedChinese["humanSociety.tech.careful_gathering"],
+        stone_sorting: simplifiedChinese["humanSociety.tech.stone_sorting"],
+        intensive_harvesting: simplifiedChinese["humanSociety.tech.intensive_harvesting"],
+        bronze_tools: simplifiedChinese["humanSociety.tech.bronze_tools"],
+        iron_extraction_tools: simplifiedChinese["humanSociety.tech.iron_extraction_tools"],
+        advanced_extraction: simplifiedChinese["humanSociety.tech.advanced_extraction"]
+    }, {
+        careful_gathering: "精细采集",
+        stone_sorting: "石料筛选",
+        intensive_harvesting: "丰产采收",
+        bronze_tools: "青铜工具",
+        iron_extraction_tools: "铁制采掘工具",
+        advanced_extraction: "高效采掘"
     });
 });
 

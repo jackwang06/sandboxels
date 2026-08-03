@@ -49,8 +49,8 @@
     const MAX_CHRONICLE_EVENTS = 2000;
     const ERA_POPULATION_TARGETS = [6, 8, 12, 16, 20, 24];
     const ERA_ROLE_WEIGHTS = [
-        {food: 2, wood: 2, builder: 1, flex: 1},
-        {food: 2, wood: 2, miner: 2, builder: 1, artisan: 1},
+        {food: 1, wood: 1, miner: 1, builder: 1, forester: 1, military: 1},
+        {food: 2, wood: 1, miner: 2, builder: 1, forester: 1, military: 1},
         {food: 4, wood: 2, miner: 1, builder: 1, forester: 1, artisan: 1, military: 1, flex: 1},
         {food: 4, wood: 2, miner: 3, builder: 2, forester: 1, artisan: 2, scholar: 1, military: 1},
         {food: 5, wood: 2, miner: 4, builder: 2, forester: 1, artisan: 3, scholar: 1, military: 2},
@@ -118,11 +118,12 @@
 
     function buildingSpacingValid(a, b, gap) {
         if (!a || !b) return false;
+        const clearance = Math.max(0, Math.floor(number(gap, 5)));
         const firstX = Math.round(number(a.coreX !== undefined ? a.coreX : a.x, 0));
         const firstY = Math.round(number(a.coreY !== undefined ? a.coreY : a.y, 0));
         const secondX = Math.round(number(b.coreX !== undefined ? b.coreX : b.x, 0));
         const secondY = Math.round(number(b.coreY !== undefined ? b.coreY : b.y, 0));
-        return firstX !== secondX || firstY !== secondY;
+        return Math.abs(firstX - secondX) > clearance || Math.abs(firstY - secondY) > clearance;
     }
 
     function compareClaimOrder(a, b) {

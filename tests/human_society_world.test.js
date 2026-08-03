@@ -9,8 +9,10 @@ test("building sprites preserve aspect ratio around a bottom-middle one-cell cor
     assert.deepEqual(World.buildingSpriteRect(10, 20, 4, 2, 100), {left: 9, right: 12, top: 19.5, bottom: 21, width: 3, height: 1.5, coreX: 10, coreY: 20});
     assert.deepEqual(World.buildingSpriteRect(10, 20, 4, 1, 50), {left: 8.5, right: 12.5, top: 20, bottom: 21, width: 4, height: 1, coreX: 10, coreY: 20});
     assert.equal(World.buildingSpacingValid({x: 10, y: 20}, {x: 10, y: 20}), false);
-    assert.equal(World.buildingSpacingValid({x: 10, y: 20}, {x: 11, y: 20}), true);
-    assert.equal(World.buildingSpacingValid({x: 10, y: 20}, {x: 10, y: 21}), true);
+    assert.equal(World.buildingSpacingValid({x: 10, y: 20}, {x: 15, y: 25}), false);
+    assert.equal(World.buildingSpacingValid({x: 10, y: 20}, {x: 16, y: 25}), true);
+    assert.equal(World.buildingSpacingValid({x: 10, y: 20}, {x: 15, y: 26}), true);
+    assert.equal(World.buildingSpacingValid({x: 10, y: 20}, {x: 13, y: 20}, 2), true, "callers may request a smaller explicit gap");
 });
 
 test("building sprite assets follow the current era and normalize logical building aliases", () => {

@@ -832,12 +832,16 @@ SEEDRISE: function(pixel) {
 		airDensity = settings.airdensity || 1.225; // kg/m^3
 		airTemp = settings.airtemp || 20; // Celsius
 		absoluteZero = settings.abszero || -273.15; // Celsius
-		maxPixelCount = settings.maxpixels || 13861;
+		maxPixelCount = 13861;
+		function defaultMaxPixels() {
+			const worldWidth = typeof width === "number" && Number.isFinite(width) ? width + 1 : 0;
+			const worldHeight = typeof height === "number" && Number.isFinite(height) ? height + 1 : 0;
+			return Math.max(13861,worldWidth*worldHeight*2);
+		}
 		function refreshMaxPixels() {
-			maxPixelCount = settings.maxpixels || 13861;
-			if (settings.limitless) { settings.maxpixels = 0; }
-			else { delete settings.maxpixels; }
-			if (settings.maxpixels === 0) { maxPixelCount = 999999999999; }
+			delete settings.maxpixels;
+			maxPixelCount = settings.limitless ? 999999999999 : defaultMaxPixels();
+			return maxPixelCount;
 		}
 		refreshMaxPixels();
 
@@ -868,11 +872,39 @@ SEEDRISE: function(pixel) {
 		// hardness - chance of resisting damage (0-1)
 		treeIdentitySerial = 0;
 		treeIdentityElements = new Set(["sapling","pinecone","bamboo_plant","wood","tree_branch","evergreen","bamboo","plant","leaves","pine_needles"]);
+		function stableTreeBuildingLayer(identity) {
+			const value = String(identity || "tree");
+			let hash = 2166136261;
+			for (let i = 0; i < value.length; i++) {
+				hash ^= value.charCodeAt(i);
+				hash = Math.imul(hash,16777619);
+			}
+			return (hash >>> 0) % 2 === 0 ? "above" : "below";
+		}
+		function assignNewTreeBuildingLayer(pixel) {
+			if (!pixel) return null;
+			pixel.treeBuildingLayer = Math.random() < 0.5 ? "above" : "below";
+			return pixel.treeBuildingLayer;
+		}
+		function ensureTreeBuildingLayer(pixel) {
+			if (!pixel) return null;
+			if (pixel.treeBuildingLayer === "above" || pixel.treeBuildingLayer === "below") return pixel.treeBuildingLayer;
+			const identity = pixel.treeLineage || (Number.isFinite(pixel.treeId) ? "tree-id-"+pixel.treeId : (Number.isFinite(pixel.civPlantedTreeId) ? "planted-id-"+pixel.civPlantedTreeId : null));
+			if (identity) pixel.treeBuildingLayer = stableTreeBuildingLayer(identity);
+			else assignNewTreeBuildingLayer(pixel);
+			return pixel.treeBuildingLayer;
+		}
 		function ensureTreeIdentity(pixel,species) {
 			if (!pixel) return null;
+			const hadTreeIdentity = !!pixel.treeLineage || Number.isFinite(pixel.treeId) || Number.isFinite(pixel.civPlantedTreeId);
 			if (!pixel.treeLineage) {
 				treeIdentitySerial++;
 				pixel.treeLineage = "tree-" + Date.now().toString(36) + "-" + treeIdentitySerial.toString(36);
+				pixel.treeBornTick = typeof pixelTicks === "number" ? pixelTicks : 0;
+			}
+			if (pixel.treeBuildingLayer !== "above" && pixel.treeBuildingLayer !== "below") {
+				if (hadTreeIdentity) pixel.treeBuildingLayer = stableTreeBuildingLayer(pixel.treeLineage || pixel.treeId || pixel.civPlantedTreeId);
+				else assignNewTreeBuildingLayer(pixel);
 			}
 			if (!pixel.treeSpecies && species) pixel.treeSpecies = species;
 			pixel.naturalVegetation = true;
@@ -883,10 +915,34 @@ SEEDRISE: function(pixel) {
 			ensureTreeIdentity(source,source.treeSpecies);
 			target.treeLineage = source.treeLineage;
 			target.treeSpecies = source.treeSpecies;
+			target.treeBuildingLayer = ensureTreeBuildingLayer(source);
+			if (Number.isFinite(source.treeBornTick)) target.treeBornTick = source.treeBornTick;
 			target.naturalVegetation = true;
 			return target;
 		}
-		elements = {
+		function growCivilizationPlantedSeed(pixel,trunkElement,initializeTrunk) {
+			if (!pixel || !Number.isFinite(pixel.civPlantedTreeId)) return false;
+			const grownSegments = Math.max(0,Math.floor(Number(pixel.civGrowthSegments)||0));
+			if (grownSegments >= 5) return false;
+			if (!Number.isFinite(pixel.civGrowthReadyTick)) pixel.civGrowthReadyTick = pixelTicks + 60;
+			if (pixelTicks < pixel.civGrowthReadyTick || pixel.temp >= 100) return true;
+			pixel.civGrowthReadyTick = pixelTicks + 60;
+			if (!isEmpty(pixel.x,pixel.y-1) || currentPixels.length >= maxPixelCount) return true;
+			const oldX = pixel.x;
+			const oldY = pixel.y;
+			if (!movePixel(pixel,oldX,oldY-1)) return true;
+			const trunk = createPixel(trunkElement,oldX,oldY);
+			if (!trunk) {
+				movePixel(pixel,oldX,oldY);
+				return true;
+			}
+			inheritTreeIdentity(pixel,trunk);
+			trunk.treeId = pixel.civPlantedTreeId;
+			if (typeof initializeTrunk === "function") initializeTrunk(trunk,grownSegments);
+			pixel.civGrowthSegments = grownSegments + 1;
+			return true;
+		}
+			elements = {
 "sand": {
 	color: "#e6d577",
 	behavior: behaviors.POWDER,
@@ -2770,163 +2826,9 @@ SEEDRISE: function(pixel) {
 		}
 	},
 	tool: function() {},
-	category: "edit",
+	category: "tools",
 	maxSize: 1,
 	desc: "Use to measure lengths and angles on the canvas."
-},
-"group": {
-	color: "#75ffef",
-	onMouseDown: function() { editStart() },
-	onMouseUp: function() {
-		let pixels = editingPixels;
-		editStop();
-		if (pixels.length === 0) return;
-
-		let id;
-
-		pixels.forEach(pixel => {
-			if (pixel._r !== undefined) {
-				if (id === undefined) id = pixel._r;
-				else removeFromRelation(pixel);
-			}
-		})
-		if (!id) {
-			id = currentRelations._id;
-			currentRelations._id ++;
-		}
-		
-		pixels.forEach(pixel => {
-			addToRelation(pixel, id);
-		})
-		getRelation(id);
-	},
-	tool: function(pixel) {
-		if (editingPixels.indexOf(pixel) === -1) {
-			editingPixels.push(pixel);
-		}
-	},
-	renderTool: function(ctx) {
-		if (shiftDown || mouseIsDown) return;
-		let pixel = getPixel(mousePos.x, mousePos.y);
-		if (!pixel) return;
-		if (pixel._r === undefined) return;
-		let relation = getRelation(pixel._r);
-		relation.p.forEach((p) => {
-			drawSquare(ctx, mouseColor, p.x, p.y, undefined, 0.5);
-		})
-	},
-	category: "edit",
-	desc: "Use to combine pixels into a single structure."
-},
-"ungroup": {
-	color: "#8a0010",
-	onMouseDown: function() { editStart() },
-	onMouseUp: function() {
-		let pixels = editingPixels;
-		editStop();
-
-		if (pixels.length === 0) return;
-		pixels.forEach(pixel => {
-			removeFromRelation(pixel);
-		})
-	},
-	tool: function(pixel) {
-		if (editingPixels.indexOf(pixel) === -1) {
-			editingPixels.push(pixel);
-		}
-	},
-	renderTool: function(ctx) {
-		if (shiftDown || mouseIsDown) return;
-		let pixel = getPixel(mousePos.x, mousePos.y);
-		if (!pixel) return;
-		if (pixel._r === undefined) return;
-		let relation = getRelation(pixel._r);
-		relation.p.forEach((p) => {
-			drawSquare(ctx, mouseColor, p.x, p.y, undefined, 0.5);
-		})
-	},
-	category: "edit",
-	desc: "Use to remove pixels from a structure."
-},
-"unpaint": {
-	color: ["#ffffff","#000000"],
-	tool: function(pixel) {
-		var r = elements.unpaint.reactions[pixel.element];
-		if (r && r.elem2) {
-			changePixel(pixel,r.elem2)
-		}
-		if (!elements[pixel.element].customColor) {
-			if (elements[pixel.element].colorPattern && settings.textures!==0) {
-				pixel.color = colorPatternPick(pixel);
-			}
-			else {
-				pixel.color = pixelColorPick(pixel)
-			}
-		}
-		if (pixel.painted) delete pixel.painted;
-	},
-	reactions: {
-		"color_sand": { elem2:"sand" },
-		"stained_glass": { elem2:"glass" },
-		"molten_stained_glass": { elem2:"molten_glass" },
-		"rainbow": { elem2:"art" },
-		"static": { elem2:"art" },
-		"border": { elem2:"wall" },
-		"color_smoke": { elem2:"smoke" },
-		"spray_paint": { elem2:"smoke" },
-		"dye": { elem2:"ink" },
-		"paint": { elem2:null }
-	},
-	category: "edit",
-	desc: "Use on pixels to return their original color."
-},
-"uncharge": {
-	color: "#0000ff",
-	tool: function(pixel) {
-		if (pixel.charge) {
-			delete pixel.charge;
-			pixel.chargeCD = 16;
-		}
-		if (pixel.chargeCD && elements[pixel.element].colorOn) {
-			pixel.color = pixelColorPick(pixel);
-		}
-		var r = elements.uncharge.reactions[pixel.element];
-		if (r) {
-			if (r.elem2) { changePixel(pixel,r.elem2) }
-			else { deletePixel(pixel.x,pixel.y) }
-		}
-	},
-	reactions: {
-		"electric": { elem2:null },
-		"lightning": { elem2:null },
-		"proton": { elem2:"neutron" },
-		"shock": { elem2:null }
-	},
-	category: "edit",
-	desc: "Use on pixels to remove electric charge."
-},
-"unburn": {
-	color: "#383645",
-	tool: function(pixel) {
-		if (pixel.burning) {
-			delete pixel.burning;
-			delete pixel.burnStart;
-		}
-		var r = elements.unburn.reactions[pixel.element];
-		if (r) {
-			if (r.elem2) { changePixel(pixel,r.elem2) }
-			else { deletePixel(pixel.x,pixel.y) }
-		}
-	},
-	reactions: {
-		"fire": { elem2:"smoke" },
-		"plasma": { elem2:"smoke" },
-		"ember": { elem2:"ash" },
-		"fw_ember": { elem2:"smoke" },
-		"torch": { elem2:"wood" }
-	},
-	category: "edit",
-	desc: "Use on pixels to stop burning."
 },
 "smash": {
 	color: ["#666666","#888888","#666666"],
@@ -6295,6 +6197,21 @@ SEEDRISE: function(pixel) {
 	color: "#3e9c3e",
 	tick: function(pixel) {
 		ensureTreeIdentity(pixel,"sapling");
+		if (Number.isFinite(pixel.civPlantedTreeId) && !pixel.wc) {
+			pixel.wc="#a0522d";
+			pixel.lc="#00bf00";
+			pixel.color = pixelColorPick(pixel,pixel.lc);
+		}
+		const civilizationGrowth = growCivilizationPlantedSeed(pixel,Math.random() > 0.5 ? "wood" : "tree_branch",function(trunkPixel) {
+			trunkPixel.wc = pixel.wc;
+			trunkPixel.lc = pixel.lc;
+			trunkPixel.color = pixelColorPick(trunkPixel,pixel.wc);
+		});
+		if (civilizationGrowth) {
+			pixel.age++;
+			doDefaults(pixel);
+			return;
+		}
 		if (!tryMove(pixel,pixel.x,pixel.y+1)) {
 			if (Math.random() < 0.02 && pixel.age > 50 && pixel.temp < 100) {
 				if (isEmpty(pixel.x,pixel.y-1)) {
@@ -6349,6 +6266,13 @@ SEEDRISE: function(pixel) {
 	color: ["#5c3e33","#472f27","#31211b"],
 	tick: function(pixel) {
 		ensureTreeIdentity(pixel,"pinecone");
+		const civilizationGrowth = growCivilizationPlantedSeed(pixel,(Math.floor(Number(pixel.civGrowthSegments)||0) % 2) ? "evergreen" : "wood",function(trunkPixel,segment) {
+			if (trunkPixel.element === "evergreen") trunkPixel.h = Math.max(1,6-segment);
+		});
+		if (civilizationGrowth) {
+			doDefaults(pixel);
+			return;
+		}
 		if (!tryMove(pixel,pixel.x,pixel.y+1) && pixelTicks-pixel.start > 50) {
 			if (pixel.h === undefined) { // set to even number between 6 and 20
 				pixel.h = Math.floor(Math.random()*7)*2+6;
@@ -7026,6 +6950,10 @@ SEEDRISE: function(pixel) {
 	],
 	tick: function(pixel) {
 		ensureTreeIdentity(pixel,"bamboo_plant");
+		if (growCivilizationPlantedSeed(pixel,"bamboo")) {
+			doDefaults(pixel);
+			return;
+		}
 		behaviors.SEEDRISE(pixel);
 	},
 	tempHigh: 100,
@@ -13982,114 +13910,6 @@ SEEDRISE: function(pixel) {
 "molten_dirt": {
 	stateLow: ["mudstone","mudstone","mudstone","mudstone","mudstone","mudstone","mudstone","mudstone","mudstone","mudstone","mudstone","mudstone","rock"]
 },
-"debug": {
-	color: ["#b150d4","#d1b74f"],
-	tool: function(pixel) {
-		mouseIsDown = false;
-		if (shiftDown) { toggleShift() }
-		var output = langKey("guitemplate.debug.pixelHeader","$1 at x$2, y$3, tick $4",{1:infoDisplayName(pixel.element),2:pixel.x,3:pixel.y,4:pixelTicks})+"\n\n";
-		for (var i in pixel) {
-			if (i !== "x" && i !== "y" && i !== "element") {
-				output += "  " + i + ": " + pixel[i] + "\n";
-			}
-		}
-		console.log(output);
-		console.log(JSON.stringify(pixel));
-		promptText(output,undefined,"Debug");
-		lastDebug = pixelTicks;
-	},
-	maxSize: 1,
-	category: "edit"
-},
-"prop": {
-	color: ["#d46f50","#d4aa50"],
-	onSelect: function(){
-		promptInput(langKey("gui.prompt.modifyProperty","Warning - This tool may break Sandboxels if used incorrectly. Avoid using if you don't understand.\n\nEnter a pixel attribute to modify:"),
-		  (answer1) => {
-			  if (!answer1) { selectElement("unknown"); return }
-			  promptInput(langKey("guitemplate.prompt.propertyValue","Now, enter a value for $1:",{1:answer1}),
-				(answer2) => {
-					if (!answer2) { selectElement("unknown"); return }
-					var valueL = answer2.toLowerCase();
-					if (valueL === "true") { answer2 = true }
-					else if (valueL === "false") { answer2 = false }
-					else if (valueL === "null") { answer2 = null }
-					else if (valueL === "undefined") { answer2 = undefined }
-					else if (valueL === "infinity") { answer2 = Infinity }
-					else if (valueL === "-infinity") { answer2 = -Infinity }
-					else if (answer1 === "color" && valueL[0] === "#") {
-						var rgb = hexToRGB(valueL);
-						answer2 = "rgb("+rgb.r+","+rgb.g+","+rgb.b+")";
-					}
-					currentProp = answer1;
-					var num = parseFloat(answer2);
-					if (!isNaN(num)) { answer2 = num }
-					else if (valueL === "nan") { answer2 = NaN }
-					currentPropValue = answer2;
-					logMessage(langKey("guitemplate.log.property","Property: $1",{1:currentProp}));
-					logMessage(langKey("guitemplate.log.value","Value: $1",{1:currentPropValue}));
-				},
-				"Enter Value",currentPropValue
-			  )
-		  },
-		  "Enter Property",currentProp
-		)
-	},
-	tool: function(pixel) {
-		if (!currentProp) { return }
-		if (typeof currentPropValue === "boolean" && typeof pixel[currentProp] === "number") {
-			currentPropValue = currentPropValue ? 1 : 0;
-		}
-		else if (typeof currentPropValue === "number" && typeof pixel[currentProp] === "boolean") {
-			currentPropValue = !!currentPropValue;
-		}
-		if (currentPropValue !== null && currentPropValue !== undefined && pixel[currentProp] !== null && pixel[currentProp] !== undefined && typeof pixel[currentProp] !== typeof currentPropValue) {
-			const existingType = typeof pixel[currentProp];
-			const requestedType = typeof currentPropValue;
-			logMessage(langKey("guitemplate.log.propertyTypeMismatch","Error: $1 type is $2, not $3.",{
-				1:currentProp,
-				2:langKey("valueType."+existingType,existingType),
-				3:langKey("valueType."+requestedType,requestedType)
-			}));
-			currentProp = null;
-			currentPropValue = null;
-			selectElement("unknown");
-			return;
-		}
-		if (currentProp === "element") {
-			changePixel(pixel, currentPropValue);
-			return;
-		}
-		if (currentProp === "burning" && currentPropValue === "true") {
-			pixel.burnStart = pixelTicks;
-			return;
-		}
-		if ((currentProp === "x" || currentProp === "y") && !isNaN(currentPropValue)) {
-			let coords = {x:pixel.x, y:pixel.y};
-			coords[currentProp] = currentPropValue;
-			if (outOfBounds(coords.x,coords.y)) {
-				deletePixel(pixel.x,pixel.y);
-				return;
-			}
-			if (isEmpty(coords.x,coords.y)) {
-				tryMove(pixel,coords.x,coords.y);
-			}
-			else {
-				logMessage(langKey("gui.log.cannotMovePixel","Cannot move pixel"))
-			}
-			return;
-		}
-		pixel[currentProp] = currentPropValue;
-		if (currentProp === "temp") pixelTempCheck(pixel);
-		if (currentProp === "_r" && currentPropValue) {
-			let relation = getRelation(currentPropValue);
-			if (relation && relation.p.indexOf(pixel) === -1) {
-				relation.p.push(pixel);
-			}
-		}
-	},
-	category: "edit"
-},
 //ice color: "#c5e9f0"
 "salt_ice": { color: "#b6ced4" },
 "sugar_ice": { color: "#c8dee3" },
@@ -14282,9 +14102,6 @@ keybinds["Space"] = ()=>{ // Pause
 keybinds["KeyP"] = keybinds["Space"];
 keybinds["KeyK"] = keybinds["Space"];
 keybinds["Backquote"] = keybinds["Space"];
-keybinds["KeyE"] = ()=>{ // Select element
-	chooseElementPrompt();
-}
 keybinds["KeyR"] = ()=>{ // Reset canvas
 	resetPrompt();
 }
@@ -14294,10 +14111,6 @@ keybinds["Period"] = ()=>{ // Single frame
 keybinds["Semicolon"] = ()=>{ // Toggle Replace Mode
 	document.getElementById("replaceButton").click();
 }
-keybinds["KeyI"] = ()=>{ // Show info screen
-	showInfo();
-}
-keybinds["Slash"] = keybinds["KeyI"];
 keybinds["KeyF"] = ()=>{ // Toggle fullscreen
 	if (document.fullscreenElement) {
 		document.exitFullscreen(document.documentElement);
@@ -14327,17 +14140,11 @@ keybinds["ArrowLeft"] = ()=>{ // Change category
 	var prevCategory = prevButton.getAttribute("category");
 	selectCategory(prevCategory);
 }
-keybinds["KeyM"] = ()=>{ // Open Mod Manager
-	closeMenu();
-	showModManager();
-}
 keybinds["Backslash"] = ()=>{ // Open settings
-	closeMenu();
-	showSettings();
+	toggleTopLevelWindow("settings",showSettings);
 }
 keybinds["KeyL"] = (e)=>{ // Open saves
-	closeMenu();
-	showSaves();
+	toggleTopLevelWindow("saves",showSaves);
 }
 keybinds["KeyC"] = ()=>{ // Screenshot
 	let png = generateScreenshot();
@@ -14365,9 +14172,6 @@ keybinds["KeyH"] = ()=>{ // Hide rendering
 }
 keybinds["KeyT"] = ()=>{
 	tpsPrompt();
-}
-keybinds["Quote"] = ()=>{
-	toggleEditMode();
 }
 keybinds["KeyZ"] = ()=>{ // Secondary element
 	if (storedElement === null) {
@@ -14703,6 +14507,11 @@ function langKey(key,fallback,template) {
 			// Generic wood is also used for buildings. Only wood produced by a
 			// growing tree is marked as natural vegetation.
 			return pixel.naturalVegetation === true;
+		}
+		function vegetationRendersAboveBuilding(pixel) {
+			if (!isPassableVegetationPixel(pixel)) return false;
+			if (!pixel || !treeIdentityElements.has(pixel.element) || (!pixel.treeLineage && !Number.isFinite(pixel.treeId) && !Number.isFinite(pixel.civPlantedTreeId) && pixel.naturalVegetation !== true)) return true;
+			return ensureTreeBuildingLayer(pixel) !== "below";
 		}
 		function elementFlag(element,flag) {
 			const info = elements[element];
@@ -15162,12 +14971,13 @@ function pixelFlag(pixel,flag) {
 		}
 		function deletePixelObject(pixel) {
 			if (!pixel || pixel.del) return false;
-			const deletedState = {element:pixel.element,x:pixel.x,y:pixel.y,treeLineage:pixel.treeLineage,treeId:pixel.treeId,civPlantedTreeId:pixel.civPlantedTreeId};
+			const deletedState = {element:pixel.element,x:pixel.x,y:pixel.y,treeLineage:pixel.treeLineage,treeId:pixel.treeId,treeBornTick:pixel.treeBornTick,civPlantedTreeId:pixel.civPlantedTreeId};
 			pixel.del = true;
 			if (elements[pixel.element] && elements[pixel.element].onDelete !== undefined) {
 				elements[pixel.element].onDelete(pixel);
 			}
 			detachPixelFromGrid(pixel,true);
+			wakePixelsNearForSimulation(deletedState.x,deletedState.y);
 			if (typeof emitPixelLifecycleEvent === "function") emitPixelLifecycleEvent({type:"delete",pixel:pixel,old:deletedState});
 			return true;
 		}
@@ -15347,6 +15157,8 @@ function pixelFlag(pixel,flag) {
 				return false;
 			}
 			if (leaveBehind !== null && pixelMap[oldX][oldY] === undefined) { createPixel(leaveBehind,oldX,oldY); }
+			wakePixelsNearForSimulation(oldX,oldY);
+			wakePixelsNearForSimulation(x,y);
 			return true;
 		}
 		function clonePixel(pixel,x,y) {
@@ -15377,6 +15189,7 @@ function pixelFlag(pixel,flag) {
 			if (!legacyBaseConflict && !canPixelShareCell(newPixel,x,y)) return null;
 			if (!attachPixelToGrid(newPixel,x,y,overlayStorage || !!targetBase)) return null;
 			currentPixels.push(newPixel);
+			wakePixelsNearForSimulation(x,y);
 			if (elements[element] && elements[element].onPlace !== undefined) {
 				elements[element].onPlace(newPixel)
 			}
@@ -15415,12 +15228,14 @@ function pixelFlag(pixel,flag) {
 			pixel2.y = tempY;
 			pixelMap[pixel1.x][pixel1.y] = pixel1;
 			pixelMap[pixel2.x][pixel2.y] = pixel2;
+			wakePixelsNearForSimulation(pixel1.x,pixel1.y);
+			wakePixelsNearForSimulation(pixel2.x,pixel2.y);
 			return true;
 		}
 
 		function changePixel(pixel,element,changetemp=true) {
 			if (!element) { return }
-			const changedState = {element:pixel.element,x:pixel.x,y:pixel.y,treeLineage:pixel.treeLineage,treeId:pixel.treeId,civPlantedTreeId:pixel.civPlantedTreeId};
+			const changedState = {element:pixel.element,x:pixel.x,y:pixel.y,treeLineage:pixel.treeLineage,treeId:pixel.treeId,treeBornTick:pixel.treeBornTick,civPlantedTreeId:pixel.civPlantedTreeId};
 			const oldExclusiveGroup = getOverlayExclusiveGroup(pixel);
 			const oldLegacyExclusiveConflict = pixel._legacyExclusiveConflict === true;
 			const newExclusiveGroup = getElementOverlayExclusiveGroup(elements[element] ? element : "unknown");
@@ -15512,6 +15327,7 @@ function pixelFlag(pixel,flag) {
 			}
 			if (oldLegacyExclusiveConflict && oldExclusiveGroup && oldExclusiveGroup === getOverlayExclusiveGroup(pixel)) pixel._legacyExclusiveConflict = true;
 			if (!pixel.del && !reconcilePixelStorageAfterChange(pixel)) return false;
+			wakePixelsNearForSimulation(pixel.x,pixel.y);
 			checkUnlock(element);
 			if (!pixel.del && typeof emitPixelLifecycleEvent === "function") emitPixelLifecycleEvent({type:"change",pixel:pixel,old:changedState});
 			return pixel;
@@ -15669,6 +15485,7 @@ function pixelFlag(pixel,flag) {
 					}
 					if (!pixel.charge && !pixel.chargeCD) {
 						pixel.charge = amount;
+						wakePixelForSimulation(pixel);
 						if (elements[pixel.element].colorOn) {
 							pixel.color = pixelColorPick(pixel);
 						}
@@ -15680,6 +15497,7 @@ function pixelFlag(pixel,flag) {
 			if (!elements[pixel.element].burn || pixel.burning) return;
 			pixel.burning = true;
 			pixel.burnStart = pixelTicks;
+			wakePixelForSimulation(pixel);
 		}
 		function pixelDistance(x1, y1, x2, y2) {
 			let a = x1 - x2;
@@ -16133,17 +15951,6 @@ function pixelFlag(pixel,flag) {
 			}
 		}
 
-		function editStart() {
-			editingPixels = [];
-			paused = true;
-			checkPause();
-		}
-		function editStop() {
-			paused = false;
-			checkPause();
-			editingPixels = [];
-		}
-		
 /* Behavior Rules
 	XX = Ignore
 	M1 = Move (First Priority)
@@ -16847,11 +16654,15 @@ behaviorRules = {
 					}
 					// Set both pixel temperatures to their average
 					const avg = (pixel.temp + newPixel.temp)/2;
+					const pixelTemperatureChange = Math.abs(avg-pixel.temp);
+					const neighborTemperatureChange = Math.abs(avg-newPixel.temp);
 					// const weight2 = elements[newPixel.element].heatCapacity || 1;
 					// pixel.temp += (avg - pixel.temp) / weight1;
 					// newPixel.temp += (avg - newPixel.temp) / weight2;
 					pixel.temp = avg;
 					newPixel.temp = avg;
+					if (pixelTemperatureChange >= 0.1) wakePixelForSimulation(pixel);
+					if (neighborTemperatureChange >= 0.1) wakePixelForSimulation(newPixel);
 					changed = true;
 					pixelTempCheck(newPixel);
 				}
@@ -16885,6 +16696,7 @@ behaviorRules = {
 						if (Math.random() < con) { // If random number is less than conductivity
 							newPixel.charge = 1;
 							newPixel.chargeStart = pixelTicks;
+							wakePixelForSimulation(newPixel);
 							doElectricity(newPixel,(step||2)-1);
 							if (elements[newPixel.element].colorOn) {
 								newPixel.color = pixelColorPick(newPixel);
@@ -17661,96 +17473,6 @@ behaviorRules = {
 			return pixelarray;
 		}
 
-		worldTimeline = {entries:[],cursor:-1,totalBytes:0,maxBytes:128*1024*1024,maxEntries:256,restoring:false,lastPeriodicTick:-1};
-		function updateWorldTimelineButtons() {
-			const undo = document.getElementById("undoWorldButton");
-			const redo = document.getElementById("redoWorldButton");
-			if (undo) undo.disabled = worldTimeline.cursor <= 0;
-			if (redo) redo.disabled = worldTimeline.cursor < 0 || worldTimeline.cursor >= worldTimeline.entries.length-1;
-		}
-		function createWorldTimelineSnapshot(reason) {
-			if (worldTimeline.restoring || typeof generateSave !== "function" || !pixelMap) return null;
-			const data = generateSave(pixelMap,{settings:true,mods:false});
-			if (data.meta) { data.meta.uuid = "timeline"; data.meta.seriesId = "timeline"; data.meta.seriesIndex = 0; data.meta.created = 0; data.meta.updated = 0; }
-			const json = JSON.stringify(data);
-			return {json:json,bytes:json.length*2,tick:pixelTicks,reason:reason || "checkpoint"};
-		}
-		function trimWorldTimeline() {
-			while (worldTimeline.entries.length > 1 && (worldTimeline.entries.length > worldTimeline.maxEntries || worldTimeline.totalBytes > worldTimeline.maxBytes)) {
-				const removed = worldTimeline.entries.shift();
-				worldTimeline.totalBytes -= removed.bytes;
-				worldTimeline.cursor--;
-			}
-			if (worldTimeline.cursor < 0 && worldTimeline.entries.length) worldTimeline.cursor = 0;
-		}
-		function captureWorldTimelineSnapshot(reason) {
-			const snapshot = createWorldTimelineSnapshot(reason);
-			if (!snapshot) return false;
-			const current = worldTimeline.entries[worldTimeline.cursor];
-			if (current && current.json === snapshot.json) return false;
-			if (worldTimeline.cursor < worldTimeline.entries.length-1) {
-				const removed = worldTimeline.entries.splice(worldTimeline.cursor+1);
-				removed.forEach(entry => { worldTimeline.totalBytes -= entry.bytes; });
-			}
-			worldTimeline.entries.push(snapshot);
-			worldTimeline.totalBytes += snapshot.bytes;
-			worldTimeline.cursor = worldTimeline.entries.length-1;
-			trimWorldTimeline();
-			updateWorldTimelineButtons();
-			return true;
-		}
-		function resetWorldTimeline(reason="initial") {
-			if (worldTimeline.restoring) return false;
-			worldTimeline.entries = [];
-			worldTimeline.cursor = -1;
-			worldTimeline.totalBytes = 0;
-			worldTimeline.lastPeriodicTick = -1;
-			captureWorldTimelineSnapshot(reason);
-			return true;
-		}
-		function restoreWorldTimelineEntry(index) {
-			const entry = worldTimeline.entries[index];
-			if (!entry || worldTimeline.restoring) return false;
-			worldTimeline.restoring = true;
-			try {
-				loadSave(JSON.parse(entry.json),3,3);
-				initializeElementOverlapCatalog(true);
-				paused = true;
-				manualPaused = true;
-				if (typeof checkPause === "function") checkPause();
-				if (window.HumanSociety && typeof window.HumanSociety.forceReindex === "function") window.HumanSociety.forceReindex();
-				worldTimeline.cursor = index;
-				worldTimeline.lastPeriodicTick = pixelTicks;
-				updateWorldTimelineButtons();
-				return true;
-			}
-			finally { worldTimeline.restoring = false; }
-		}
-		function undoWorld() {
-			if (worldTimeline.restoring) return false;
-			captureWorldTimelineSnapshot("undo-current");
-			if (worldTimeline.cursor <= 0) return false;
-			return restoreWorldTimelineEntry(worldTimeline.cursor-1);
-		}
-		function redoWorld() {
-			if (worldTimeline.restoring || worldTimeline.cursor < 0 || worldTimeline.cursor >= worldTimeline.entries.length-1) return false;
-			return restoreWorldTimelineEntry(worldTimeline.cursor+1);
-		}
-		function getTimelineState() {
-			return {canUndo:worldTimeline.cursor>0,canRedo:worldTimeline.cursor>=0&&worldTimeline.cursor<worldTimeline.entries.length-1,count:worldTimeline.entries.length,cursor:worldTimeline.cursor,totalBytes:worldTimeline.totalBytes};
-		}
-		function markWorldTimelineBranch() {
-			if (worldTimeline.restoring || worldTimeline.cursor >= worldTimeline.entries.length-1) return;
-			const removed = worldTimeline.entries.splice(worldTimeline.cursor+1);
-			removed.forEach(entry => { worldTimeline.totalBytes -= entry.bytes; });
-			updateWorldTimelineButtons();
-		}
-		function capturePeriodicWorldTimeline() {
-			if (worldTimeline.restoring || pixelTicks <= 0 || pixelTicks % 30 !== 0 || worldTimeline.lastPeriodicTick === pixelTicks) return false;
-			worldTimeline.lastPeriodicTick = pixelTicks;
-			return captureWorldTimelineSnapshot("tick");
-		}
-
 		function explodeAt(x,y,radius,fire="fire") {
 			// if fire contains , split it into an array
 			if (fire.indexOf(",") !== -1) {
@@ -17875,7 +17597,9 @@ behaviorRules = {
 		function shuffleArray(array) {
 			for (let i = array.length - 1; i > 0; i--) {
 				const j = Math.floor(Math.random() * (i + 1));
-				[array[i], array[j]] = [array[j], array[i]];
+				const value = array[i];
+				array[i] = array[j];
+				array[j] = value;
 			}
 		}
 		const checkForEmptyPixels = function(x,y) {
@@ -18005,11 +17729,6 @@ behaviorRules = {
 					})
 				}
 			}
-			if (editingPixels && editingPixels.length) {
-				editingPixels.forEach((pixel) => {
-					drawSquare(layerCtx,mouseColor,pixel.x,pixel.y,undefined,0.5);
-				})
-			}
 		}
 		function relationUsesGenericGravity(relation) {
 			if (!relation || !Array.isArray(relation.p)) return true;
@@ -18033,10 +17752,71 @@ behaviorRules = {
 				}
 			}
 		}
+		const tickPixelBuffer = [];
+		const pixelSimulationSleepState = new WeakMap();
+		const PIXEL_SLEEP_STABLE_TICKS = 4;
+		const PIXEL_SLEEP_RECHECK_INTERVAL = 120;
+		var simulationActivePixels = 0;
+		var simulationSleepingPixels = 0;
+		function wakePixelForSimulation(pixel) {
+			if (!pixel || pixel.del) return;
+			pixelSimulationSleepState.delete(pixel);
+		}
+		function wakePixelsNearForSimulation(x,y,radius=1) {
+			for (let dx = -radius; dx <= radius; dx++) {
+				const px = x+dx;
+				if (!pixelMap[px]) continue;
+				for (let dy = -radius; dy <= radius; dy++) {
+					const py = y+dy;
+					wakePixelForSimulation(pixelMap[px][py]);
+					const overlapCell = overlapMap[px] && overlapMap[px][py];
+					if (overlapCell) overlapCell.forEach(wakePixelForSimulation);
+				}
+			}
+		}
+		function pixelHasDynamicSimulationState(pixel,info) {
+			if (pixel._overlapMustExit || pixel.burning || pixel.charge || pixel.chargeCD || pixel.drag) return true;
+			if (info.stain !== undefined || info.movable === true && info._simulationBehavior === "wall") return true;
+			return false;
+		}
+		function pixelSleepRecheckDue(pixel,interval=PIXEL_SLEEP_RECHECK_INTERVAL) {
+			const bucket = Math.abs((pixel.x*31+pixel.y*17) % interval);
+			return pixelTicks % interval === bucket;
+		}
+		function pixelRequiresSimulation(pixel,info) {
+			if (!pixel || pixel.del || !info) return false;
+			if (runPerPixelList.length !== 0) return true;
+			if (pixelHasDynamicSimulationState(pixel,info)) return true;
+			if (info._simulationCustomTick) {
+				const interval = Math.max(1,parseInt(info.simulationTickInterval) || 1);
+				const offset = Number.isFinite(pixel.humanId) ? pixel.humanId : pixel.x*31+pixel.y*17;
+				return interval === 1 || (pixelTicks+offset) % interval === 0;
+			}
+			if (!info._simulationBehavior && info.tick !== undefined) return true;
+			if (info._simulationBehavior === "wall") return pixelSleepRecheckDue(pixel,240);
+			if (info._simulationBehavior !== "powder") return true;
+			const state = pixelSimulationSleepState.get(pixel);
+			return !state || state.stable < PIXEL_SLEEP_STABLE_TICKS || pixelSleepRecheckDue(pixel);
+		}
+		function recordPixelSimulationResult(pixel,before,info) {
+			if (!pixel || pixel.del || !info || info._simulationBehavior !== "powder" || info._simulationCustomTick) return;
+			const temperatureStable = Math.abs((pixel.temp || 0)-(before.temp || 0)) < 0.1;
+			const unchanged = pixel.x === before.x && pixel.y === before.y && pixel.element === before.element && temperatureStable && !pixelHasDynamicSimulationState(pixel,info);
+			const previous = pixelSimulationSleepState.get(pixel);
+			pixelSimulationSleepState.set(pixel,{stable:unchanged ? Math.min(PIXEL_SLEEP_STABLE_TICKS,(previous ? previous.stable : 0)+1) : 0});
+		}
 		function tickPixels() {
 			ticktemp = {};
 
-			var newCurrentPixels = [...currentPixels];
+			const newCurrentPixels = tickPixelBuffer;
+			newCurrentPixels.length = 0;
+			simulationSleepingPixels = 0;
+			for (let i = 0; i < currentPixels.length; i++) {
+				const pixel = currentPixels[i];
+				if (pixel && pixelRequiresSimulation(pixel,elements[pixel.element])) newCurrentPixels.push(pixel);
+				else if (pixel && !pixel.del) simulationSleepingPixels++;
+			}
+			simulationActivePixels = newCurrentPixels.length;
 			shuffleArray(newCurrentPixels);
 			if (hasUpdateOrder) {
 				newCurrentPixels.sort((a, b) => {
@@ -18047,6 +17827,7 @@ behaviorRules = {
 			for (let i = 0; i < newCurrentPixels.length; i++) {
 				const pixel = newCurrentPixels[i];
 				const info = elements[pixel.element];
+				const before = {x:pixel.x,y:pixel.y,element:pixel.element,temp:pixel.temp};
 				if (pixel.skip === true) continue;
 				if (pixel.del === true) continue;
 				if (requiresOverlayStoragePixel(pixel) && !pixel._overlap) enforceAlwaysOverlayStorage(pixel);
@@ -18097,6 +17878,7 @@ behaviorRules = {
 					}
 				}
 				finally {
+					recordPixelSimulationResult(pixel,before,elements[pixel.element]);
 					if (currentlyTickingPixel === pixel) currentlyTickingPixel = null;
 				}
 			}
@@ -18286,13 +18068,25 @@ behaviorRules = {
 		function currentPixelsFilterTest(i) {
 			return i !== undefined;
 		}
+		const drawPixelsFirstBuffer = [];
+		const drawPixelsUnderlayBuffer = [];
+		const drawPixelsOverlayBuffer = [];
+		const drawPixelsLastBuffer = [];
+		const drawPixelListBuffer = [];
+		const drawPixelsBelowBuildingsBuffer = [];
+		const drawPixelsAboveBuildingsBuffer = [];
+		const drawOrderedLayerBuffers = [drawPixelsUnderlayBuffer,drawPixelsFirstBuffer,drawPixelsOverlayBuffer,drawPixelsLastBuffer];
 		function drawPixels(forceTick=false) {
 			const canvas = canvasLayers.pixels;
 			const ctx = canvas.getContext("2d");
-			let pixelsFirst = [];
-			let pixelsUnderlay = [];
-			let pixelsOverlay = [];
-			let pixelsLast = [];
+			const pixelsFirst = drawPixelsFirstBuffer;
+			const pixelsUnderlay = drawPixelsUnderlayBuffer;
+			const pixelsOverlay = drawPixelsOverlayBuffer;
+			const pixelsLast = drawPixelsLastBuffer;
+			pixelsFirst.length = 0;
+			pixelsUnderlay.length = 0;
+			pixelsOverlay.length = 0;
+			pixelsLast.length = 0;
 			let hasDeleted = false;
 			for (let i = 0; i < currentPixels.length; i++) {
 				let pixel = currentPixels[i];
@@ -18321,12 +18115,19 @@ behaviorRules = {
 			}
 			// Draw the current pixels
 			if (!hiding) {
-				let pixelDrawList = pixelsUnderlay.concat(pixelsFirst,pixelsOverlay,pixelsLast);
-				let pixelsBelowBuildings = [];
-				let pixelsAboveBuildings = [];
+				const pixelDrawList = drawPixelListBuffer;
+				const pixelsBelowBuildings = drawPixelsBelowBuildingsBuffer;
+				const pixelsAboveBuildings = drawPixelsAboveBuildingsBuffer;
+				pixelDrawList.length = 0;
+				pixelsBelowBuildings.length = 0;
+				pixelsAboveBuildings.length = 0;
+				for (let layerIndex = 0; layerIndex < drawOrderedLayerBuffers.length; layerIndex++) {
+					const layer = drawOrderedLayerBuffers[layerIndex];
+					for (let pixelIndex = 0; pixelIndex < layer.length; pixelIndex++) pixelDrawList.push(layer[pixelIndex]);
+				}
 				for (let i = 0; i < pixelDrawList.length; i++) {
 					const pixel = pixelDrawList[i];
-					if (isPassableVegetationPixel(pixel) || isCreaturePixel(pixel)) pixelsAboveBuildings.push(pixel);
+					if (isCreaturePixel(pixel) || vegetationRendersAboveBuilding(pixel)) pixelsAboveBuildings.push(pixel);
 					else pixelsBelowBuildings.push(pixel);
 				}
 				if (!viewInfo[view]) {
@@ -18398,8 +18199,6 @@ behaviorRules = {
 			}
 
 			if (paused === true || manualPaused === true) return;
-			markWorldTimelineBranch();
-
 			if (settings.events !== undefined && settings.events !== 0) {
 				doRandomEvents();
 			}
@@ -18414,7 +18213,6 @@ behaviorRules = {
 					runEveryTickList[i]();
 				}
 			}
-			capturePeriodicWorldTimeline();
 		}
 	
 		currentElement = "unknown";
@@ -18466,11 +18264,277 @@ behaviorRules = {
 			settings.invertscroll = true;
 		}
 		mouseType = null;
-		function mouseClick(e) {
-			if (showingMenu && currentElement !== "lookup") {
-				closeMenu();
-				return false;
+		canvasView = {
+			zoom: Math.max(0.5,Math.min(2,(parseInt(settings.canvasZoom)||100)/100)),
+			panX: 0,
+			panY: 0,
+			dragging: false,
+			startX: 0,
+			startY: 0,
+			startPanX: 0,
+			startPanY: 0
+		};
+		function clampCanvasPan() {
+			const game = document.getElementById("game");
+			const viewport = document.getElementById("canvasDiv");
+			if (!game || !viewport) return;
+			const maxX = Math.max(0,(game.offsetWidth*canvasView.zoom-viewport.clientWidth)/2);
+			const maxY = Math.max(0,(game.offsetHeight*canvasView.zoom-viewport.clientHeight)/2);
+			canvasView.panX = Math.max(-maxX,Math.min(maxX,canvasView.panX));
+			canvasView.panY = Math.max(-maxY,Math.min(maxY,canvasView.panY));
+		}
+		function applyCanvasView() {
+			const game = document.getElementById("game");
+			if (!game) return;
+			clampCanvasPan();
+			game.style.transformOrigin = "center center";
+			game.style.transform = `translateX(-50%) translate(${canvasView.panX}px,${canvasView.panY}px) scale(${canvasView.zoom})`;
+			const label = document.getElementById("canvasZoomResetButton");
+			if (label) label.textContent = Math.round(canvasView.zoom*100)+"%";
+		}
+		function setCanvasZoom(percent,clientX,clientY) {
+			const game = document.getElementById("game");
+			const viewport = document.getElementById("canvasDiv");
+			const oldZoom = canvasView.zoom;
+			const nextZoom = Math.max(0.5,Math.min(2,Math.round((Number(percent)||100)/10)*0.1));
+			if (game && viewport && Number.isFinite(clientX) && Number.isFinite(clientY)) {
+				const bounds = viewport.getBoundingClientRect();
+				const dx = clientX-(bounds.left+bounds.width/2);
+				const dy = clientY-(bounds.top+bounds.height/2);
+				canvasView.panX = dx-(dx-canvasView.panX)*(nextZoom/oldZoom);
+				canvasView.panY = dy-(dy-canvasView.panY)*(nextZoom/oldZoom);
 			}
+			canvasView.zoom = nextZoom;
+			settings.canvasZoom = Math.round(nextZoom*100);
+			localStorage.setItem("settings",JSON.stringify(settings));
+			applyCanvasView();
+		}
+		function resetCanvasView() {
+			canvasView.panX = 0;
+			canvasView.panY = 0;
+			setCanvasZoom(100);
+		}
+		function beginCanvasPan(e) {
+			if (!e || !e.ctrlKey || e.button !== 0) return false;
+			canvasView.dragging = true;
+			canvasView.startX = e.clientX;
+			canvasView.startY = e.clientY;
+			canvasView.startPanX = canvasView.panX;
+			canvasView.startPanY = canvasView.panY;
+			mouseIsDown = false;
+			e.preventDefault();
+			document.getElementById("game").style.cursor = "grabbing";
+			return true;
+		}
+		function moveCanvasPan(e) {
+			canvasView.panX = canvasView.startPanX+e.clientX-canvasView.startX;
+			canvasView.panY = canvasView.startPanY+e.clientY-canvasView.startY;
+			applyCanvasView();
+			e.preventDefault();
+		}
+			function endCanvasPan() {
+				canvasView.dragging = false;
+				const game = document.getElementById("game");
+				if (game) game.style.cursor = "";
+			}
+			floatingWindowRegistry = new Map();
+			floatingWindowZ = 100100;
+			floatingWindowOperation = null;
+			function floatingWindowLayoutStore() {
+				if (!settings.humanSocietyWindowLayouts || typeof settings.humanSocietyWindowLayouts !== "object" || Array.isArray(settings.humanSocietyWindowLayouts)) {
+					settings.humanSocietyWindowLayouts = {};
+				}
+				return settings.humanSocietyWindowLayouts;
+			}
+			function saveFloatingWindowLayouts() {
+				localStorage.setItem("settings",JSON.stringify(settings));
+			}
+			function floatingWindowMinimums(panel,options) {
+				if (options && Number.isFinite(options.minWidth) && Number.isFinite(options.minHeight)) return {width:options.minWidth,height:options.minHeight};
+				if (panel.id === "civilizationTutorial") return {width:280,height:140};
+				if (panel.id === "civilizationParent" || panel.id === "peopleObserverPanel" || panel.id === "settingsParent") return {width:360,height:260};
+				return {width:280,height:180};
+			}
+			function clampFloatingWindowRect(rect,minimums) {
+				const margin = 8;
+				const maxWidth = Math.max(1,window.innerWidth-margin*2);
+				const maxHeight = Math.max(1,window.innerHeight-margin*2);
+				const minWidth = Math.min(minimums.width,maxWidth);
+				const minHeight = Math.min(minimums.height,maxHeight);
+				const widthValue = Math.max(minWidth,Math.min(maxWidth,Number(rect.width)||minWidth));
+				const heightValue = Math.max(minHeight,Math.min(maxHeight,Number(rect.height)||minHeight));
+				return {
+					left:Math.max(margin,Math.min(window.innerWidth-margin-widthValue,Number(rect.left)||margin)),
+					top:Math.max(margin,Math.min(window.innerHeight-margin-heightValue,Number(rect.top)||margin)),
+					width:widthValue,
+					height:heightValue
+				};
+			}
+			function applyFloatingWindowRect(state,rect,persist) {
+				if (!state || window.innerWidth <= 700) return;
+				const next = clampFloatingWindowRect(rect,state.minimums);
+				const panel = state.panel;
+				panel.style.position = "fixed";
+				panel.style.boxSizing = "border-box";
+				panel.style.transform = "none";
+				panel.style.left = next.left+"px";
+				panel.style.top = next.top+"px";
+				panel.style.right = "auto";
+				panel.style.bottom = "auto";
+				panel.style.width = next.width+"px";
+				panel.style.height = next.height+"px";
+				panel.style.maxWidth = "none";
+				panel.style.maxHeight = "none";
+				panel.dataset.floatingWindowPositioned = "true";
+				if (persist !== false && panel.id) {
+					floatingWindowLayoutStore()[panel.id] = next;
+					saveFloatingWindowLayouts();
+				}
+			}
+			function resetFloatingWindowForMobile(state) {
+				if (!state || state.panel.dataset.floatingWindowPositioned !== "true") return;
+				const style = state.panel.style;
+				["position","boxSizing","transform","left","top","right","bottom","width","height","maxWidth","maxHeight","zIndex"].forEach(function(key) { style[key] = ""; });
+				delete state.panel.dataset.floatingWindowPositioned;
+			}
+			function bringFloatingWindowToFront(state) {
+				if (!state || window.innerWidth <= 700) return;
+				floatingWindowZ++;
+				state.panel.style.zIndex = String(floatingWindowZ);
+				if (typeof topLevelWindowIds !== "undefined") {
+					const name = Object.keys(topLevelWindowIds).find(function(key) { return topLevelWindowIds[key] === state.panel.id; });
+					if (name && typeof topLevelWindowOrder !== "undefined") {
+						const index = topLevelWindowOrder.indexOf(name);
+						if (index !== -1) topLevelWindowOrder.splice(index,1);
+						topLevelWindowOrder.push(name);
+						showingMenu = name;
+					}
+				}
+			}
+			function prepareFloatingWindow(state) {
+				if (!state || window.innerWidth <= 700) return false;
+				if (state.panel.dataset.floatingWindowPositioned !== "true") {
+					const rect = state.panel.getBoundingClientRect();
+					applyFloatingWindowRect(state,{left:rect.left,top:rect.top,width:rect.width,height:rect.height},false);
+				}
+				bringFloatingWindowToFront(state);
+				return true;
+			}
+			function beginFloatingWindowDrag(event,state) {
+				if (!state || event.button !== 0 || event.target.closest("button,input,select,textarea,a")) return;
+				if (!prepareFloatingWindow(state)) return;
+				const rect = state.panel.getBoundingClientRect();
+				floatingWindowOperation = {type:"drag",state:state,pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,rect:{left:rect.left,top:rect.top,width:rect.width,height:rect.height}};
+				if (state.panel.setPointerCapture) state.panel.setPointerCapture(event.pointerId);
+				event.preventDefault();
+				event.stopPropagation();
+			}
+			function beginFloatingWindowResize(event,state,direction) {
+				if (!state || event.button !== 0 || !prepareFloatingWindow(state)) return;
+				const rect = state.panel.getBoundingClientRect();
+				floatingWindowOperation = {type:"resize",direction:direction,state:state,pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,rect:{left:rect.left,top:rect.top,width:rect.width,height:rect.height}};
+				if (state.panel.setPointerCapture) state.panel.setPointerCapture(event.pointerId);
+				event.preventDefault();
+				event.stopPropagation();
+			}
+			function moveFloatingWindow(event) {
+				const operation = floatingWindowOperation;
+				if (!operation || operation.pointerId !== event.pointerId) return;
+				const dx = event.clientX-operation.startX;
+				const dy = event.clientY-operation.startY;
+				const start = operation.rect;
+				let next = {left:start.left,top:start.top,width:start.width,height:start.height};
+				if (operation.type === "drag") {
+					next.left += dx;
+					next.top += dy;
+				}
+				else {
+					const direction = operation.direction;
+					const minWidth = Math.min(operation.state.minimums.width,window.innerWidth-16);
+					const minHeight = Math.min(operation.state.minimums.height,window.innerHeight-16);
+					if (direction.indexOf("e") !== -1) next.width = Math.max(minWidth,start.width+dx);
+					if (direction.indexOf("s") !== -1) next.height = Math.max(minHeight,start.height+dy);
+					if (direction.indexOf("w") !== -1) {
+						next.left = Math.min(start.left+dx,start.left+start.width-minWidth);
+						next.width = start.left+start.width-next.left;
+					}
+					if (direction.indexOf("n") !== -1) {
+						next.top = Math.min(start.top+dy,start.top+start.height-minHeight);
+						next.height = start.top+start.height-next.top;
+					}
+				}
+				applyFloatingWindowRect(operation.state,next,false);
+				event.preventDefault();
+			}
+			function finishFloatingWindow(event) {
+				const operation = floatingWindowOperation;
+				if (!operation || event && event.pointerId !== operation.pointerId) return;
+				floatingWindowOperation = null;
+				if (operation.state.panel.releasePointerCapture && operation.state.panel.hasPointerCapture && operation.state.panel.hasPointerCapture(operation.pointerId)) operation.state.panel.releasePointerCapture(operation.pointerId);
+				const rect = operation.state.panel.getBoundingClientRect();
+				applyFloatingWindowRect(operation.state,{left:rect.left,top:rect.top,width:rect.width,height:rect.height},true);
+			}
+			function registerFloatingWindow(panel,handle,options) {
+				if (!panel || floatingWindowRegistry.has(panel)) return floatingWindowRegistry.get(panel) || null;
+				if (panel.parentElement !== document.body) document.body.appendChild(panel);
+				handle = handle || panel.querySelector(".menuTitle") || panel.querySelector("header");
+				if (!handle) return null;
+				const state = {panel:panel,handle:handle,minimums:floatingWindowMinimums(panel,options||{})};
+				floatingWindowRegistry.set(panel,state);
+				panel.classList.add("floating-window-managed");
+				handle.classList.add("floating-window-drag-handle");
+				handle.addEventListener("pointerdown",function(event) { beginFloatingWindowDrag(event,state); });
+				panel.addEventListener("pointerdown",function(event) { bringFloatingWindowToFront(state); event.stopPropagation(); });
+				panel.addEventListener("mousedown",function(event) { event.stopPropagation(); });
+				panel.addEventListener("mouseup",function(event) { event.stopPropagation(); });
+				["n","ne","e","se","s","sw","w","nw"].forEach(function(direction) {
+					const grip = document.createElement("span");
+					grip.className = "floating-window-resize floating-window-resize-"+direction;
+					grip.setAttribute("aria-hidden","true");
+					grip.addEventListener("pointerdown",function(event) { beginFloatingWindowResize(event,state,direction); });
+					panel.appendChild(grip);
+				});
+				const saved = panel.id && floatingWindowLayoutStore()[panel.id];
+				if (window.innerWidth > 700 && saved) applyFloatingWindowRect(state,saved,false);
+				return state;
+			}
+			function registerFloatingWindowsInside(rootNode) {
+				if (!rootNode || rootNode.nodeType !== 1) return;
+				const panels = [];
+				if (rootNode.matches && rootNode.matches("#infoParent,#settingsParent,.menuParent,#peopleObserverPanel,#civilizationParent,#civilizationTutorial")) panels.push(rootNode);
+				if (rootNode.querySelectorAll) rootNode.querySelectorAll("#infoParent,#settingsParent,.menuParent,#peopleObserverPanel,#civilizationParent,#civilizationTutorial").forEach(function(panel) { panels.push(panel); });
+				panels.forEach(function(panel) {
+					const handle = panel.querySelector(".people-observer-header,#civilizationTutorialHeader,.menuTitle,header");
+					if (handle) registerFloatingWindow(panel,handle);
+				});
+			}
+			function refreshFloatingWindowViewport() {
+				floatingWindowRegistry.forEach(function(state) {
+					if (window.innerWidth <= 700) resetFloatingWindowForMobile(state);
+					else {
+						const saved = state.panel.id && floatingWindowLayoutStore()[state.panel.id];
+						if (saved) applyFloatingWindowRect(state,saved,false);
+						else if (state.panel.dataset.floatingWindowPositioned === "true") {
+							const rect = state.panel.getBoundingClientRect();
+							applyFloatingWindowRect(state,{left:rect.left,top:rect.top,width:rect.width,height:rect.height},false);
+						}
+					}
+				});
+			}
+			document.addEventListener("pointermove",moveFloatingWindow);
+			document.addEventListener("pointerup",finishFloatingWindow);
+			document.addEventListener("pointercancel",finishFloatingWindow);
+			window.addEventListener("resize",refreshFloatingWindowViewport);
+			window.addEventListener("load",function() {
+				registerFloatingWindowsInside(document.body);
+				if (typeof MutationObserver === "function") {
+					new MutationObserver(function(records) {
+						records.forEach(function(record) { record.addedNodes.forEach(registerFloatingWindowsInside); });
+					}).observe(document.body,{childList:true,subtree:true});
+				}
+			});
+			function mouseClick(e) {
+			if (e && e.ctrlKey && e.button === 0 && beginCanvasPan(e)) return false;
 			mouseIsDown = true;
 			lastPlace = -100;
 			if (e.button === 0) {
@@ -18569,6 +18633,10 @@ behaviorRules = {
 			}
 		}
 		function mouseUp(e) {
+			if (canvasView.dragging) {
+				endCanvasPan();
+				return;
+			}
 			mouseIsDown = false;
 			if (shaping) {
 				if (shaping === 1) { // Draw a line
@@ -18580,7 +18648,6 @@ behaviorRules = {
 			if (elements[currentElement] && elements[currentElement].onMouseUp) {
 				elements[currentElement].onMouseUp(e);
 			}
-			captureWorldTimelineSnapshot("player-operation");
 		}
 
 		function getMousePos(canvas, evt) {
@@ -18595,12 +18662,16 @@ behaviorRules = {
 			let x = evt.clientX - rect.left;
 			let y = evt.clientY - rect.top;
 
-			x = Math.floor((x / canvas.clientWidth) * (width+1));
-			y = Math.floor((y / canvas.clientHeight) * (height+1));
+			x = Math.floor((x / Math.max(1,rect.width)) * (width+1));
+			y = Math.floor((y / Math.max(1,rect.height)) * (height+1));
 
 			return {x:x, y:y};
 		}
 		function mouseMove(e) {
+			if (canvasView.dragging) {
+				moveCanvasPan(e);
+				return;
+			}
 			updateStats();
 			if (mouseIsDown && !shaping && !placingImage) {
 				mouseAction(e);
@@ -18819,6 +18890,10 @@ behaviorRules = {
 		lastScroll = new Date().getTime();
 		function wheelHandle(e) {
 			e.preventDefault();
+			if (e.ctrlKey) {
+				setCanvasZoom(Math.round(canvasView.zoom * 100) + (e.deltaY < 0 ? 10 : -10), e.clientX, e.clientY);
+				return;
+			}
 			// check if scroll is within the last 25ms
 			if (new Date().getTime() - lastScroll < 25) {
 				return;
@@ -18835,40 +18910,6 @@ behaviorRules = {
 			}
 			mouseSize += Math.round(deltaY);
 			checkMouseSize(Math.sign(deltaY));
-		}
-		function chooseElementPrompt() {
-			if (promptState && promptState.id === "elem") {
-				delete promptState.id;
-				closeMenu();
-				return;
-			}
-				promptInput(langKey("gui.prompt.selectElement","Enter the element's ID or name."),
-				(e) => {
-					if (!e) { return; }
-					// replace spaces with underscores
-					e = e.replace(/ /g, "_");
-					es = mostSimilarElement(e);
-					if (es !== null) {
-						selectElement(es);
-						selectCategory(elements[es].category);
-						if (shiftDown && elements[currentElement].onShiftSelect) {
-							elements[currentElement].onShiftSelect(currentElement);
-							if (promptState) promptState.after = function() {
-								if (currentElementProp) {
-									let btn = document.getElementById("elementButton-"+currentElement);
-									if (btn) btn.setAttribute("modified", "true");
-								}
-							}
-						}
-					}
-					else {
-						logMessage(langKey("guitemplate.log.elementNotFound","Element \"$1\" not found",{1:e}));
-					}
-					focusGame();
-				},
-				"Select Element"
-			);
-			promptState.id = "elem";
 		}
 		function togglePause() {
 			paused = !paused;
@@ -18927,20 +18968,30 @@ behaviorRules = {
 		MAX_TPS = 150;
 		SIMULATION_SPEEDS = [30,60,90,150];
 		SIMULATION_PULSE_MS = 1000/30;
-		SIMULATION_MAX_TICKS_PER_PULSE = 10;
-		SIMULATION_WORK_BUDGET_MS = 12;
+		// Logical work runs independently from painting. Small cooperative slices
+		// keep controls responsive while still allowing high speeds to use the time
+		// between two rendered frames.
+		SIMULATION_MAX_TICKS_PER_PULSE = 8;
+		SIMULATION_WORK_BUDGET_MS = 4;
 		SIMULATION_MAX_BACKLOG_TICKS = 15;
 		var simulationTickDebt = 0;
 		var simulationLastPulseTime = 0;
 		var simulationActualTPS = 0;
 		var simulationActualWindowStarted = 0;
 		var simulationActualWindowTicks = 0;
+		var simulationLoopTimer = null;
+		var simulationLoopQueued = false;
+		var simulationLastRenderTime = 0;
+		var simulationMessageChannel = typeof MessageChannel === "function" ? new MessageChannel() : null;
 		function simulationSchedulerNow() {
 			return window.performance && typeof window.performance.now === "function" ? window.performance.now() : Date.now();
 		}
 		function resetSimulationSchedulerClock() {
 			simulationTickDebt = 0;
 			simulationLastPulseTime = simulationSchedulerNow();
+		}
+		function simulationIsPaused() {
+			return typeof paused === "undefined" || typeof manualPaused === "undefined" || paused || manualPaused;
 		}
 		function mapLegacyTPS(oldTps) {
 			let parsed = parseInt(oldTps);
@@ -18958,7 +19009,13 @@ behaviorRules = {
 				const speedButton = document.getElementById("speedButton");
 				if (!speedButton) return;
 				const multiplier = tps/30;
-				speedButton.textContent = (Number.isInteger(multiplier) ? multiplier : multiplier.toFixed(1))+"×";
+				const targetLabel = (Number.isInteger(multiplier) ? multiplier : multiplier.toFixed(1))+"×";
+				const hasActualSample = simulationActualWindowStarted > 0 && typeof pixelTicks !== "undefined" && pixelTicks > 0;
+				const actualMultiplier = simulationActualTPS/30;
+				const actualLabel = (actualMultiplier >= 1 ? actualMultiplier.toFixed(1) : actualMultiplier.toFixed(2))+"×";
+				const saturated = hasActualSample && !simulationIsPaused() && simulationActualTPS < tps*0.85;
+				speedButton.textContent = hasActualSample ? targetLabel+"/"+actualLabel : targetLabel;
+				speedButton.setAttribute("data-saturated",saturated ? "true" : "false");
 				speedButton.title = langKey("guitemplate.speedButton.title","Simulation speed target: $1 TPS; actual: $2 TPS",{1:tps,2:simulationActualTPS.toFixed(1)});
 			}
 		function setTPS(newtps) {
@@ -19021,26 +19078,6 @@ behaviorRules = {
 			checkPause();
 		}
 
-		function toggleEditMode() {
-			let button = document.getElementById("editModeButton");
-			let editDiv = document.getElementById("category-edit");
-			let categoriesDiv = document.getElementById("categoryControls");
-			let elementsDiv = document.getElementById("elementControls");
-			if (editMode) {
-				elementsDiv.style.display = "flex";
-				// categoriesDiv.style.display = "flex";
-				editDiv.style.display = "none";
-				button.setAttribute("on","false");
-				editMode = false;
-				return;
-			}
-			button.setAttribute("on","true");
-			editDiv.style.display = "flex";
-			// categoriesDiv.style.display = "none";
-			elementsDiv.style.display = "none";
-			editMode = true;
-		}
-
 		function selectElement(element) {
 			if (!elements[element]) { element = "unknown" }
 			if (showingMenu == "prompt") {
@@ -19061,8 +19098,16 @@ behaviorRules = {
 			prevElement = currentElement;
 			currentElement = element;
 			currentElementProp = null;
-			if (elements[element].customColor) {
+			const factionPalette = document.getElementById("factionColorPalette");
+			if (element === "civilized_human" && factionPalette) {
+				document.getElementById("colorSelector").style.display = "none";
+				factionPalette.style.display = "flex";
+				if (!currentColorMap.civilized_human || !factionPalette.querySelector('[data-color="'+currentColorMap.civilized_human.toLowerCase()+'"]')) currentColorMap.civilized_human = "#d95763";
+				selectCivilizationFactionColor(currentColorMap.civilized_human);
+			}
+			else if (elements[element].customColor) {
 				// show the colorSelector
+				if (factionPalette) factionPalette.style.display = "none";
 				document.getElementById("colorSelector").style.display = "block";
 				currentColor = document.getElementById("colorSelector").value;
 				if (!currentColorMap[currentElement]) { currentColorMap[currentElement] = currentColor; }
@@ -19071,6 +19116,7 @@ behaviorRules = {
 			else {
 				// hide the colorSelector
 				document.getElementById("colorSelector").style.display = "none";
+				if (factionPalette) factionPalette.style.display = "none";
 			}
 			var e2 = document.getElementById("elementButton-"+element);
 			if (e2) {
@@ -19083,13 +19129,19 @@ behaviorRules = {
 			if (elements[element].onSelect) {
 				elements[element].onSelect();
 			}
-			if (editMode && elements[element].category !== "edit" && elements[element].category !== "tools" && element !== "unknown") {
-				toggleEditMode();
-			}
-			else if (!editMode && elements[element].category === "edit") {
-				toggleEditMode();
-			}
 			checkMouseSize();
+		}
+		function selectCivilizationFactionColor(color) {
+			color = String(color || "#d95763").toLowerCase();
+			currentColorMap.civilized_human = color;
+			currentColor = color;
+			const palette = document.getElementById("factionColorPalette");
+			if (palette) palette.querySelectorAll("button").forEach(function(button) { button.setAttribute("aria-pressed",button.dataset.color === color ? "true" : "false"); });
+			const button = document.getElementById("elementButton-civilized_human");
+			if (button) {
+				button.style.removeProperty("background-image");
+				button.style.background = color;
+			}
 		}
 		function editDistance(s1, s2) {s1 = s1.toLowerCase();s2 = s2.toLowerCase();var costs = new Array();for (var i = 0; i <= s1.length; i++) {var lastValue = i;for (var j = 0; j <= s2.length; j++) {if (i == 0)costs[j] = j;else {if (j > 0) {var newValue = costs[j - 1];if (s1.charAt(i - 1) !== s2.charAt(j - 1))newValue = Math.min(Math.min(newValue, lastValue),costs[j]) + 1;costs[j - 1] = lastValue;lastValue = newValue;}}}if (i > 0)costs[s2.length] = lastValue;}return costs[s2.length];}
 		function similarity(s1, s2) {var longer = s1;var shorter = s2;if (s1.length < s2.length) {longer = s2;shorter = s1;}var longerLength = longer.length;if (longerLength == 0) {return 1.0;}return (longerLength - editDistance(longer, shorter)) / parseFloat(longerLength);}
@@ -19128,9 +19180,6 @@ behaviorRules = {
 			if (!category) { return; }
 			var categoryButton = document.getElementById("categoryButton-"+category);
 			if (!categoryButton) {return}
-			if (editMode) {
-				toggleEditMode();
-			}
 			// if categoryButton has the class "notify", remove it
 			if (categoryButton.classList.contains("notify")) {
 				categoryButton.classList.remove("notify");
@@ -19223,7 +19272,7 @@ behaviorRules = {
 			"copper", "iron", "iron_ore",
 			"water", "salt_water", "dirty_water",
 			"fire", "torch",
-			"erase", "drag", "pick", "lookup"
+			"erase", "drag", "pick", "lookup", "ruler"
 		]);
 		const CIVILIZATION_PALETTE_EXCLUDED_ELEMENTS = new Set(["tin", "civ_tin_resource"]);
 		function normalizeElementPaletteMode(mode) {
@@ -19250,7 +19299,7 @@ behaviorRules = {
 			return visible;
 		}
 		function paletteElementButtons() {
-			return Array.from(document.querySelectorAll("#category-tools .elementButton[element], #category-edit .elementButton[element], #elementControls .elementButton[element]"));
+			return Array.from(document.querySelectorAll("#category-tools .elementButton[element], #elementControls .elementButton[element]"));
 		}
 		function firstVisiblePaletteElementButton(preferredElement) {
 			if (preferredElement) {
@@ -19294,9 +19343,6 @@ behaviorRules = {
 				if (!hasVisibleElement) categoryDiv.style.display = "none";
 			}
 
-			const editButton = document.getElementById("editModeButton");
-			if (editButton) editButton.style.display = getElementPaletteMode() === "civilization" ? "none" : "";
-			if (getElementPaletteMode() === "civilization" && typeof editMode !== "undefined" && editMode) toggleEditMode();
 			if (ensureSelection === false || typeof currentElement === "undefined") return;
 
 			let currentButton = document.getElementById("elementButton-" + currentElement);
@@ -19321,6 +19367,7 @@ behaviorRules = {
 			if (select) select.value = normalized;
 			saveSettings();
 			refreshElementPaletteVisibility(true);
+			if (typeof HumanSociety !== "undefined" && HumanSociety.onPaletteModeChanged) HumanSociety.onPaletteModeChanged(normalized);
 			return normalized;
 		}
 		function createElementButton(element) {
@@ -19738,11 +19785,8 @@ behaviorRules = {
 	function showInfo(element,back=false) { // this is such a mess please don't look at it
 		const infoColon = langKey("gui.info.colon",": ");
 		const infoPeriod = langKey("gui.info.period",".");
-		paused = true;
-	checkPause();
-	showingMenu = "info";
 	var infoParent = document.getElementById("infoParent");
-	infoParent.style.display = "block";
+	openTopLevelWindow("info",infoParent);
 	var infoSearch = document.getElementById("infoSearch");
 	infoSearch.focus();
 	var infoTitle = document.getElementById("infoTitle");
@@ -20042,60 +20086,59 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				showInfo(infoHistory[infoHistory.length-1], true);
 			}
 		}
-		function closeMenu(nextMenu) {
-			if (!showingMenu) { return; }
-			paused = false;
-			checkPause();
-			if (showingMenu == "prompt") {
-				if (showingMenu === nextMenu) return;
-				var promptParent = document.getElementById("promptParent");
-				promptParent.style.display = "none";
-				// promptState = null;
-			}
-			else if (showingMenu == "info") {
-				var infoParent = document.getElementById("infoParent");
-				var infoSearch = document.getElementById("infoSearch");
-				infoParent.style.display = "none";
-				infoSearch.value = "";
+		const topLevelWindows = new Map();
+		const topLevelWindowOrder = [];
+		const topLevelWindowIds = {
+			prompt: "promptParent",
+			info: "infoParent",
+			saves: "savesParent",
+			savePrompt: "savePromptParent",
+			settings: "settingsParent",
+			civilization: "civilizationParent",
+			people: "peopleObserverPanel",
+			tutorial: "civilizationTutorial"
+		};
+		function topLevelWindowPanel(name) {
+			const id = topLevelWindowIds[name];
+			return id ? document.getElementById(id) : null;
+		}
+		function openTopLevelWindow(name,panel,display) {
+			panel = panel || topLevelWindowPanel(name);
+			if (!panel) return null;
+			panel.style.display = display || "block";
+			topLevelWindows.set(name,panel);
+			const oldIndex = topLevelWindowOrder.indexOf(name);
+			if (oldIndex !== -1) topLevelWindowOrder.splice(oldIndex,1);
+			topLevelWindowOrder.push(name);
+			showingMenu = name;
+			const state = floatingWindowRegistry.get(panel);
+			if (state) bringFloatingWindowToFront(state);
+			return panel;
+		}
+		function isTopLevelWindowOpen(name) {
+			const panel = topLevelWindows.get(name) || topLevelWindowPanel(name);
+			return !!(panel && panel.style.display !== "none" && getComputedStyle(panel).display !== "none");
+		}
+		function closeMenu(name) {
+			name = name || showingMenu || topLevelWindowOrder[topLevelWindowOrder.length-1];
+			const panel = topLevelWindows.get(name) || topLevelWindowPanel(name);
+			if (!panel) return;
+			panel.style.display = "none";
+			topLevelWindows.delete(name);
+			const index = topLevelWindowOrder.indexOf(name);
+			if (index !== -1) topLevelWindowOrder.splice(index,1);
+			if (name === "info") {
+				const infoSearch = document.getElementById("infoSearch");
+				if (infoSearch) infoSearch.value = "";
 				infoHistory = [];
 			}
-			else if (showingMenu == "mods") {
-				var modParent = document.getElementById("modParent");
-				var modManagerUrl = document.getElementById("modManagerUrl");
-				modParent.style.display = "none";
-				modManagerUrl.value = "";
-			}
-			else if (showingMenu == "saves") {
-				var savesParent = document.getElementById("savesParent");
-				savesParent.style.display = "none";
-			}
-			else if (showingMenu == "savePrompt") {
-				var savePrompt = document.getElementById("savePromptParent");
-				savePrompt.style.display = "none";
-				savingState = null;
-			}
-			else if (showingMenu == "settings") {
-				var settingsParent = document.getElementById("settingsParent");
-				settingsParent.style.display = "none";
-			}
-			else {
-				// do it to all elements with the class "menuParent"
-				var menuParents = document.getElementsByClassName("menuParent");
-				for (var i = 0; i < menuParents.length; i++) {
-					menuParents[i].style.display = "none";
-				}
-				genericMenuHandler=null;
-			}
-			showingMenu = false;
+			if (name === "savePrompt") savingState = null;
+			if (name !== "prompt") genericMenuHandler = null;
+			showingMenu = topLevelWindowOrder[topLevelWindowOrder.length-1] || false;
 		}
-		function showModManager() {
-			var modParent = document.getElementById("modParent");
-			var modManagerUrl = document.getElementById("modManagerUrl");
-			modParent.style.display = "block";
-			modManagerUrl.focus();
-			showingMenu = "mods";
-			paused = true;
-			checkPause();
+		function toggleTopLevelWindow(name,showFunction) {
+			if (isTopLevelWindowOpen(name)) closeMenu(name);
+			else if (typeof showFunction === "function") showFunction();
 		}
 		function handleTab(elem) {
 			let tabID = elem.getAttribute("data-tab");
@@ -20126,7 +20169,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			url = url.replaceAll(/['‘’“”"\$\{\}\\]/g,"");
 			// if the url doesn't have a slash or a dot, alert
 			if (url.indexOf("/") == -1 && url.indexOf(".") == -1 && !noMessage) {
-				promptText(langKey("gui.prompt.invalidModUrl","Invalid mod URL.\n\nYou usually want something like 'survival.js' (without the quotes)"), showModManager, "Error");
+				promptText(langKey("gui.prompt.invalidModUrl","Invalid mod URL.\n\nYou usually want something like 'survival.js' (without the quotes)"), undefined, "Error");
 				return;
 			}
 			// if the url doesn't start with http, add "mods/" to the beginning
@@ -20144,15 +20187,15 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			// add it to enabledMods and set the localStorage
 			enabledMods.push(url);
 			localStorage.setItem("enabledMods", JSON.stringify(enabledMods));
-			// add to modManagerList
+			// The manager UI was removed, but saves may still enable required mods.
 			var modManagerList = document.getElementById("modManagerList");
 			var modName = url.split("/").pop();
-			modManagerList.innerHTML += `<li><a href="${url.replaceAll('"','')}" target="_blank">${modName}</a> <span class="removeModX" onclick='removeMod("${url.replaceAll('"','\\\"')}")'>X</span></li>`
-			document.getElementById("noMods").style.display = "none";
-			document.getElementById("modManagerRefresh").style.display = "block";
+			if (modManagerList) modManagerList.innerHTML += `<li><a href="${url.replaceAll('"','')}" target="_blank">${modName}</a> <span class="removeModX" onclick='removeMod("${url.replaceAll('"','\\\"')}")'>X</span></li>`
+			if (document.getElementById("noMods")) document.getElementById("noMods").style.display = "none";
+			if (document.getElementById("modManagerRefresh")) document.getElementById("modManagerRefresh").style.display = "block";
 			if (!noMessage) {
 				changedMods = true;
-				promptText(standalone ? langKey("gui.prompt.resetToApply","Reset the canvas to apply changes.") : langKey("gui.prompt.refreshToApply","Refresh the page to apply changes."), showModManager, "Added Mod");
+				promptText(standalone ? langKey("gui.prompt.resetToApply","Reset the canvas to apply changes.") : langKey("gui.prompt.refreshToApply","Refresh the page to apply changes."), undefined, "Added Mod");
 			}
 			return url;
 		}
@@ -20165,13 +20208,13 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				}
 			}
 			if (enabledMods.length === 0) {
-				document.getElementById("noMods").style.display = "block";
+				if (document.getElementById("noMods")) document.getElementById("noMods").style.display = "block";
 			}
-			document.getElementById("modManagerRefresh").style.display = "block";
+			if (document.getElementById("modManagerRefresh")) document.getElementById("modManagerRefresh").style.display = "block";
 			localStorage.setItem("enabledMods", JSON.stringify(enabledMods));
 			// remove from modManagerList by href
 			var modManagerList = document.getElementById("modManagerList");
-			var modManagerListLinks = modManagerList.getElementsByTagName("a");
+			var modManagerListLinks = modManagerList ? modManagerList.getElementsByTagName("a") : [];
 			url = url.replaceAll('"','');
 			for (var i = 0; i < modManagerListLinks.length; i++) {
 				if (modManagerListLinks[i].href.endsWith(url)) {
@@ -20181,7 +20224,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			}
 			if (!noMessage) {
 				changedMods = true;
-				promptText(standalone ? langKey("gui.prompt.resetToApply","Reset the canvas to apply changes.") : langKey("gui.prompt.refreshToApply","Refresh the page to apply changes."), showModManager, "Removed Mod");
+				promptText(standalone ? langKey("gui.prompt.resetToApply","Reset the canvas to apply changes.") : langKey("gui.prompt.refreshToApply","Refresh the page to apply changes."), undefined, "Removed Mod");
 			}
 		}
 
@@ -20275,10 +20318,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 				})
 			}
 			displaySavesList("saveSlotList", saveItems, true);
-			savesParent.style.display = "block";
-			showingMenu = "saves";
-			paused = true;
-			checkPause();
+			openTopLevelWindow("saves",savesParent);
 		}
 		function showOnlineWarning(callback) {
 			if (settings.onlineWarning) {
@@ -20672,7 +20712,6 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			input.click();
 		}
 		function showSavePrompt() {
-			closeMenu();
 			if (!savingState) return;
 			var savePromptParent = document.getElementById("savePromptParent");
 			var saveWarning = document.getElementById("saveWarning");
@@ -20719,8 +20758,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 					})
 				}
 			}
-			savePromptParent.style.display = "block";
-			showingMenu = "savePrompt";
+			openTopLevelWindow("savePrompt",savePromptParent);
 			document.getElementById("saveName").focus();
 		}
 			function localizedPromptTitle(title) {
@@ -20736,9 +20774,6 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			}
 			function showPromptScreen() {
 			if (!promptState) return;
-			closeMenu("prompt");
-			paused = true;
-			checkPause();
 			var promptParent = document.getElementById("promptParent");
 			var menuTitle = document.querySelector("#promptMenu .menuTitle");
 				menuTitle.innerText = localizedPromptTitle(promptState.title || "Notice");
@@ -20791,8 +20826,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 			else if (promptState.type === "dir") {
 				promptDirs.style.display = "block";
 			}
-			promptParent.style.display = "block";
-			showingMenu = "prompt";
+			openTopLevelWindow("prompt",promptParent);
 			if (promptState.type === "input") {
 				document.getElementById("promptInput").focus();
 				document.getElementById("promptInput").select();
@@ -20800,10 +20834,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 		}
 		function showSettings() {
 			var settingsParent = document.getElementById("settingsParent");
-			settingsParent.style.display = "block";
-			showingMenu = "settings";
-			paused = true;
-			checkPause();
+			openTopLevelWindow("settings",settingsParent);
 		}
 		function setSetting(setting,value) {
 			settings[setting] = value;
@@ -21013,8 +21044,6 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 		}
 		function handlePrompt(result) {
 			if (!promptState) return;
-			paused = false;
-			checkPause();
 			let handler = promptState.handler;
 			let after = promptState.after;
 			closeMenu();
@@ -21035,57 +21064,104 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 		placingImage = null;
 		dragStart = null;
 		draggingPixels = null;
-		editingPixels = [];
 		lookupTempElements = {};
 		hiding = false;
-		// Drive logical ticks from a fixed pulse so higher speeds can advance in
-		// bounded batches without relying on sub-10ms browser timers.
+		// Simulation and rendering have separate clocks. The simulator yields after
+		// short slices instead of being limited to one batch per animation frame.
 		tps = mapLegacyTPS(settings.tps || 30);
 		settings.tps = tps;
 		resetSimulationSchedulerClock();
 		simulationActualWindowStarted = simulationLastPulseTime;
-		function simulationPulse() {
+		function simulationWorkBudget() {
+			if (tps >= 150) return 8;
+			if (tps >= 90) return 6;
+			if (tps >= 60) return 5;
+			return SIMULATION_WORK_BUDGET_MS;
+		}
+		function simulationRenderInterval() {
+			if (simulationIsPaused() || tps <= 60) return 1000/60;
+			if (tps < 150) return 1000/30;
+			return 1000/20;
+		}
+		function simulationPulse(workBudget=SIMULATION_WORK_BUDGET_MS) {
 			const now = simulationSchedulerNow();
 			const elapsed = Math.max(0,Math.min(250,now-simulationLastPulseTime));
 			simulationLastPulseTime = now;
-			if (paused || manualPaused) {
+			if (simulationIsPaused()) {
 				simulationTickDebt = 0;
 			}
 			else {
 				simulationTickDebt = Math.min(SIMULATION_MAX_BACKLOG_TICKS,simulationTickDebt+elapsed*tps/1000);
 				const workStarted = simulationSchedulerNow();
 				let completed = 0;
-				while (simulationTickDebt >= 1 && completed < SIMULATION_MAX_TICKS_PER_PULSE && simulationSchedulerNow()-workStarted < SIMULATION_WORK_BUDGET_MS) {
+				while (simulationTickDebt >= 1 && completed < SIMULATION_MAX_TICKS_PER_PULSE && simulationSchedulerNow()-workStarted < workBudget) {
 					tick();
 					simulationTickDebt -= 1;
 					completed++;
 					simulationActualWindowTicks++;
-					if (paused || manualPaused) {
+					if (simulationIsPaused()) {
 						simulationTickDebt = 0;
 						break;
 					}
 				}
 			}
-			const actualElapsed = now-simulationActualWindowStarted;
-			if (actualElapsed >= 500) {
+			const measuredAt = simulationSchedulerNow();
+			const actualElapsed = measuredAt-simulationActualWindowStarted;
+			if (actualElapsed >= 2000) {
 				simulationActualTPS = simulationActualWindowTicks*1000/Math.max(1,actualElapsed);
 				simulationActualWindowTicks = 0;
-				simulationActualWindowStarted = now;
+				simulationActualWindowStarted = measuredAt;
 				updateSpeedButton();
 			}
 		}
-		tickInterval = window.setInterval(simulationPulse, SIMULATION_PULSE_MS);
+		function scheduleSimulationLoop() {
+			if (simulationLoopTimer !== null) window.clearTimeout(simulationLoopTimer);
+			let delay = 16;
+			if (document.hidden) delay = 50;
+			else if (!simulationIsPaused()) {
+				if (simulationTickDebt >= 1) delay = 0;
+				else delay = Math.max(1,Math.min(8,(1-simulationTickDebt)*1000/Math.max(1,tps)));
+			}
+			if (delay === 0 && simulationMessageChannel) {
+				if (!simulationLoopQueued) {
+					simulationLoopQueued = true;
+					simulationMessageChannel.port2.postMessage(0);
+				}
+				return;
+			}
+			simulationLoopTimer = window.setTimeout(simulationSchedulerLoop,delay);
+		}
+		function simulationSchedulerLoop() {
+			simulationLoopTimer = null;
+			simulationLoopQueued = false;
+			if (!document.hidden) simulationPulse(simulationWorkBudget());
+			scheduleSimulationLoop();
+		}
+		if (simulationMessageChannel) simulationMessageChannel.port1.onmessage = simulationSchedulerLoop;
+		tickInterval = window.setInterval(function() {
+			if (document.hidden) simulationPulse(12);
+		}, SIMULATION_PULSE_MS);
 		function resetInterval(newtps=30) {
 			newtps = Math.max(1,Math.min(MAX_TPS,parseInt(newtps) || 30));
 			tps = newtps;
 			resetSimulationSchedulerClock();
 			updateSpeedButton();
 		}
-		window.addEventListener("load",updateSpeedButton);
-		// renderInterval = window.setInterval(drawLayers, 1000/60);
-		let animation = function() {
-			drawLayers();
-			updateStats();
+		window.addEventListener("load",function() {
+			updateSpeedButton();
+			scheduleSimulationLoop();
+		});
+		window.addEventListener("visibilitychange",function() {
+			resetSimulationSchedulerClock();
+			scheduleSimulationLoop();
+		});
+		let animation = function(now) {
+			const renderInterval = simulationRenderInterval();
+			if (!simulationLastRenderTime || now-simulationLastRenderTime >= renderInterval) {
+				drawLayers();
+				updateStats();
+				simulationLastRenderTime = now-(now-simulationLastRenderTime)%renderInterval;
+			}
 			requestAnimationFrame(animation);
 		}
 		requestAnimationFrame(animation);
@@ -21099,8 +21175,7 @@ for (var k = 0; k < b0.split(" AND ").length; k++) {
 		}
 		paused = true;
 		manualPaused = true;
-		editMode = false;
-		function focusGame() { document.getElementById("game").focus(); if(showingMenu) { closeMenu(); } }
+		function focusGame() { document.getElementById("game").focus(); }
 
 		autoElements = {
 		"molten": { // Solid -> Liquid
@@ -21312,6 +21387,10 @@ function finalizeColor(obj) {
 function finalizeElementAfter(key) {
 	elements[key].id = nextElemID;
 	nextElemID++;
+	const simulationOriginalBehavior = elements[key].behavior;
+	elements[key]._simulationCustomTick = typeof elements[key].tick === "function";
+	if (simulationOriginalBehavior === behaviors.WALL || (!simulationOriginalBehavior && !elements[key]._simulationCustomTick)) elements[key]._simulationBehavior = "wall";
+	else if (simulationOriginalBehavior === behaviors.POWDER) elements[key]._simulationBehavior = "powder";
 
 	// Language Loader Part 2
 	if (lang[key] !== undefined) {
@@ -21635,13 +21714,9 @@ window.onload = function() {
 		var newHeight = Math.ceil(window.innerHeight*0.6 / pixelSize) * pixelSize;
 	}
 	else {
-		var newWidth  = Math.ceil(window.innerWidth*0.9 / pixelSize) * pixelSize;
-		var newHeight = Math.ceil(window.innerHeight*0.675 / pixelSize) * pixelSize;
+		var newWidth  = Math.ceil(window.innerWidth*0.96 / pixelSize) * pixelSize;
+		var newHeight = Math.ceil(window.innerHeight*0.78 / pixelSize) * pixelSize;
 	}
-	// If the new width is greater than 1000, set it to 1000
-	if (newWidth > 1000) { newWidth = 1000; }
-	// If we are on a desktop and the new height is greater than 500, set it to 500
-	if (window.innerWidth > 1000 && newHeight > 500) { newHeight = 500; }
 	if (!settings.bgimg) canvas.style.backgroundColor = settings.bg||"#000000";
 
 	autoResizeCanvas = function(clear, ratio) {
@@ -21654,13 +21729,9 @@ window.onload = function() {
 			var newHeight = Math.ceil(window.innerHeight*0.6 / pixelSize) * pixelSize;
 		}
 		else {
-			var newWidth  = Math.ceil(window.innerWidth*0.9 / pixelSize) * pixelSize;
-			var newHeight = Math.ceil(window.innerHeight*0.675 / pixelSize) * pixelSize;
+			var newWidth  = Math.ceil(window.innerWidth*0.96 / pixelSize) * pixelSize;
+			var newHeight = Math.ceil(window.innerHeight*0.78 / pixelSize) * pixelSize;
 		}
-		// If the new width is greater than 1000, set it to 1000
-		if (newWidth > 1002) { newWidth = 1002; }
-		// If we are on a desktop and the new height is greater than 500, set it to 500
-		if (window.innerWidth > 1000 && newHeight > 500) { newHeight = 500; }
 
 		// newHeight -= newHeight % pixelSize;
 		// newWidth -= newWidth % pixelSize;
@@ -21705,6 +21776,7 @@ window.onload = function() {
 		pixelSize3 = newPixelSize*3;
 		height = Math.round(newHeight/newPixelSize)-1;
 		width = Math.round(newWidth/newPixelSize)-1;
+		refreshMaxPixels();
 		mousePos = {x:Math.round(width/2),y:Math.round(height/2)};
 		if (clear!==false) { clearAll(); }
 		var canvasLayerKeys = Object.keys(canvasLayers);
@@ -21717,6 +21789,7 @@ window.onload = function() {
 			layerCtx.mozImageSmoothingEnabled = false;
 			layerCtx.imageSmoothingEnabled = false;
 		}
+		if (typeof applyCanvasView === "function") applyCanvasView();
 	}
 	autoResizeCanvas(false);
 
@@ -21743,7 +21816,6 @@ window.onload = function() {
 	document.getElementById("canvasDiv").style.display = "block";
 
 	clearAll();
-	resetWorldTimeline("initial");
 	// randomChoices = the keys of "elements" with any element with the category "tools" or the property excludeRandom set to true removed
 	randomChoices = Object.keys(elements).filter(function(e) {
 		let info = elements[e];
@@ -21752,17 +21824,15 @@ window.onload = function() {
 		return info.category !== "tools" && info.category !== "edit" && !info.tool;
 	});
 	gameCanvas.addEventListener("mousedown", function(e){
-		captureWorldTimelineSnapshot("before-player-operation");
-		if (!showingMenu && elements[currentElement] && elements[currentElement].onMouseDown && e.button == 0) {
+		if (!e.ctrlKey && elements[currentElement] && elements[currentElement].onMouseDown && e.button == 0) {
 			elements[currentElement].onMouseDown(e);
 		}
 	});
 	gameCanvas.addEventListener("mousedown", mouseClick);
 	gameCanvas.addEventListener("touchstart", function(e) {
-		captureWorldTimelineSnapshot("before-player-operation");
 		mousePos = getMousePos(canvas, e);
 		if (e.touches) e = e.touches[0];
-		if (!showingMenu && elements[currentElement] && elements[currentElement].onMouseDown) {
+		if (elements[currentElement] && elements[currentElement].onMouseDown) {
 			elements[currentElement].onMouseDown(e);
 		}
 		return false;
@@ -21773,7 +21843,7 @@ window.onload = function() {
 	gameCanvas.addEventListener("touchend", function(e) {
 		// mousePos = getMousePos(canvas, e);
 		if (e.touches) e = e.touches[0];
-		if (!showingMenu && elements[currentElement] && elements[currentElement].onMouseUp) {
+		if (elements[currentElement] && elements[currentElement].onMouseUp) {
 			elements[currentElement].onMouseUp(e);
 		}
 		return false;
@@ -21888,16 +21958,7 @@ window.onload = function() {
 			}
 		}
 		if (e.ctrlKey || e.metaKey) {
-			if (e.keyCode == 90) {
-				e.preventDefault();
-				if (e.shiftKey) redoWorld();
-				else undoWorld();
-			}
-			else if (e.keyCode == 89) {
-				e.preventDefault();
-				redoWorld();
-			}
-			else if (e.keyCode == 83) { // Ctrl+S = Save
+			if (e.keyCode == 83) { // Ctrl+S = Save
 				e.preventDefault();
 				saveToFile();
 				if (e.shiftKey) confirmSave();
@@ -21915,7 +21976,7 @@ window.onload = function() {
 		else if (e.keyCode == 9) {
 			document.body.classList.add("usingTab");
 		}
-		// F1 = hide #underDiv, #infoParent, #modParent, #pagetitle, #colorSelector if they aren't hidden, otherwise show them
+		// F1 toggles the main canvas controls without closing independent windows.
 		if (e.keyCode == 112) {
 			e.preventDefault();
 			if (document.getElementById("underDiv").style.display == "none") {
@@ -21925,19 +21986,16 @@ window.onload = function() {
 				document.getElementById("bottomInfoBox").style.display = "block";
 			} else {
 				document.getElementById("underDiv").style.display = "none";
-				if (showingMenu) {
-					closeMenu()
-				};
 				document.getElementById("pagetitle").style.display = "none";
 				document.getElementById("colorSelector").style.display = "none";
 				document.getElementById("bottomInfoBox").style.display = "none";
 			}
 		}
 		if (showingMenu) {
-			// esc or / or tab / or \ (while in settings) to close
-			if (e.keyCode == 27 || (e.keyCode == 191 && showingMenu=="info") || e.keyCode == 9 || (e.keyCode == 220 && showingMenu=="settings")) {
+			if (e.keyCode == 27) {
 				e.preventDefault();
 				closeMenu();
+				return;
 			}
 			// enter to clear infoSearch
 			else if (e.keyCode == 13 && showingMenu == "info") {
@@ -21948,36 +22006,24 @@ window.onload = function() {
 			// enter to confirm prompt
 			else if (e.keyCode == 13 && showingMenu == "prompt" && promptState && promptState.type !== "input" && (e.target.tagName !== "INPUT")) {
 				handlePrompt(true);
+				return;
 			}
 			// l to closeMenu() if showing saves
 			else if (e.keyCode == 76 && showingMenu == "saves" && e.target.tagName !== "INPUT") {
 				e.preventDefault();
-				closeMenu();
+				closeMenu("saves");
+				return;
 			}
-			return;
 		}
-		else {
-			if (e.keyCode == 27) { // escape
-				e.preventDefault();
-				if (shaping) {
-					mouseIsDown = false;
-					shaping = 0;
-					shapeStart = null;
-				}
-				if (editingPixels && editingPixels.length) {
-					mouseIsDown = false;
-					editingPixels = [];
-				}
-				else if (editMode) {
-					toggleEditMode();
-				}
-				else if (logInterval) {
-					clearLog();
-				}
-				else {
-					setView(1);
-				}
+		else if (e.keyCode == 27) { // escape
+			e.preventDefault();
+			if (shaping) {
+				mouseIsDown = false;
+				shaping = 0;
+				shapeStart = null;
 			}
+			if (logInterval) clearLog();
+			else setView(1);
 		}
 
 		// if the user is in an input, return
@@ -22160,13 +22206,25 @@ window.onload = function() {
 			document.getElementById('elementButton-'+currentElement).style.removeProperty('background-image');
 			document.getElementById('elementButton-'+currentElement).style.background = currentColorMap[currentElement];">
 				<label id="colorSelectorLabel" for="colorSelector" hidden>Custom color</label>
+				<div id="factionColorPalette" aria-label="阵营颜色" style="display:none">
+					<button type="button" data-color="#d95763" style="background:#d95763" onclick="selectCivilizationFactionColor(this.dataset.color)" title="阵营颜色 1"></button>
+					<button type="button" data-color="#4f83d1" style="background:#4f83d1" onclick="selectCivilizationFactionColor(this.dataset.color)" title="阵营颜色 2"></button>
+					<button type="button" data-color="#4da86b" style="background:#4da86b" onclick="selectCivilizationFactionColor(this.dataset.color)" title="阵营颜色 3"></button>
+					<button type="button" data-color="#d3a43d" style="background:#d3a43d" onclick="selectCivilizationFactionColor(this.dataset.color)" title="阵营颜色 4"></button>
+					<button type="button" data-color="#8c63c7" style="background:#8c63c7" onclick="selectCivilizationFactionColor(this.dataset.color)" title="阵营颜色 5"></button>
+					<button type="button" data-color="#d4743c" style="background:#d4743c" onclick="selectCivilizationFactionColor(this.dataset.color)" title="阵营颜色 6"></button>
+					<button type="button" data-color="#3da7aa" style="background:#3da7aa" onclick="selectCivilizationFactionColor(this.dataset.color)" title="阵营颜色 7"></button>
+					<button type="button" data-color="#c6539b" style="background:#c6539b" onclick="selectCivilizationFactionColor(this.dataset.color)" title="阵营颜色 8"></button>
+					<button type="button" data-color="#7f9f35" style="background:#7f9f35" onclick="selectCivilizationFactionColor(this.dataset.color)" title="阵营颜色 9"></button>
+					<button type="button" data-color="#6f7f91" style="background:#6f7f91" onclick="selectCivilizationFactionColor(this.dataset.color)" title="阵营颜色 10"></button>
+				</div>
 			<div id="logDiv"><span id="logText"></span></div>
 		</div>
 		<div id="underDiv">
 			<div id="stats"></div>
 			<div id="controls">
 				<div id="toolControls">
-					<span id="interactionModeSwitch" role="group" aria-label="交互模式"><button id="interactionModePlace" title="放置和擦除方块" class="controlButton" onclick='HumanSociety.setInteractionMode("place");focusGame();' on="true" aria-pressed="true">放置</button><button id="interactionModeControl" title="右键选择文明人类并下达命令" class="controlButton" onclick='HumanSociety.setInteractionMode("control");focusGame();' on="false" aria-pressed="false">控制</button></span><button id="shiftButton" title="Toggle Shift key" class="controlButton" onclick='toggleShift();focusGame();' on="false" style="display:none">↑</button><button id="pauseButton" title="Pause/play the simulation" class="controlButton" onclick='paused=!paused;manualPaused=paused;checkPause();focusGame();' on="false">Pause</button><button id="frameButton" title="Pause and play one frame" class="controlButton" onclick='doFrame();focusGame();' on="false">&gt;</button><button id="speedButton" title="Simulation speed: 30 TPS" class="controlButton" onclick='cycleSimulationSpeed();'>1×</button><button id="undoWorldButton" title="撤回世界状态 (Ctrl+Z)" class="controlButton" onclick='undoWorld();focusGame();' disabled>↶</button><button id="redoWorldButton" title="恢复世界状态 (Ctrl+Y)" class="controlButton" onclick='redoWorld();focusGame();' disabled>↷</button><button id="sizeDownButton" title="Decrease the brush size" class="controlButton" onclick="mouseSize -= shiftDown?mouseSize-1:1;checkMouseSize(-1);centerMouse();focusGame();">-</button><button id="sizeUpButton" title="Increase the brush size" class="controlButton" onclick="mouseSize += shiftDown?14:1;checkMouseSize(1);centerMouse();focusGame();">+</button><button id="resetButton" title="Clear the entire scene" class="controlButton" onclick="captureWorldTimelineSnapshot('before-reset');resetPrompt();">Reset</button><button id="replaceButton" title="Override existing pixels when placing" class="controlButton" onclick='if (mode == "replace") {mode = null;this.setAttribute("on","false");}else {mode = "replace";this.setAttribute("on","true");};focusGame();' on="false">Replace</button><button id="elemSelectButton" title="Select an element by name" class="controlButton" onclick='chooseElementPrompt();'>Elem</button><button id="editModeButton" title="Switch to Edit Mode" class="controlButton" onclick='toggleEditMode();'>Edit</button><button id="infoButton" title="Brings up the element info screen" class="controlButton" onclick='if (showingMenu!="info"){closeMenu();showInfo("")}else{closeMenu()};' on="false">Info</button><button id="savesButton" title="Brings up the Save & Load menu" class="controlButton" onclick='if (showingMenu!="saves"){closeMenu();showSaves()}else{closeMenu()};' on="false">Saves</button><button id="modsButton" title="Brings up the Mod Manager" class="controlButton" onclick='if (showingMenu!="mods"){closeMenu();showModManager()}else{closeMenu()};' on="false">Mods</button><button id="settingsButton" title="Brings up the Settings screen" class="controlButton" onclick='if (showingMenu!="settings"){closeMenu();showSettings()}else{closeMenu()};' on="false">Settings</button>
+					<span id="interactionModeSwitch" role="group" aria-label="交互模式"><button id="interactionModePlace" title="放置和擦除方块" class="controlButton" onclick='HumanSociety.setInteractionMode("place");focusGame();' on="true" aria-pressed="true">放置</button><button id="interactionModeControl" title="右键选择文明人类并下达命令" class="controlButton" onclick='HumanSociety.setInteractionMode("control");focusGame();' on="false" aria-pressed="false">控制</button></span><button id="shiftButton" title="Toggle Shift key" class="controlButton" onclick='toggleShift();focusGame();' on="false" style="display:none">↑</button><button id="pauseButton" title="Pause/play the simulation" class="controlButton" onclick='paused=!paused;manualPaused=paused;checkPause();focusGame();' on="false">Pause</button><button id="frameButton" title="Pause and play one frame" class="controlButton" onclick='doFrame();focusGame();' on="false">&gt;</button><button id="speedButton" title="Simulation speed: 30 TPS" class="controlButton" onclick='cycleSimulationSpeed();'>1×</button><button id="canvasZoomOutButton" title="缩小镜头（Ctrl+滚轮）" class="controlButton" onclick='setCanvasZoom(canvasView.zoom*100-10);'>-</button><button id="canvasZoomResetButton" title="复位镜头" class="controlButton" onclick='resetCanvasView();'>100%</button><button id="canvasZoomInButton" title="放大镜头（Ctrl+滚轮）" class="controlButton" onclick='setCanvasZoom(canvasView.zoom*100+10);'>+</button><button id="sizeDownButton" title="Decrease the brush size" class="controlButton" onclick="mouseSize -= shiftDown?mouseSize-1:1;checkMouseSize(-1);centerMouse();focusGame();">-</button><button id="sizeUpButton" title="Increase the brush size" class="controlButton" onclick="mouseSize += shiftDown?14:1;checkMouseSize(1);centerMouse();focusGame();">+</button><button id="resetButton" title="Clear the entire scene" class="controlButton" onclick="resetPrompt();">Reset</button><button id="replaceButton" title="Override existing pixels when placing" class="controlButton" onclick='if (mode == "replace") {mode = null;this.setAttribute("on","false");}else {mode = "replace";this.setAttribute("on","true");};focusGame();' on="false">Replace</button><button id="savesButton" title="Brings up the Save & Load menu" class="controlButton" onclick='toggleTopLevelWindow("saves",showSaves);' on="false">Saves</button><button id="settingsButton" title="Brings up the Settings screen" class="controlButton" onclick='toggleTopLevelWindow("settings",showSettings);' on="false">Settings</button>
 				</div>
 				<script>
 					// if it is the 1st of April, add a rainbow-colored button
@@ -22186,7 +22244,6 @@ window.onload = function() {
 					}
 				</script>
 				<div id="category-tools" category="tools" style="display: flex;"></div>
-				<div id="category-edit" class="category" category="edit" style="display: none;"><button class="elementButton close" onclick="toggleEditMode();">X</button></div>
 				<div id="categoryControls"></div>
 				<div id="elementControls"></div>
 			</div>
@@ -22239,35 +22296,6 @@ window.onload = function() {
 				<input type="text" id="infoSearch" placeholder="Element..." oninput="showInfo(this.value);" enterkeyhint="done"></input>
 		</div>
 	
-		<!--Mod Manager Page with the list of current mods and a url input box with a plus button to add it-->
-		<div id="modParent">
-			<div id="modManager">
-				<button class="XButton" onclick="closeMenu();">-</button>
-					<span class="menuTitle" id="modManagerTitle">Enabled Mods</span>
-				<ul class="menuText" id="modManagerList"></ul>
-					<span id="noMods" style="display:none">You have no mods enabled.<br><br></span>
-				<script>
-					// If enabledMods has items, add an li to modManagerList for each item with the href to the item, target blank, and the item's name, with "<span class="removeModX" onclick='removeMod('>X</span>" after the link
-					if (enabledMods.length > 0) {
-						modManagerList = document.getElementById("modManagerList");
-						for (var i = 0; i < enabledMods.length; i++) {
-							var mod = enabledMods[i];
-							// modName is the last part of the mod's path
-							var modName = mod.split("/").pop();
-							modManagerList.innerHTML += `<li><a href="${mod.replaceAll('"','')}" target="_blank">${modName}</a> <span class="removeModX" onclick='removeMod("${mod.replaceAll('"','\\\"')}")'>X</span></li>`
-						}
-					}
-					else {
-						document.getElementById("noMods").style.display = "block";
-					}
-				</script>
-					<span id="modManagerTagline">See the <a href="https://sandboxels.R74n.com/mod-list" target="_blank">Mod List</a> or <a href="https://github.com/R74nCom/sandboxels/" target="_blank">GitHub</a>.</span>
-				<a id="modManagerRefresh" style="padding-top:1em;display:none" href="#" onclick="location.reload();return false;">Reload to apply changes!</a>
-				<input type="text" id="modManagerUrl" placeholder=".JS or URL..." onkeydown="if (event.keyCode == 13) {addMod(this.value);this.value = '';};this.focus();" enterkeyhint="done"></input>
-			</div>
-			<!-- <button id="modManagerAdd" onclick="addMod(document.getElementById('modManagerUrl').value); document.getElementById('modManagerUrl').value = '';">+</button> -->
-		</div>
-
 		<div id="savesParent" class="menuParent">
 			<div id="savesMenu" class="menuScreen">
 				<button class="XButton" onclick="closeMenu();">-</button>
@@ -22490,6 +22518,9 @@ window.onload = function() {
 						<input id="setting-humanSocietyBuildingScale" type="range" min="50" max="200" step="5" value="100" oninput="setSetting('humanSocietyBuildingScale',parseInt(this.value));this.nextElementSibling.textContent=this.value+'%'">
 						<output>100%</output>
 					</span>
+					<span setting="humanSocietyTutorial" class="setting-span multisetting" title="重新开始文明发展引导">
+						<input type="button" value="重新开始文明教程" id="settingLabel-humanSocietyTutorial" class="settingsButton" onclick="HumanSociety.restartTutorial();closeMenu();">
+					</span>
 					<span setting="lang" class="setting-span" title="Default: Disabled" style="display:none" id="setting-span-lang">
 						<span id="settingLabel-lang">Language</span>
 					</span>
@@ -22687,6 +22718,8 @@ if (document.referrer && document.referrer.indexOf("r74n.") === -1) {
 			window.addEventListener('load', function() {
 				if (standalone) return;
 				if (window.location.protocol === "file:") return;
+				var localHostname = window.location.hostname;
+				if (localHostname === "localhost" || localHostname === "127.0.0.1" || localHostname === "::1" || localHostname.endsWith(".localhost")) return;
 				var adscript1 = document.createElement('script');
 				adscript1.src = "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8485284630785740";
 				adscript1.crossorigin = "anonymous";
@@ -22805,7 +22838,6 @@ if (document.referrer && document.referrer.indexOf("r74n.") === -1) {
 				if (e.id !== "savesTabDiscord") e.style.display = "none";
 			})
 			document.getElementById("savesButton").addEventListener("click", showDiscordSaves);
-			document.getElementById("modsButton").style.display = "none";
 		}
 		if (standaloneType === "steam") {
 			// Hide scrollbars

@@ -20,20 +20,20 @@ const EXPECTED_COSTS = [
     [160, 220]
 ];
 const EXPECTED_COUNTS = {
-    tribal: 7,
-    stone: 6,
-    agriculture: 6,
-    bronze: 6,
-    iron: 5,
-    castle: 8
+    tribal: 8,
+    stone: 7,
+    agriculture: 7,
+    bronze: 7,
+    iron: 6,
+    castle: 9
 };
 const EXPECTED_ADVANCE_REQUIREMENTS = {
-    tribal: 5,
+    tribal: 6,
     stone: 5,
     agriculture: 5,
     bronze: 5,
-    iron: 4,
-    castle: 6
+    iron: 5,
+    castle: 7
 };
 const EXPECTED_POPULATION_TARGETS = {
     tribal: 6,
@@ -44,8 +44,8 @@ const EXPECTED_POPULATION_TARGETS = {
     castle: 24
 };
 const EXPECTED_JOB_WEIGHTS = {
-    tribal: {food: 2, wood: 2, builder: 1, flex: 1},
-    stone: {food: 2, wood: 2, miner: 2, builder: 1, artisan: 1},
+    tribal: {food: 1, wood: 1, miner: 1, builder: 1, forester: 1, military: 1},
+    stone: {food: 2, wood: 1, miner: 2, builder: 1, forester: 1, military: 1},
     agriculture: {
         food: 4, wood: 2, miner: 1, builder: 1, forester: 1,
         artisan: 1, military: 1, flex: 1
@@ -66,6 +66,7 @@ const EXPECTED_JOB_WEIGHTS = {
 const EXPECTED_TECHS = {
     tribal: [
         ["organized_gathering", "production", 1, 20],
+        ["careful_gathering", "production", 2, 28],
         ["controlled_fire", "production", 2, 28],
         ["simple_shelters", "construction", 1, 20],
         ["woodworking", "construction", 2, 28],
@@ -75,6 +76,7 @@ const EXPECTED_TECHS = {
     ],
     stone: [
         ["stone_knapping", "production", 1, 35],
+        ["stone_sorting", "production", 2, 48],
         ["polished_axes", "production", 2, 48],
         ["quarrying", "construction", 2, 48],
         ["craft_specialization", "society", 1, 35],
@@ -84,6 +86,7 @@ const EXPECTED_TECHS = {
     agriculture: [
         ["food_preservation", "production", 1, 55],
         ["managed_forestry", "production", 2, 75],
+        ["intensive_harvesting", "production", 3, 75],
         ["village_planning", "construction", 1, 55],
         ["militia", "society", 1, 55],
         ["bowmaking", "military", 1, 55],
@@ -92,6 +95,7 @@ const EXPECTED_TECHS = {
     bronze: [
         ["copper_prospecting", "production", 1, 80],
         ["bronze_foundry", "construction", 2, 110],
+        ["bronze_tools", "production", 3, 110],
         ["writing", "society", 1, 80],
         ["administration", "society", 2, 110],
         ["bronze_weapons", "military", 1, 80],
@@ -100,12 +104,14 @@ const EXPECTED_TECHS = {
     iron: [
         ["iron_prospecting", "production", 1, 115],
         ["iron_smelting", "production", 2, 155],
+        ["iron_extraction_tools", "production", 3, 155],
         ["stone_fortifications", "construction", 1, 115],
         ["iron_weapons", "military", 1, 115],
         ["iron_armor", "military", 2, 155]
     ],
     castle: [
         ["steelmaking", "production", 1, 160],
+        ["advanced_extraction", "production", 2, 220],
         ["supply_logistics", "society", 2, 220],
         ["castle_building", "construction", 1, 160],
         ["library", "society", 1, 160],
@@ -120,8 +126,14 @@ const ALLOWED_MODIFIER_OPERATIONS = {
     carryCapacity: "add",
     harvestDurationMultiplier: "multiply",
     woodHarvestDurationMultiplier: "multiply",
+    forestryRecheckMultiplier: "multiply",
     stoneHarvestDurationMultiplier: "multiply",
     foodHarvestDurationMultiplier: "multiply",
+    foodYieldBonus: "add",
+    woodYieldBonus: "add",
+    stoneYieldBonus: "add",
+    copperYieldBonus: "add",
+    rawIronYieldBonus: "add",
     buildDurationMultiplier: "multiply",
     roleWorkRateMultiplier: "multiply",
     knowledgeRateMultiplier: "multiply",
@@ -193,7 +205,7 @@ test("module exports JSON-friendly data in CommonJS and browser-global modes", (
 
     assert.equal(context.HumanSocietyTechData.version, 1);
     assert.equal(context.HumanSocietyTechData.ERAS.length, 6);
-    assert.equal(context.HumanSocietyTechData.TECHNOLOGIES.length, 38);
+    assert.equal(context.HumanSocietyTechData.TECHNOLOGIES.length, 44);
 });
 
 test("compact eras expose exact technology order and strict over-70-percent thresholds", () => {
@@ -214,10 +226,18 @@ test("compact eras expose exact technology order and strict over-70-percent thre
         castle: 96
     });
     assert.deepEqual(Data.ERAS.map((era) => era.id), EXPECTED_ERA_IDS);
-    assert.equal(Data.TECHNOLOGIES.length, 38);
+    assert.equal(Data.TECHNOLOGIES.length, 44);
     assert.equal(JSON.stringify(Data.ERA_JOB_WEIGHTS).includes("industry"), false);
 
     const allIds = new Set();
+    const advancementCosts = [
+        {food: 10, wood: 15},
+        {food: 18, wood: 25, stone: 15},
+        {food: 25, wood: 35, stone: 25},
+        {food: 35, wood: 45, stone: 35, bronze: 6},
+        {food: 50, wood: 60, stone: 50, bronze: 5, iron: 10},
+        {}
+    ];
     Data.ERAS.forEach((era, eraIndex) => {
         const expectedSpecs = EXPECTED_TECHS[era.id];
         const expectedIds = expectedSpecs.map(([id]) => id);
@@ -227,6 +247,7 @@ test("compact eras expose exact technology order and strict over-70-percent thre
         assert.equal(era.index, eraIndex);
         assert.equal(era.vision, EXPECTED_VISION[eraIndex]);
         assert.deepEqual(era.costs, EXPECTED_COSTS[eraIndex]);
+        assert.deepEqual(era.advancementCost, advancementCosts[eraIndex]);
         assert.equal(era.technologyCount, expectedCount);
         assert.equal(era.requiredTechsToAdvance, expectedRequired);
         assert.deepEqual(era.advancement, {
@@ -294,7 +315,7 @@ test("technology prerequisites exist, are earlier in the tree, and are acyclic",
         });
         visit(technology);
     });
-    assert.equal(visited.size, 38);
+    assert.equal(visited.size, 44);
 });
 
 test("all effects use the runtime's canonical technology-effect contract", () => {
@@ -328,6 +349,28 @@ test("all effects use the runtime's canonical technology-effect contract", () =>
             }
             assert.fail(`${location} has invalid effect type ${effect.type}`);
         });
+    });
+});
+
+test("resource technologies compose to the intended deterministic late-game yields", () => {
+    const technologyIds = new Set([
+        "careful_gathering",
+        "stone_sorting",
+        "intensive_harvesting",
+        "bronze_tools",
+        "iron_extraction_tools",
+        "advanced_extraction"
+    ]);
+    const capabilities = Core.compileTechnologyEffects(
+        Data.TECHNOLOGIES.filter((technology) => technologyIds.has(technology.id))
+    );
+
+    assert.deepEqual(capabilities.modifiers, {
+        foodYieldBonus: {operation: "add", value: 1},
+        woodYieldBonus: {operation: "add", value: 2},
+        stoneYieldBonus: {operation: "add", value: 1},
+        copperYieldBonus: {operation: "add", value: 1},
+        rawIronYieldBonus: {operation: "add", value: 1}
     });
 });
 

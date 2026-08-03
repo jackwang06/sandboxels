@@ -98,17 +98,20 @@
     });
     var ERA_JOB_WEIGHTS = Object.freeze({
         tribal: Object.freeze({
-            food: 2,
-            wood: 2,
+            food: 1,
+            wood: 1,
+            miner: 1,
             builder: 1,
-            flex: 1
+            forester: 1,
+            military: 1
         }),
         stone: Object.freeze({
             food: 2,
-            wood: 2,
+            wood: 1,
             miner: 2,
             builder: 1,
-            artisan: 1
+            forester: 1,
+            military: 1
         }),
         agriculture: Object.freeze({
             food: 4,
@@ -290,8 +293,14 @@
         carryCapacity: "add",
         harvestDurationMultiplier: "multiply",
         woodHarvestDurationMultiplier: "multiply",
+        forestryRecheckMultiplier: "multiply",
         stoneHarvestDurationMultiplier: "multiply",
         foodHarvestDurationMultiplier: "multiply",
+        foodYieldBonus: "add",
+        woodYieldBonus: "add",
+        stoneYieldBonus: "add",
+        copperYieldBonus: "add",
+        rawIronYieldBonus: "add",
         buildDurationMultiplier: "multiply",
         roleWorkRateMultiplier: "multiply",
         knowledgeRateMultiplier: "multiply",

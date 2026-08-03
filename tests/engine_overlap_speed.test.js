@@ -7,6 +7,7 @@ const assert = require("node:assert/strict");
 const vm = require("node:vm");
 
 const html = fs.readFileSync(path.join(__dirname, "../index.html"), "utf8");
+const css = fs.readFileSync(path.join(__dirname, "../style.css"), "utf8");
 
 function extractBlock(signature) {
     const start = html.indexOf(signature);
@@ -83,6 +84,8 @@ function createEngineHarness() {
         pixelColorPick() { return "rgb(0,0,0)"; },
         colorPatternPick() { return "rgb(0,0,0)"; },
         pixelTempCheck() {},
+        wakePixelForSimulation() {},
+        wakePixelsNearForSimulation() {},
         checkUnlock() {},
         saveSettings() {},
         removeFromRelation(pixel) { delete pixel._r; },
@@ -196,7 +199,8 @@ test("engine provides a persisted creature overlap layer for passable vegetation
 
 test("the building render hook sits between terrain and plant or creature pixels", () => {
     assert.match(html, /renderMidPixelList\s*=\s*\[\]/);
-    assert.match(html, /isPassableVegetationPixel\(pixel\)\s*\|\|\s*isCreaturePixel\(pixel\).*pixelsAboveBuildings\.push\(pixel\)/s);
+    assert.match(html, /isCreaturePixel\(pixel\)\s*\|\|\s*vegetationRendersAboveBuilding\(pixel\).*pixelsAboveBuildings\.push\(pixel\)/s);
+    assert.match(extractBlock("function vegetationRendersAboveBuilding("), /ensureTreeBuildingLayer\(pixel\)\s*!==\s*"below"/);
     assert.match(html, /drawPixelLayer\(pixelsBelowBuildings\).*renderMidPixelList.*drawPixelLayer\(pixelsAboveBuildings\)/s);
     assert.match(html, /id="setting-humanSocietyBuildingScale"[^>]*type="range"[^>]*min="50"[^>]*max="200"/);
 });
@@ -761,14 +765,153 @@ test("simulation speed cycles through 1x, 2x, 3x, and 5x with a hard 5x cap", ()
     assert.match(html, /id="speedButton"[^>]*>1×<\/button>/);
     assert.match(html, /function cycleSimulationSpeed\(\)/);
     assert.match(html, /SIMULATION_PULSE_MS\s*=\s*1000\/30/);
-    assert.match(html, /SIMULATION_MAX_TICKS_PER_PULSE\s*=\s*10/);
-    assert.match(html, /SIMULATION_WORK_BUDGET_MS\s*=\s*12/);
+    assert.match(html, /SIMULATION_MAX_TICKS_PER_PULSE\s*=\s*8/);
+    assert.match(html, /SIMULATION_WORK_BUDGET_MS\s*=\s*4/);
     assert.match(html, /SIMULATION_MAX_BACKLOG_TICKS\s*=\s*15/);
     assert.match(html, /while \(simulationTickDebt >= 1 && completed < SIMULATION_MAX_TICKS_PER_PULSE/);
+    assert.match(html, /function simulationSchedulerLoop\(\)/);
+    assert.match(html, /simulationPulse\(simulationWorkBudget\(\)\)/);
+    assert.match(html, /if \(document\.hidden\) simulationPulse\(12\)/);
+    assert.doesNotMatch(extractBlock("let animation = function("), /simulationPulse/);
+    assert.match(extractBlock("function simulationRenderInterval("), /tps < 150[\s\S]*1000\/30[\s\S]*1000\/20/);
     const speedButtonUpdater = extractBlock("function updateSpeedButton(");
     assert.match(speedButtonUpdater, /langKey\("guitemplate\.speedButton\.title"/);
     assert.match(speedButtonUpdater, /simulationActualTPS\.toFixed\(1\)/);
+    assert.match(speedButtonUpdater, /targetLabel\+"\/"\+actualLabel/);
+    assert.match(speedButtonUpdater, /data-saturated/);
     assert.doesNotMatch(html, /setInterval\(tick,\s*1000\/(?:new)?tps\)/);
+});
+
+test("stable wall and powder pixels use wakeable, periodically audited sleep", () => {
+    assert.match(html, /const pixelSimulationSleepState = new WeakMap\(\)/);
+    assert.match(html, /PIXEL_SLEEP_STABLE_TICKS\s*=\s*4/);
+    assert.match(html, /PIXEL_SLEEP_RECHECK_INTERVAL\s*=\s*120/);
+    assert.match(extractBlock("function pixelRequiresSimulation("), /info\._simulationBehavior === "wall"/);
+    assert.match(extractBlock("function pixelRequiresSimulation("), /info\._simulationBehavior !== "powder"/);
+    assert.match(extractBlock("function finalizeElementAfter("), /simulationOriginalBehavior === behaviors\.POWDER/);
+    assert.match(extractBlock("function tickPixels("), /simulationSleepingPixels\+\+/);
+    assert.match(extractBlock("function movePixel("), /wakePixelsNearForSimulation\(oldX,oldY\)/);
+    assert.match(extractBlock("function deletePixelObject("), /wakePixelsNearForSimulation\(deletedState\.x,deletedState\.y\)/);
+    assert.match(extractBlock("function burnPixel("), /wakePixelForSimulation\(pixel\)/);
+    assert.match(extractBlock("function pixelRequiresSimulation("), /simulationTickInterval/);
+    assert.match(fs.readFileSync(path.join(__dirname, "../scripts/human_society.js"), "utf8"), /elements\.civ_head\s*=\s*\{[\s\S]*simulationTickInterval:\s*4/);
+});
+
+test("the default pixel capacity scales to twice the canvas cell count", () => {
+    const context = {width: 199, height: 99, settings: {}, maxPixelCount: 0};
+    vm.createContext(context);
+    vm.runInContext([
+        extractBlock("function defaultMaxPixels("),
+        extractBlock("function refreshMaxPixels("),
+        "globalThis.result = refreshMaxPixels();"
+    ].join("\n"), context);
+    assert.equal(context.result, 40000);
+    assert.equal(context.maxPixelCount, 40000);
+
+    context.settings.limitless = true;
+    assert.equal(vm.runInContext("refreshMaxPixels()", context), 999999999999);
+    assert.match(html, /width\s*=\s*Math\.round\(newWidth\/newPixelSize\)-1;\s*refreshMaxPixels\(\)/);
+    assert.doesNotMatch(extractBlock("function refreshMaxPixels("), /settings\.maxpixels\s*\|\|/);
+});
+
+test("civilization-planted trees atomically reach a six-cell minimum height", () => {
+    const created = [];
+    const seed = {element: "sapling", x: 3, y: 8, temp: 20, civPlantedTreeId: 71, treeLineage: "managed-tree", treeSpecies: "sapling"};
+    const context = {
+        pixelTicks: 0,
+        maxPixelCount: 100,
+        currentPixels: [seed],
+        treeIdentitySerial: 0,
+        treeIdentityElements: new Set(["sapling", "wood"]),
+        Date,
+        isEmpty() { return true; },
+        movePixel(pixel, x, y) { pixel.x = x; pixel.y = y; return true; },
+        createPixel(element, x, y) {
+            const pixel = {element, x, y};
+            created.push(pixel);
+            context.currentPixels.push(pixel);
+            return pixel;
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        extractBlock("function stableTreeBuildingLayer("),
+        extractBlock("function assignNewTreeBuildingLayer("),
+        extractBlock("function ensureTreeBuildingLayer("),
+        extractBlock("function ensureTreeIdentity("),
+        extractBlock("function inheritTreeIdentity("),
+        extractBlock("function growCivilizationPlantedSeed("),
+        "globalThis.grow = growCivilizationPlantedSeed;"
+    ].join("\n"), context);
+
+    for (let segment = 0; segment < 5; segment++) {
+        context.pixelTicks = segment * 60;
+        context.grow(seed, "wood");
+        context.pixelTicks = seed.civGrowthReadyTick;
+        assert.equal(context.grow(seed, "wood"), true);
+    }
+    assert.equal(seed.civGrowthSegments, 5);
+    assert.equal(seed.y, 3);
+    assert.equal(created.length, 5);
+    assert.ok(created.every((pixel) => pixel.treeId === 71 && pixel.treeLineage === "managed-tree"));
+    assert.ok(seed.treeBuildingLayer === "above" || seed.treeBuildingLayer === "below");
+    assert.ok(created.every((pixel) => pixel.treeBuildingLayer === seed.treeBuildingLayer));
+    assert.equal(context.grow(seed, "wood"), false);
+});
+
+test("whole trees share one stable building layer and legacy identities migrate deterministically", () => {
+    const context = {Math: Object.create(Math), Date, pixelTicks: 0, treeIdentitySerial: 0, treeIdentityElements: new Set(["sapling", "wood"])};
+    context.Math.random = () => 0.25;
+    vm.createContext(context);
+    vm.runInContext([
+        extractBlock("function stableTreeBuildingLayer("),
+        extractBlock("function assignNewTreeBuildingLayer("),
+        extractBlock("function ensureTreeBuildingLayer("),
+        extractBlock("function ensureTreeIdentity("),
+        extractBlock("function inheritTreeIdentity("),
+        "globalThis.api = {ensureTreeIdentity, inheritTreeIdentity, ensureTreeBuildingLayer};"
+    ].join("\n"), context);
+
+    const planted = {treeLineage: "legacy-oak-17", element: "sapling"};
+    const firstLayer = context.api.ensureTreeBuildingLayer(planted);
+    assert.equal(context.api.ensureTreeBuildingLayer({treeLineage: "legacy-oak-17"}), firstLayer);
+
+    const child = {element: "wood"};
+    context.api.inheritTreeIdentity(planted, child);
+    assert.equal(child.treeBuildingLayer, firstLayer);
+    assert.equal(child.treeLineage, planted.treeLineage);
+
+    const fresh = {element: "sapling"};
+    context.api.ensureTreeIdentity(fresh, "sapling");
+    assert.equal(fresh.treeBuildingLayer, "above");
+});
+
+test("top-level windows support persisted dragging and eight-way resizing on desktop", () => {
+    const register = extractBlock("function registerFloatingWindow(");
+    assert.match(register, /\["n","ne","e","se","s","sw","w","nw"\]/);
+    assert.match(register, /floatingWindowLayoutStore\(\)\[panel\.id\]/);
+    assert.match(extractBlock("function finishFloatingWindow("), /applyFloatingWindowRect[\s\S]*true/);
+    assert.match(extractBlock("function floatingWindowMinimums("), /360,height:260/);
+    assert.match(html, /#infoParent,#settingsParent,\.menuParent,#peopleObserverPanel,#civilizationParent,#civilizationTutorial/);
+    assert.doesNotMatch(html, /id="(?:elemSelectButton|editModeButton|infoButton|modsButton|modParent|category-edit)"/);
+    assert.match(css, /\.floating-window-resize-ne[\s\S]*cursor:\s*nesw-resize/);
+    assert.match(css, /@media \(max-width: 700px\)[\s\S]*\.floating-window-resize\s*\{\s*display:\s*none/);
+});
+
+test("hot tick and render paths reuse pixel buffers instead of allocating full lists", () => {
+    assert.match(html, /const tickPixelBuffer\s*=\s*\[\]/);
+    assert.match(html, /const newCurrentPixels\s*=\s*tickPixelBuffer/);
+    assert.doesNotMatch(html, /(?:var|let|const) newCurrentPixels\s*=\s*\[\.\.\.currentPixels\]/);
+    assert.match(html, /const drawPixelListBuffer\s*=\s*\[\]/);
+    assert.match(html, /const pixelDrawList\s*=\s*drawPixelListBuffer/);
+    assert.doesNotMatch(html, /pixelsUnderlay\.concat\(pixelsFirst,pixelsOverlay,pixelsLast\)/);
+});
+
+test("local development never loads third-party advertising work", () => {
+    assert.match(html, /localHostname === "localhost"/);
+    assert.match(html, /localHostname === "127\.0\.0\.1"/);
+    assert.match(html, /localHostname === "::1"/);
+    assert.ok(html.indexOf('if (localHostname === "localhost"') < html.indexOf('adscript1.src = "https://pagead2.googlesyndication.com/'), "the local guard runs before advertising is requested");
 });
 
 test("technology data loads between the core rules and browser adapter", () => {

@@ -152,7 +152,30 @@ kbd {
 	cursor: pointer;
 }
 kbd:active {filter: brightness(70%);}
-#infoParent, #modParent, #settingsParent, .menuParent {
+#factionColorPalette {
+	position: absolute;
+	z-index: 20;
+	left: 8px;
+	bottom: 8px;
+	flex-wrap: wrap;
+	gap: 4px;
+	max-width: 144px;
+	padding: 5px;
+	border: 1px solid #777;
+	border-radius: 4px;
+	background: #111d;
+}
+#factionColorPalette button {
+	box-sizing: border-box;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: 2px solid #fff5;
+	border-radius: 3px;
+	cursor: pointer;
+}
+#factionColorPalette button[aria-pressed="true"] { border-color: #fff; box-shadow: 0 0 0 1px #000; }
+#infoParent, #settingsParent, .menuParent {
 	display: none;
 	position: absolute;
 	border: 4px solid var(--theme);
@@ -167,7 +190,7 @@ kbd:active {filter: brightness(70%);}
 	backdrop-filter: blur(3px);
 	z-index:99999
 }
-#infoScreen, #modManager, #settingsMenu, .menuScreen {
+#infoScreen, #settingsMenu, .menuScreen {
 	position: absolute;
 	height:calc(100% - 20px);
 	width:calc(100% - 20px);
@@ -181,6 +204,55 @@ kbd:active {filter: brightness(70%);}
 	height: 85%;
 	max-height: 623px;
 }
+.floating-window-managed {
+	box-sizing: border-box;
+	min-width: 280px;
+	min-height: 180px;
+	overflow: hidden;
+	border: 2px solid var(--theme-opac85);
+	border-radius: 6px;
+	background: var(--theme-darkest2);
+	color: #eee;
+	box-shadow: 0 8px 28px #000b;
+	font: 13px/1.35 Arial,sans-serif;
+	text-align: left;
+	user-select: text;
+}
+.floating-window-drag-handle {
+	cursor: move;
+	touch-action: none;
+}
+.floating-window-resize {
+	display: block;
+	position: absolute;
+	z-index: 1000;
+	touch-action: none;
+	user-select: none;
+}
+.floating-window-resize-n, .floating-window-resize-s {
+	left: 8px;
+	right: 8px;
+	height: 8px;
+	cursor: ns-resize;
+}
+.floating-window-resize-n { top: 0; }
+.floating-window-resize-s { bottom: 0; }
+.floating-window-resize-e, .floating-window-resize-w {
+	top: 8px;
+	bottom: 8px;
+	width: 8px;
+	cursor: ew-resize;
+}
+.floating-window-resize-e { right: 0; }
+.floating-window-resize-w { left: 0; }
+.floating-window-resize-ne, .floating-window-resize-se, .floating-window-resize-sw, .floating-window-resize-nw {
+	width: 12px;
+	height: 12px;
+}
+.floating-window-resize-ne { top: 0; right: 0; cursor: nesw-resize; }
+.floating-window-resize-se { right: 0; bottom: 0; cursor: nwse-resize; }
+.floating-window-resize-sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.floating-window-resize-nw { top: 0; left: 0; cursor: nwse-resize; }
 .standalone #settingsParent {
 	height: 100%;
 }
@@ -191,7 +263,7 @@ kbd:active {filter: brightness(70%);}
 	height: 50%;
 }
 #infoSearch, #modManagerUrl, #promptInput {
-	position: fixed;
+	position: absolute;
 	bottom: 0px;
 	left: 0px;
 	width: calc(100% - 16px);
@@ -206,6 +278,10 @@ kbd:active {filter: brightness(70%);}
 	border: none;
 	margin-left: 0;
 	margin-right: 0;
+}
+@media (max-width: 700px) {
+	.floating-window-resize { display: none; }
+	.floating-window-drag-handle { cursor: default; }
 }
 #infoSearch:focus, #modManagerUrl:focus, #promptInput:focus {
 	outline: none;
@@ -243,43 +319,6 @@ kbd:active {filter: brightness(70%);}
 	-moz-user-select: unset; /* Old versions of Firefox */
 	-ms-user-select: unset; /* Internet Explorer/Edge */
 	user-select: text;
-}
-/*#modManagerAdd {
-	position: absolute;
-	bottom: 25%;
-	right: 25%;
-	height: 50px;
-	width: 50px;
-	transform: translate(-25%, -25%);
-	background-color: rgb(0, 190, 32);
-	color: white;
-	font-size: 2em;
-	padding: 10px;
-	font-family: 'Press Start 2P';
-}*/
-#modManagerList {
-	margin-top: 20px;
-}
-#modManagerTagline {
-	margin-bottom: 4em;
-}
-#modManagerList li {
-	list-style-type: none;
-	position: relative;
-}
-#modManagerList li::before {
-	content: '•';
-	position: absolute;
-	left: -1.5em;
-	font-size: 1em;
-	font-family: 'Press Start 2P';
-}
-.removeModX {
-	color: red;
-	cursor: pointer;
-}
-.removeModX:hover {
-	color: rgb(255, 107, 107);
 }
 .infoLink {
 	color: rgb(116, 140, 221);
@@ -472,6 +511,14 @@ input[type="button"]:active, input[type="button"]:active:hover {
 	border-color:#5ee05e;
 	color:#5ee05e;
 }
+#speedButton {
+	width: 96px;
+	letter-spacing: 0;
+}
+#speedButton[data-saturated="true"] {
+	border-color: #e0a43a;
+	color: #ffd166;
+}
 #controls div {
 	display: -webkit-box;	  /* OLD - iOS 6-, Safari 3.1-6 */
 	display: -moz-box;		 /* OLD - Firefox 19- (buggy but mostly works) */
@@ -565,16 +612,6 @@ input[type="button"]:active, input[type="button"]:active:hover {
 #category-tools {
 	display: flex;
 }
-#category-edit {
-	display: none;
-	flex-wrap: wrap;
-	margin-top: 0.5em;
-	margin-bottom: 0.5em;
-}
-#category-edit .close {
-	color: rgb(255, 100, 100)
-}
-
 /* Scrollbars */
 
 #toolControls, #category-tools, #categoryControls, #elementControls {
@@ -810,7 +847,7 @@ button, input { /*Disable double tap zoom on mobile devices*/
 }
 #canvasDiv {
 	position:relative;
-	overflow-x:hidden;
+	overflow:hidden;
 	background-color: var(--theme-opac75);
 }
 #colorSelector {
